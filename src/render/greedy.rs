@@ -242,9 +242,9 @@ fn generate_greedy_mesh(
 
                         // 選對應的 bucket
                         match ms.block {
-                            BlockType::Grass | BlockType::Dirt =>
+                            BlockType::Grass =>
                                 push_quad(out_grass, v1, v2, v3, v4, normal_vec, color, w, h, rev),
-                            _ =>
+                            _ => // Stone & Dirt (temporarily using stone texture)
                                 push_quad(out_stone, v1, v2, v3, v4, normal_vec, color, w, h, rev),
                         }
 

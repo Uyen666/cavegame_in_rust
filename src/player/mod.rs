@@ -44,7 +44,7 @@ fn setup_player(mut commands: Commands, mut q_windows: Query<&mut Window, With<P
             on_ground: false,
             is_crouching: false,
         },
-        Transform::from_xyz(16.0, 8.0, 16.0), // Spawn above ground (grass is at y=4)
+        Transform::from_xyz(16.0, 35.0, 16.0), // 為了適應山脈地形，將初始高度拉高，利用重力自然降落
         GlobalTransform::default(),
         VisibilityBundle::default(),
     )).with_children(|parent| {

@@ -7,6 +7,7 @@ use bevy::utils::HashMap;
 use bevy::tasks::IoTaskPool;
 use std::fs::File;
 use std::io::{Read, Write};
+use noise::{NoiseFn, Perlin};
 
 pub use chunk::{Chunk, ChunkData};
 pub use voxel::BlockType;
@@ -24,9 +25,29 @@ impl Plugin for WorldPlugin {
 
 const RENDER_DISTANCE: i32 = 2;
 
-#[derive(Resource, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorldType {
+    Flat,
+    #[default]
+    PerlinHills,
+    FloatingIslands,
+}
+
+#[derive(Resource)]
 pub struct WorldManager {
     pub chunks: HashMap<IVec3, Entity>,
+    pub world_type: WorldType,
+    pub seed: u32,
+}
+
+impl Default for WorldManager {
+    fn default() -> Self {
+        Self {
+            chunks: HashMap::default(),
+            world_type: WorldType::PerlinHills,
+            seed: 12345,
+        }
+    }
 }
 
 impl WorldManager {
@@ -113,21 +134,50 @@ fn save_chunk_to_disk(pos: IVec3, data: ChunkData) {
     }).detach();
 }
 
-fn spawn_chunk(commands: &mut Commands, chunk_pos: IVec3) -> Entity {
+fn spawn_chunk(commands: &mut Commands, chunk_pos: IVec3, world_type: WorldType, seed: u32) -> Entity {
     let mut chunk = Chunk::new(chunk_pos);
 
     if let Some(data) = load_chunk_from_disk(chunk_pos) {
         chunk.palette = data.palette;
         chunk.is_modified = false;
     } else {
-        // 平坦地形：y < 4 是石頭，y == 4 是草地
-        for x in 0..CHUNK_SIZE {
-            for z in 0..CHUNK_SIZE {
-                for y in 0..5 {
-                    let block = if y == 4 { BlockType::Grass } else { BlockType::Stone };
-                    chunk.set_block(x, y, z, block);
+        match world_type {
+            WorldType::Flat => {
+                // 平坦地形：y < 4 是石頭，y == 4 是草地
+                for x in 0..CHUNK_SIZE {
+                    for z in 0..CHUNK_SIZE {
+                        for y in 0..5 {
+                            let block = if y == 4 { BlockType::Grass } else { BlockType::Stone };
+                            chunk.set_block(x, y, z, block);
+                        }
+                    }
                 }
             }
+            WorldType::PerlinHills => {
+                let perlin = Perlin::new(seed);
+                for x in 0..CHUNK_SIZE {
+                    for z in 0..CHUNK_SIZE {
+                        let global_x = chunk_pos.x * CHUNK_SIZE + x;
+                        let global_z = chunk_pos.z * CHUNK_SIZE + z;
+                        
+                        let noise_val = perlin.get([global_x as f64 * 0.015, global_z as f64 * 0.015]);
+                        let normalized_noise = (noise_val + 1.0) * 0.5; // -1~1 映射到 0~1
+                        let height = 10 + (normalized_noise * 20.0) as i32;
+
+                        for y in 0..=height {
+                            let block = if y == height {
+                                BlockType::Grass
+                            } else if y >= height - 3 {
+                                BlockType::Dirt
+                            } else {
+                                BlockType::Stone
+                            };
+                            chunk.set_block(x, y, z, block);
+                        }
+                    }
+                }
+            }
+            WorldType::FloatingIslands => {}
         }
         chunk.is_modified = false;
     }
@@ -164,7 +214,7 @@ fn update_chunks(
             let target_chunk_pos = IVec3::new(player_chunk_pos.x + dx, 0, player_chunk_pos.z + dz);
 
             if !world_manager.chunks.contains_key(&target_chunk_pos) {
-                let entity = spawn_chunk(&mut commands, target_chunk_pos);
+                let entity = spawn_chunk(&mut commands, target_chunk_pos, world_manager.world_type, world_manager.seed);
                 world_manager.chunks.insert(target_chunk_pos, entity);
             }
         }
