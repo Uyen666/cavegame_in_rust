@@ -114,52 +114,6 @@ fn player_look(
         * Quat::from_axis_angle(Vec3::X, player.pitch);
 }
 
-use crate::phys::swept::swept_aabb;
-
-/// 在單一軸向上進行 Swept AABB 碰撞，回傳安全的實際移動距離
-fn sweep_axis(pos: Vec3, size_min: Vec3, size_max: Vec3, velocity_1d: Vec3,
-              world: &WorldManager, q_chunks: &Query<(Entity, &Chunk)>) -> (f32, bool) {
-    let player_aabb = Aabb::new(pos + size_min, pos + size_max);
-    let swept_box = player_aabb.expand_by_velocity(velocity_1d);
-
-    let min_x = (swept_box.min.x - 0.001).floor() as i32;
-    let max_x = (swept_box.max.x + 0.001).ceil() as i32;
-    let min_y = (swept_box.min.y - 0.001).floor() as i32;
-    let max_y = (swept_box.max.y + 0.001).ceil() as i32;
-    let min_z = (swept_box.min.z - 0.001).floor() as i32;
-    let max_z = (swept_box.max.z + 0.001).ceil() as i32;
-
-    let mut earliest_t = 1.0_f32;
-    let mut hit = false;
-
-    for x in min_x..max_x {
-        for y in min_y..max_y {
-            for z in min_z..max_z {
-                let bp = IVec3::new(x, y, z);
-                if world.get_block_global(bp, q_chunks).is_solid() {
-                    let block_aabb = Aabb::new(
-                        Vec3::new(x as f32, y as f32, z as f32),
-                        Vec3::new(x as f32 + 1.0, y as f32 + 1.0, z as f32 + 1.0),
-                    );
-                    let (t, normal) = swept_aabb(&player_aabb, velocity_1d, &block_aabb);
-                    if t < earliest_t {
-                        // Internal-face culling: only collide if face is exposed
-                        let neighbor = bp + IVec3::new(normal.x as i32, normal.y as i32, normal.z as i32);
-                        if !world.get_block_global(neighbor, q_chunks).is_solid() {
-                            earliest_t = t;
-                            hit = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Apply a small safety gap so AABB never actually touches the surface
-    let safe_t = if hit { (earliest_t - 0.001).max(0.0) } else { 1.0 };
-    (safe_t, hit)
-}
-
 fn player_move(
     mut q_player: Query<(&mut Player, &mut Transform)>,
     mut q_camera: Query<&mut Transform, (With<PlayerCamera>, Without<Player>)>,
@@ -177,8 +131,8 @@ fn player_move(
 
     // --- Player dimensions ---
     player.is_crouching = keys.pressed(KeyCode::ControlLeft);
-    let player_height = if player.is_crouching { 1.2_f32 } else { 1.8_f32 };
-    let player_radius = 0.3_f32;
+    let player_height = if player.is_crouching { 1.5_f32 } else { 1.8_f32 };
+    let player_radius = 0.6_f32;
     let is_sprinting = keys.pressed(KeyCode::ShiftLeft);
     let move_speed = if player.is_crouching { 
         2.5_f32 
@@ -188,13 +142,9 @@ fn player_move(
         4.3_f32 
     };
 
-    // Offsets relative to pos (pos = feet center)
-    let size_min = Vec3::new(-player_radius, 0.0, -player_radius);
-    let size_max = Vec3::new( player_radius, player_height,  player_radius);
-
     // --- Camera crouch lerp ---
     if let Ok(mut cam) = q_camera.get_single_mut() {
-        let target_cam_y = if player.is_crouching { 1.0 } else { 1.6 };
+        let target_cam_y = if player.is_crouching { 1.2 } else { 1.6 }; // Adjusted camera height for 1.5 crouch
         cam.translation.y += (target_cam_y - cam.translation.y) * (1.0 - (-10.0_f32 * dt).exp());
     }
 
@@ -222,76 +172,91 @@ fn player_move(
     }
 
     // -------------------------------------------------------
-    // Separate-axis Swept AABB collision
-    // X → Y → Z; velocity is NOT back-calculated from position
+    // Axis-Separated Movement (X -> Z -> Y)
     // -------------------------------------------------------
     let mut pos = transform.translation;
+    const EPSILON: f32 = 0.001;
 
-    // 防卡死推開安全閥
-    let epsilon = 0.001;
-    let current_player_aabb = Aabb::new(
-        Vec3::new(pos.x - player_radius, pos.y, pos.z - player_radius),
-        Vec3::new(pos.x + player_radius, pos.y + player_height, pos.z + player_radius),
-    );
+    let get_intersecting_blocks = |p: Vec3| -> Vec<Aabb> {
+        let p_aabb = Aabb::new(
+            Vec3::new(p.x - player_radius, p.y, p.z - player_radius),
+            Vec3::new(p.x + player_radius, p.y + player_height, p.z + player_radius),
+        );
+        let min_x = (p.x - player_radius).floor() as i32;
+        let max_x = (p.x + player_radius).ceil() as i32;
+        let min_y = p.y.floor() as i32;
+        let max_y = (p.y + player_height).ceil() as i32;
+        let min_z = (p.z - player_radius).floor() as i32;
+        let max_z = (p.z + player_radius).ceil() as i32;
 
-    let check_min_x = (pos.x - player_radius).floor() as i32;
-    let check_max_x = (pos.x + player_radius).ceil() as i32;
-    let check_min_y = pos.y.floor() as i32;
-    let check_max_y = (pos.y + player_height).ceil() as i32;
-    let check_min_z = (pos.z - player_radius).floor() as i32;
-    let check_max_z = (pos.z + player_radius).ceil() as i32;
-
-    for x in check_min_x..check_max_x {
-        for y in check_min_y..check_max_y {
-            for z in check_min_z..check_max_z {
-                let b_pos = IVec3::new(x, y, z);
-                if world.get_block_global(b_pos, &q_chunks).is_solid() {
-                    let b_aabb = Aabb::new(
-                        Vec3::new(x as f32, y as f32, z as f32),
-                        Vec3::new(x as f32 + 1.0, y as f32 + 1.0, z as f32 + 1.0),
-                    );
-                    
-                    if current_player_aabb.intersects(&b_aabb) {
-                        let overlap_y = b_aabb.max.y - pos.y;
-                        if overlap_y > 0.0 && overlap_y < 1.0 {
-                            pos.y += overlap_y + 0.005;
-                            player.on_ground = true;
+        let mut hits = Vec::new();
+        for x in min_x..max_x {
+            for y in min_y..max_y {
+                for z in min_z..max_z {
+                    let b_pos = IVec3::new(x, y, z);
+                    if world.get_block_global(b_pos, &q_chunks).is_solid() {
+                        let b_aabb = Aabb::new(
+                            Vec3::new(x as f32, y as f32, z as f32),
+                            Vec3::new(x as f32 + 1.0, y as f32 + 1.0, z as f32 + 1.0),
+                        );
+                        if p_aabb.intersects(&b_aabb) {
+                            hits.push(b_aabb);
                         }
                     }
                 }
             }
         }
-    }
+        hits
+    };
 
     // X axis
-    let move_x = Vec3::new(player.velocity.x * dt, 0.0, 0.0);
-    if move_x.length_squared() > 0.000001 {
-        let (t, hit) = sweep_axis(pos, size_min, size_max, move_x, &world, &q_chunks);
-        pos.x += move_x.x * t;
-        if hit { player.velocity.x = 0.0; }
-    }
-
-    // Y axis
-    let move_y = Vec3::new(0.0, player.velocity.y * dt, 0.0);
-    if move_y.length_squared() > 0.000001 {
-        let (t, hit) = sweep_axis(pos, size_min, size_max, move_y, &world, &q_chunks);
-        pos.y += move_y.y * t;
-        if hit {
-            if player.velocity.y < 0.0 {
-                player.on_ground = true;
+    if player.velocity.x != 0.0 {
+        pos.x += player.velocity.x * dt;
+        let hits = get_intersecting_blocks(pos);
+        if !hits.is_empty() {
+            if player.velocity.x > 0.0 {
+                let wall_x = hits.iter().map(|b| b.min.x).fold(f32::INFINITY, f32::min);
+                pos.x = wall_x - player_radius - EPSILON;
+            } else {
+                let wall_x = hits.iter().map(|b| b.max.x).fold(f32::NEG_INFINITY, f32::max);
+                pos.x = wall_x + player_radius + EPSILON;
             }
-            player.velocity.y = 0.0;
-        } else {
-            player.on_ground = false;
+            player.velocity.x = 0.0;
         }
     }
 
     // Z axis
-    let move_z = Vec3::new(0.0, 0.0, player.velocity.z * dt);
-    if move_z.length_squared() > 0.000001 {
-        let (t, hit) = sweep_axis(pos, size_min, size_max, move_z, &world, &q_chunks);
-        pos.z += move_z.z * t;
-        if hit { player.velocity.z = 0.0; }
+    if player.velocity.z != 0.0 {
+        pos.z += player.velocity.z * dt;
+        let hits = get_intersecting_blocks(pos);
+        if !hits.is_empty() {
+            if player.velocity.z > 0.0 {
+                let wall_z = hits.iter().map(|b| b.min.z).fold(f32::INFINITY, f32::min);
+                pos.z = wall_z - player_radius - EPSILON;
+            } else {
+                let wall_z = hits.iter().map(|b| b.max.z).fold(f32::NEG_INFINITY, f32::max);
+                pos.z = wall_z + player_radius + EPSILON;
+            }
+            player.velocity.z = 0.0;
+        }
+    }
+
+    // Y axis
+    player.on_ground = false;
+    if player.velocity.y != 0.0 {
+        pos.y += player.velocity.y * dt;
+        let hits = get_intersecting_blocks(pos);
+        if !hits.is_empty() {
+            if player.velocity.y > 0.0 {
+                let ceil_y = hits.iter().map(|b| b.min.y).fold(f32::INFINITY, f32::min);
+                pos.y = ceil_y - player_height - EPSILON;
+            } else {
+                let ground_y = hits.iter().map(|b| b.max.y).fold(f32::NEG_INFINITY, f32::max);
+                pos.y = ground_y; // Precise grounding
+                player.on_ground = true;
+            }
+            player.velocity.y = 0.0;
+        }
     }
 
     transform.translation = pos;
