@@ -6,8 +6,10 @@ edition = "2021" # Bevy 0.14 requires 2021 edition
 [dependencies]
 bevy = "0.14"
 bincode = "1.3.3"
+image = "0.25.10"
 noise = "0.9.0"
 serde = { version = "1.0.228", features = ["derive"] }
+zip = "8.6.0"
 
 # Enable a small amount of optimization in debug mode
 [profile.dev]

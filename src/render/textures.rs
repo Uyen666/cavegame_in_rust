@@ -1,11 +1,12 @@
 use bevy::prelude::*;
-use bevy::render::texture::{ImageSampler, ImageSamplerDescriptor, ImageAddressMode, ImageFilterMode};
+use crate::render::texture_array::load_texture_array_from_zip;
+use crate::render::material::VoxelMaterial;
 
 /// 遊戲中使用的所有方塊紋理
 #[derive(Resource, Default)]
 pub struct GameTextures {
-    pub grass: Handle<Image>,
-    pub stone: Handle<Image>,
+    pub array_texture: Handle<Image>,
+    pub material: Handle<VoxelMaterial>,
     pub ready: bool,
 }
 
@@ -13,41 +14,46 @@ pub struct TexturePlugin;
 impl Plugin for TexturePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GameTextures>()
-           .add_systems(PreStartup, load_textures)
-           .add_systems(Update, setup_samplers);
+           .add_systems(PreStartup, load_textures);
     }
 }
 
 fn load_textures(
     mut gt: ResMut<GameTextures>,
-    asset_server: Res<AssetServer>,
-) {
-    gt.grass = asset_server.load("textures/grass.png");
-    gt.stone = asset_server.load("textures/stone.png");
-}
-
-/// 等所有紋理都載入完成後，把採樣器設為 Repeat（UV 超過 1.0 就自動 tile）
-fn setup_samplers(
-    mut gt: ResMut<GameTextures>,
     mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<VoxelMaterial>>,
 ) {
-    if gt.ready { return; }
-
-    // 必須兩張都載入完才算 ready
-    let repeat_sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-        address_mode_u: ImageAddressMode::Repeat,
-        address_mode_v: ImageAddressMode::Repeat,
-        mag_filter: ImageFilterMode::Nearest, // pixel-art 銳利感，像 Minecraft
-        min_filter: ImageFilterMode::Nearest,
-        ..default()
+    let zip_path = "assets/resource_pack.zip";
+    
+    let image = load_texture_array_from_zip(zip_path).unwrap_or_else(|| {
+        warn!("Failed to load {}, falling back to generated purple/black textures", zip_path);
+        let mut fallback = Image::new_fill(
+            bevy::render::render_resource::Extent3d { width: 16, height: 16 * 4, depth_or_array_layers: 1 },
+            bevy::render::render_resource::TextureDimension::D2,
+            &[255, 0, 255, 255],
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD | bevy::render::render_asset::RenderAssetUsages::MAIN_WORLD,
+        );
+        fallback.reinterpret_stacked_2d_as_array(4);
+        fallback.sampler = bevy::render::texture::ImageSampler::Descriptor(bevy::render::texture::ImageSamplerDescriptor {
+            address_mode_u: bevy::render::texture::ImageAddressMode::Repeat,
+            address_mode_v: bevy::render::texture::ImageAddressMode::Repeat,
+            address_mode_w: bevy::render::texture::ImageAddressMode::Repeat,
+            mag_filter: bevy::render::texture::ImageFilterMode::Nearest,
+            min_filter: bevy::render::texture::ImageFilterMode::Nearest,
+            ..default()
+        });
+        fallback
     });
 
-    let Some(grass_img) = images.get_mut(&gt.grass) else { return; };
-    grass_img.sampler = repeat_sampler.clone();
+    let image_handle = images.add(image);
+    
+    let material_handle = materials.add(VoxelMaterial {
+        texture_array: image_handle.clone(),
+    });
 
-    let Some(stone_img) = images.get_mut(&gt.stone) else { return; };
-    stone_img.sampler = repeat_sampler;
-
+    gt.array_texture = image_handle;
+    gt.material = material_handle;
     gt.ready = true;
-    info!("All block textures ready (Repeat sampler applied).");
+    info!("Texture array loaded and VoxelMaterial created.");
 }

@@ -1,137 +1,174 @@
 use bevy::prelude::*;
-use bevy::render::mesh::{Indices, PrimitiveTopology};
+use bevy::render::mesh::{Indices, PrimitiveTopology, MeshVertexAttribute};
 use bevy::render::render_asset::RenderAssetUsages;
+use bevy::render::render_resource::VertexFormat;
 use crate::world::{Chunk, BlockType, WorldManager};
 use crate::utils::math::CHUNK_SIZE;
 use super::textures::GameTextures;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct MaskState {
-    block: BlockType,
-    normal: i32,
+pub const ATTRIBUTE_TEXTURE_INDEX: MeshVertexAttribute = MeshVertexAttribute::new(
+    "Vertex_TextureIndex",
+    99,
+    VertexFormat::Uint32,
+);
+
+// ── Deterministic texture layer mapping ─────────────────────────────────────
+// MUST match the order in texture_array.rs TEXTURES:
+//   Layer 0: stone
+//   Layer 1: dirt
+//   Layer 2: grass_block_top
+//   Layer 3: grass_block_side
+
+fn get_texture_layer(block: BlockType, d: usize, normal: i32) -> u32 {
+    match block {
+        BlockType::Stone => 0,
+        BlockType::Dirt  => 1,
+        BlockType::Grass => match (d, normal) {
+            (1,  1) => 2, // Y+ → top    (grass_block_top)
+            (1, -1) => 1, // Y- → bottom (dirt)
+            _       => 3, // X±/Z± → side (grass_block_side)
+        },
+        _ => 0,
+    }
 }
+
+// ── Face mask ────────────────────────────────────────────────────────────────
+//
+// `tex_layer` is stored in the mask so that:
+//   1. Greedy merge only fuses cells with the EXACT SAME material layer
+//      (prevents top ↔ side confusion even if block type is the same)
+//   2. The layer is computed once at mask-build time, no recomputation later
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FaceInfo {
+    block:     BlockType,
+    normal:    i32,
+    tex_layer: u32,   // ← Key addition: makes merge direction-aware
+}
+
+// ── Mesh accumulator ─────────────────────────────────────────────────────────
 
 type MeshData = (
     Vec<[f32; 3]>, // positions
     Vec<[f32; 3]>, // normals
     Vec<[f32; 4]>, // colors
     Vec<[f32; 2]>, // UVs
-    Vec<u32>,      // indices
+    Vec<u32>,      // texture layer per vertex
+    Vec<u32>,      // triangle indices
 );
 
 fn empty_mesh() -> MeshData { Default::default() }
 
-/// 把一個四邊形（Greedy Quad）推進 mesh bucket。
-/// UV 座標範圍 (0,0) ~ (quad_w, quad_h)，搭配 Repeat 採樣器，
-/// 每個整數單位 = 一格方塊 = 一個紋理 tile，完全不拉伸。
+/// Push a single greedy quad into the mesh accumulator.
+///
+/// Vertex order (quad corners in world space):
+///   v1 = origin
+///   v2 = origin + du  (width step)
+///   v3 = origin + du + dv
+///   v4 = origin + dv  (height step)
+///
+/// Winding proof (all axes, for POSITIVE normals with rev=false):
+///   d=0: (v2-v1)×(v3-v1) = (0,w,0)×(0,w,h) = (+X,0,0)  ✓
+///   d=1: (v2-v1)×(v3-v1) = (0,0,w)×(h,0,w) = (0,+Y,0)  ✓
+///   d=2: (v2-v1)×(v3-v1) = (w,0,0)×(w,h,0) = (0,0,+Z)  ✓
+/// → rev = (normal < 0)  for ALL axes (unified rule)
+///
+/// UV mapping per axis (ensures texture is right-side-up on all faces):
+///   d=0  X-face  (u=Y vert, v=Z horiz):
+///         v1(Y-low,Z-low)  v2(Y-high,Z-low)  v3(Y-high,Z-hi)  v4(Y-low,Z-hi)
+///     UV: [0,w]            [0,0]             [h,0]            [h,w]
+///         U → Z-horiz, V → Y-vert inverted (V=0=top, V=w=bottom)
+///
+///   d=1  Y-face  (u=Z, v=X) — top/bottom, no vertical concept needed:
+///     UV: [0,0] [w,0] [w,h] [0,h]   (no change)
+///
+///   d=2  Z-face  (u=X horiz, v=Y vert):
+///         v1(X-low,Y-low)  v2(X-hi,Y-low)  v3(X-hi,Y-hi)  v4(X-low,Y-hi)
+///     UV: [0,h]            [w,h]            [w,0]          [0,0]
+///         U → X-horiz, V → Y-vert inverted (V=0=top, V=h=bottom)
 fn push_quad(
-    bucket: &mut MeshData,
+    bucket:    &mut MeshData,
     v1: [f32; 3], v2: [f32; 3], v3: [f32; 3], v4: [f32; 3],
     normal_vec: [f32; 3],
-    color: [f32; 4],
-    quad_w: i32,
-    quad_h: i32,
-    rev: bool,
+    color:      [f32; 4],
+    tex_layer:  u32,
+    quad_w:     i32,
+    quad_h:     i32,
+    rev:        bool,
+    d:          usize,  // face axis → drives UV layout
 ) {
-    let start = bucket.0.len() as u32;
+    let base = bucket.0.len() as u32;
+
     bucket.0.extend_from_slice(&[v1, v2, v3, v4]);
     bucket.1.extend_from_slice(&[normal_vec; 4]);
     bucket.2.extend_from_slice(&[color; 4]);
+    bucket.4.extend_from_slice(&[tex_layer; 4]);
 
     let (w, h) = (quad_w as f32, quad_h as f32);
-    // UV 按照 v1→v2→v3→v4 的頂點順序排列
-    bucket.3.extend_from_slice(&[
-        [0.0, 0.0],
-        [w,   0.0],
-        [w,   h  ],
-        [0.0, h  ],
-    ]);
 
+    // Per-axis UV layout (see doc-comment above for derivation)
+    let uvs: [[f32; 2]; 4] = match d {
+        // X-face: U→Z(horiz=h), V→Y(vert=w) inverted
+        0 => [[0.0, w  ], [0.0, 0.0], [h,   0.0], [h,   w  ]],
+        // Y-face: standard, no vertical correction needed
+        1 => [[0.0, 0.0], [w,   0.0], [w,   h  ], [0.0, h  ]],
+        // Z-face: U→X(horiz=w), V→Y(vert=h) inverted
+        _ => [[0.0, h  ], [w,   h  ], [w,   0.0], [0.0, 0.0]],
+    };
+    bucket.3.extend_from_slice(&uvs);
+
+    // Triangle indices — CCW for rev=false, CW (reversed) for rev=true
     if rev {
-        bucket.4.extend_from_slice(&[
-            start, start + 2, start + 1,
-            start, start + 3, start + 2,
+        bucket.5.extend_from_slice(&[
+            base, base + 2, base + 1,
+            base, base + 3, base + 2,
         ]);
     } else {
-        bucket.4.extend_from_slice(&[
-            start, start + 1, start + 2,
-            start, start + 2, start + 3,
+        bucket.5.extend_from_slice(&[
+            base, base + 1, base + 2,
+            base, base + 2, base + 3,
         ]);
     }
 }
 
+// ── Finalise mesh ─────────────────────────────────────────────────────────────
+
 fn finalize_mesh(data: MeshData, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
-    let (pos, nrm, col, uv, idx) = data;
+    let (pos, nrm, col, uv, tex_idx, idx) = data;
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL,   nrm);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR,    col);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0,     uv);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION,    pos);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL,      nrm);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR,       col);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0,        uv);
+    mesh.insert_attribute(ATTRIBUTE_TEXTURE_INDEX,     tex_idx);
     mesh.insert_indices(Indices::U32(idx));
     meshes.add(mesh)
 }
 
+// ── ECS system ────────────────────────────────────────────────────────────────
+
 pub fn mesh_dirty_chunks(
-    mut commands: Commands,
-    mut q_chunks: Query<(Entity, &mut Chunk)>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    world_manager: Res<WorldManager>,
-    game_textures: Option<Res<GameTextures>>,
+    mut commands:   Commands,
+    mut q_chunks:   Query<(Entity, &mut Chunk)>,
+    mut meshes:     ResMut<Assets<Mesh>>,
+    world_manager:  Res<WorldManager>,
+    game_textures:  Option<Res<GameTextures>>,
 ) {
     let Some(gt) = game_textures else { return; };
     if !gt.ready { return; }
 
-    // 共用材質（每幀 lazy-init 一次即可）
-    let mut grass_mat: Option<Handle<StandardMaterial>> = None;
-    let mut stone_mat: Option<Handle<StandardMaterial>> = None;
-
     for (entity, mut chunk) in q_chunks.iter_mut() {
         if !chunk.is_dirty { continue; }
 
-        let mut grass_mesh = empty_mesh();
-        let mut stone_mesh = empty_mesh();
-
-        generate_greedy_mesh(&chunk, &world_manager, &mut grass_mesh, &mut stone_mesh);
+        let mut data = empty_mesh();
+        generate_greedy_mesh(&chunk, &world_manager, &mut data);
 
         commands.entity(entity).despawn_descendants();
 
-        // --- 草地（有紋理）---
-        if !grass_mesh.0.is_empty() {
-            let mat = grass_mat.get_or_insert_with(|| {
-                materials.add(StandardMaterial {
-                    base_color: Color::WHITE,
-                    base_color_texture: Some(gt.grass.clone()),
-                    cull_mode: None,
-                    unlit: false,
-                    alpha_mode: AlphaMode::Opaque,
-                    ..default()
-                })
-            });
-            let child = commands.spawn(PbrBundle {
-                mesh: finalize_mesh(grass_mesh, &mut meshes),
-                material: mat.clone(),
-                transform: Transform::default(),
-                ..default()
-            }).id();
-            commands.entity(entity).add_child(child);
-        }
-
-        // --- 石頭（石頭紋理）---
-        if !stone_mesh.0.is_empty() {
-            let mat = stone_mat.get_or_insert_with(|| {
-                materials.add(StandardMaterial {
-                    base_color: Color::WHITE,
-                    base_color_texture: Some(gt.stone.clone()),
-                    cull_mode: None,
-                    unlit: false,
-                    alpha_mode: AlphaMode::Opaque,
-                    ..default()
-                })
-            });
-            let child = commands.spawn(PbrBundle {
-                mesh: finalize_mesh(stone_mesh, &mut meshes),
-                material: mat.clone(),
+        if !data.0.is_empty() {
+            let child = commands.spawn(MaterialMeshBundle {
+                mesh:      finalize_mesh(data, &mut meshes),
+                material:  gt.material.clone(),
                 transform: Transform::default(),
                 ..default()
             }).id();
@@ -142,30 +179,49 @@ pub fn mesh_dirty_chunks(
     }
 }
 
+// ── Core greedy mesher ────────────────────────────────────────────────────────
+//
+// Axis layout
+//   d  = axis being sliced (0=X, 1=Y, 2=Z)
+//   u  = (d+1)%3  — "width"  direction within the face
+//   v  = (d+2)%3  — "height" direction within the face
+//
+// Face detection rule (mask)
+//   b0 = block at current voxel, b1 = block one step in +d
+//   Face appears only when exactly ONE of the two is solid.
+//   Two different solid types share a hidden internal boundary → no face.
+//
+// Merge rule (greedy)
+//   Two adjacent mask cells merge into one quad only when their FaceInfo
+//   is IDENTICAL — meaning same block, same outward normal, AND same tex_layer.
+//   Storing tex_layer in FaceInfo makes it impossible to merge a grass top
+//   (tex 2) with a grass side (tex 3) even if the struct fields happen to
+//   collide in a future block type redesign.
+
 fn generate_greedy_mesh(
     chunk: &Chunk,
     _world: &WorldManager,
-    out_grass: &mut MeshData,
-    out_stone: &mut MeshData,
+    out:   &mut MeshData,
 ) {
     for d in 0..3usize {
         let u = (d + 1) % 3;
         let v = (d + 2) % 3;
 
-        let mut x = [0i32; 3];
         let mut q = [0i32; 3];
         q[d] = 1;
 
-        let mut mask = vec![None::<MaskState>; (CHUNK_SIZE * CHUNK_SIZE) as usize];
+        let mask_len = (CHUNK_SIZE * CHUNK_SIZE) as usize;
+        let mut mask = vec![None::<FaceInfo>; mask_len];
 
         for slice in -1..CHUNK_SIZE {
-            x[d] = slice;
-
-            // 建立 mask（哪些格子需要生成面）
-            let mut n = 0;
+            // ── Build mask ─────────────────────────────────────────────────
+            let mut n = 0usize;
             for j in 0..CHUNK_SIZE {
                 for i in 0..CHUNK_SIZE {
-                    x[v] = j; x[u] = i;
+                    let mut x = [0i32; 3];
+                    x[d] = slice;
+                    x[u] = i;
+                    x[v] = j;
 
                     let b0 = if x[d] >= 0 {
                         chunk.get_block(x[0], x[1], x[2])
@@ -173,91 +229,101 @@ fn generate_greedy_mesh(
                         BlockType::Air
                     };
                     let b1 = if x[d] < CHUNK_SIZE - 1 {
-                        chunk.get_block(x[0]+q[0], x[1]+q[1], x[2]+q[2])
+                        chunk.get_block(x[0] + q[0], x[1] + q[1], x[2] + q[2])
                     } else {
                         BlockType::Air
                     };
 
-                    mask[n] = if b0.is_solid() == b1.is_solid() && b0 == b1 {
-                        None
-                    } else if b0.is_solid() {
-                        Some(MaskState { block: b0, normal: 1 })
-                    } else if b1.is_solid() {
-                        Some(MaskState { block: b1, normal: -1 })
-                    } else {
-                        None
+                    // Exactly one side solid → visible face
+                    // Both solid (same or different types) → hidden internal face
+                    mask[n] = match (b0.is_solid(), b1.is_solid()) {
+                        (true, false) => Some(FaceInfo {
+                            block:     b0,
+                            normal:    1,
+                            tex_layer: get_texture_layer(b0, d, 1),
+                        }),
+                        (false, true) => Some(FaceInfo {
+                            block:     b1,
+                            normal:    -1,
+                            tex_layer: get_texture_layer(b1, d, -1),
+                        }),
+                        _ => None,
                     };
                     n += 1;
                 }
             }
 
-            // Greedy 合併 + 生成 quad
-            x[d] += 1;
-            let mut n = 0;
+            // ── Greedy merge + emit quads ──────────────────────────────────
+            let face_coord = slice + 1; // vertex plane is one step ahead
+
+            let mut n = 0usize;
             for j in 0..CHUNK_SIZE {
-                let mut i = 0;
+                let mut i = 0i32;
                 while i < CHUNK_SIZE {
-                    if let Some(ms) = mask[n] {
-                        // 往 u 方向貪婪擴展寬度
-                        let mut w = 1;
-                        while i + w < CHUNK_SIZE && mask[n + w as usize] == Some(ms) {
+                    if let Some(face) = mask[n] {
+                        // Expand width (u direction)
+                        let mut w = 1i32;
+                        while i + w < CHUNK_SIZE && mask[n + w as usize] == Some(face) {
                             w += 1;
                         }
 
-                        // 往 v 方向貪婪擴展高度
-                        let mut h = 1;
+                        // Expand height (v direction)
+                        let mut h = 1i32;
                         'outer: while j + h < CHUNK_SIZE {
                             for k in 0..w {
-                                if mask[n + (h * CHUNK_SIZE + k) as usize] != Some(ms) {
+                                if mask[n + (h * CHUNK_SIZE + k) as usize] != Some(face) {
                                     break 'outer;
                                 }
                             }
                             h += 1;
                         }
 
-                        x[u] = i; x[v] = j;
+                        // Build quad geometry
+                        let mut x    = [0i32; 3];
+                        x[d] = face_coord;
+                        x[u] = i;
+                        x[v] = j;
+
                         let mut du = [0i32; 3]; du[u] = w;
                         let mut dv = [0i32; 3]; dv[v] = h;
 
-                        let v1 = [x[0] as f32,           x[1] as f32,           x[2] as f32];
-                        let v2 = [(x[0]+du[0]) as f32,   (x[1]+du[1]) as f32,   (x[2]+du[2]) as f32];
+                        let v1 = [ x[0]             as f32,  x[1]             as f32,  x[2]             as f32];
+                        let v2 = [(x[0]+du[0])       as f32, (x[1]+du[1])       as f32, (x[2]+du[2])       as f32];
                         let v3 = [(x[0]+du[0]+dv[0]) as f32, (x[1]+du[1]+dv[1]) as f32, (x[2]+du[2]+dv[2]) as f32];
-                        let v4 = [(x[0]+dv[0]) as f32,   (x[1]+dv[1]) as f32,   (x[2]+dv[2]) as f32];
+                        let v4 = [(x[0]+dv[0])       as f32, (x[1]+dv[1])       as f32, (x[2]+dv[2])       as f32];
 
                         let normal_vec = match d {
-                            0 => [ms.normal as f32, 0.0, 0.0],
-                            1 => [0.0, ms.normal as f32, 0.0],
-                            2 => [0.0, 0.0, ms.normal as f32],
-                            _ => [0.0, 0.0, 0.0],
+                            0 => [face.normal as f32, 0.0, 0.0],
+                            1 => [0.0, face.normal as f32, 0.0],
+                            _ => [0.0, 0.0, face.normal as f32],
                         };
 
-                        // 頂點顏色：都設為白色，由紋理來提供顏色
-                        let color = [1.0, 1.0, 1.0, 1.0];
+                        // Winding: proved correct for all d when rev = (normal < 0)
+                        let rev = face.normal < 0;
 
-                        // 捲繞方向
-                        let rev = {
-                            let r = ms.normal > 0;
-                            if d == 0 || d == 2 { !r } else { r }
-                        };
+                        push_quad(
+                            out,
+                            v1, v2, v3, v4,
+                            normal_vec,
+                            [1.0, 1.0, 1.0, 1.0],
+                            face.tex_layer,
+                            w, h,
+                            rev,
+                            d,  // pass axis for correct UV layout
+                        );
 
-                        // 選對應的 bucket
-                        match ms.block {
-                            BlockType::Grass =>
-                                push_quad(out_grass, v1, v2, v3, v4, normal_vec, color, w, h, rev),
-                            _ => // Stone & Dirt (temporarily using stone texture)
-                                push_quad(out_stone, v1, v2, v3, v4, normal_vec, color, w, h, rev),
-                        }
-
-                        // 清除已處理的 mask 格子
+                        // Clear merged region from mask
                         for l in 0..h {
                             for k in 0..w {
                                 mask[n + (l * CHUNK_SIZE + k) as usize] = None;
                             }
                         }
 
-                        i += w; n += w as usize;
+                        i += w;
+                        n += w as usize;
                     } else {
-                        i += 1; n += 1;
+                        i += 1;
+                        n += 1;
                     }
                 }
             }
