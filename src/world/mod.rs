@@ -1,13 +1,11 @@
 pub mod voxel;
 pub mod palette;
 pub mod chunk;
+pub mod storage;
+pub mod gen;
 
 use bevy::prelude::*;
 use bevy::utils::HashMap;
-use bevy::tasks::IoTaskPool;
-use std::fs::File;
-use std::io::{Read, Write};
-use noise::{NoiseFn, Perlin};
 
 pub use chunk::{Chunk, ChunkData};
 pub use voxel::BlockType;
@@ -19,7 +17,10 @@ impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WorldManager>()
             .add_systems(Startup, setup_world)
-            .add_systems(Update, update_chunks);
+            .add_systems(
+                Update,
+                update_chunks.run_if(in_state(crate::GameState::InGame))
+            );
     }
 }
 
@@ -110,72 +111,19 @@ fn setup_world(mut commands: Commands) {
     });
 }
 
-fn load_chunk_from_disk(pos: IVec3) -> Option<ChunkData> {
-    let path = format!("saves/chunk_{}_{}_{}.bin", pos.x, pos.y, pos.z);
-    if let Ok(mut file) = File::open(&path) {
-        let mut buffer = Vec::new();
-        if file.read_to_end(&mut buffer).is_ok() {
-            if let Ok(data) = bincode::deserialize(&buffer) {
-                return Some(data);
-            }
-        }
-    }
-    None
-}
-
-fn save_chunk_to_disk(pos: IVec3, data: ChunkData) {
-    let path = format!("saves/chunk_{}_{}_{}.bin", pos.x, pos.y, pos.z);
-    IoTaskPool::get().spawn(async move {
-        if let Ok(encoded) = bincode::serialize(&data) {
-            if let Ok(mut file) = File::create(&path) {
-                let _ = file.write_all(&encoded);
-            }
-        }
-    }).detach();
-}
-
 fn spawn_chunk(commands: &mut Commands, chunk_pos: IVec3, world_type: WorldType, seed: u32) -> Entity {
     let mut chunk = Chunk::new(chunk_pos);
 
-    if let Some(data) = load_chunk_from_disk(chunk_pos) {
+    if let Some(data) = storage::load_chunk_from_disk(chunk_pos) {
         chunk.palette = data.palette;
         chunk.is_modified = false;
     } else {
         match world_type {
             WorldType::Flat => {
-                // 平坦地形：y < 4 是石頭，y == 4 是草地
-                for x in 0..CHUNK_SIZE {
-                    for z in 0..CHUNK_SIZE {
-                        for y in 0..5 {
-                            let block = if y == 4 { BlockType::Grass } else { BlockType::Stone };
-                            chunk.set_block(x, y, z, block);
-                        }
-                    }
-                }
+                gen::flat::generate(&mut chunk);
             }
             WorldType::PerlinHills => {
-                let perlin = Perlin::new(seed);
-                for x in 0..CHUNK_SIZE {
-                    for z in 0..CHUNK_SIZE {
-                        let global_x = chunk_pos.x * CHUNK_SIZE + x;
-                        let global_z = chunk_pos.z * CHUNK_SIZE + z;
-                        
-                        let noise_val = perlin.get([global_x as f64 * 0.015, global_z as f64 * 0.015]);
-                        let normalized_noise = (noise_val + 1.0) * 0.5; // -1~1 映射到 0~1
-                        let height = 10 + (normalized_noise * 20.0) as i32;
-
-                        for y in 0..=height {
-                            let block = if y == height {
-                                BlockType::Grass
-                            } else if y >= height - 3 {
-                                BlockType::Dirt
-                            } else {
-                                BlockType::Stone
-                            };
-                            chunk.set_block(x, y, z, block);
-                        }
-                    }
-                }
+                gen::perlin::generate(&mut chunk, chunk_pos, seed);
             }
             WorldType::FloatingIslands => {}
         }
@@ -234,7 +182,7 @@ fn update_chunks(
             
             if let Ok(chunk) = q_chunks.get(entity) {
                 if chunk.is_modified {
-                    save_chunk_to_disk(chunk_pos, ChunkData {
+                    storage::save_chunk_to_disk(chunk_pos, ChunkData {
                         palette: chunk.palette.clone(),
                     });
                 }

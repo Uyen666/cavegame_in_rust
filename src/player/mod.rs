@@ -9,13 +9,14 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, (setup_player, setup_crosshair))
-           .add_systems(Update, (player_look, player_move, toggle_grab_cursor, player_interaction, update_crosshair));
+        app.add_systems(Startup, setup_player)
+           .add_systems(
+               Update,
+               (player_look, player_move, toggle_grab_cursor, player_interaction)
+                   .run_if(in_state(crate::GameState::InGame))
+           );
     }
 }
-
-#[derive(Component)]
-pub struct CrosshairPart;
 
 #[derive(Component)]
 pub struct Player {
@@ -113,7 +114,7 @@ fn player_look(
         * Quat::from_axis_angle(Vec3::X, player.pitch);
 }
 
-use crate::utils::physics::swept_aabb;
+use crate::phys::swept::swept_aabb;
 
 /// 在單一軸向上進行 Swept AABB 碰撞，回傳安全的實際移動距離
 fn sweep_axis(pos: Vec3, size_min: Vec3, size_max: Vec3, velocity_1d: Vec3,
@@ -226,6 +227,42 @@ fn player_move(
     // -------------------------------------------------------
     let mut pos = transform.translation;
 
+    // 防卡死推開安全閥
+    let epsilon = 0.001;
+    let current_player_aabb = Aabb::new(
+        Vec3::new(pos.x - player_radius, pos.y, pos.z - player_radius),
+        Vec3::new(pos.x + player_radius, pos.y + player_height, pos.z + player_radius),
+    );
+
+    let check_min_x = (pos.x - player_radius).floor() as i32;
+    let check_max_x = (pos.x + player_radius).ceil() as i32;
+    let check_min_y = pos.y.floor() as i32;
+    let check_max_y = (pos.y + player_height).ceil() as i32;
+    let check_min_z = (pos.z - player_radius).floor() as i32;
+    let check_max_z = (pos.z + player_radius).ceil() as i32;
+
+    for x in check_min_x..check_max_x {
+        for y in check_min_y..check_max_y {
+            for z in check_min_z..check_max_z {
+                let b_pos = IVec3::new(x, y, z);
+                if world.get_block_global(b_pos, &q_chunks).is_solid() {
+                    let b_aabb = Aabb::new(
+                        Vec3::new(x as f32, y as f32, z as f32),
+                        Vec3::new(x as f32 + 1.0, y as f32 + 1.0, z as f32 + 1.0),
+                    );
+                    
+                    if current_player_aabb.intersects(&b_aabb) {
+                        let overlap_y = b_aabb.max.y - pos.y;
+                        if overlap_y > 0.0 && overlap_y < 1.0 {
+                            pos.y += overlap_y + 0.005;
+                            player.on_ground = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // X axis
     let move_x = Vec3::new(player.velocity.x * dt, 0.0, 0.0);
     if move_x.length_squared() > 0.000001 {
@@ -267,6 +304,7 @@ fn player_interaction(
     mut q_chunks_mut: Query<(Entity, &mut Chunk)>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
+    q_player: Query<&Transform, With<Player>>,
 ) {
     let left = keys.just_pressed(MouseButton::Left);
     let right = keys.just_pressed(MouseButton::Right);
@@ -277,6 +315,8 @@ fn player_interaction(
     
     let Ok(window) = q_windows.get_single() else { return; };
     if window.cursor.grab_mode != CursorGrabMode::Locked { return; }
+    
+    let Ok(player_transform) = q_player.get_single() else { return; };
 
     if let Ok(cam_transform) = q_camera.get_single() {
         let start = cam_transform.translation();
@@ -285,7 +325,7 @@ fn player_interaction(
 
         let mut dist = 0.0;
         let step = 0.05;
-        let mut last_air_pos = None;
+        let mut last_air_pos: Option<IVec3> = None;
 
         while dist < max_dist {
             let pos = start + forward * dist;
@@ -298,6 +338,21 @@ fn player_interaction(
                     world.set_block_global(block_pos, BlockType::Air, &mut q_chunks_mut);
                 } else if right {
                     if let Some(place_pos) = last_air_pos {
+                        let block_aabb = Aabb::new(
+                            Vec3::new(place_pos.x as f32, place_pos.y as f32, place_pos.z as f32),
+                            Vec3::new(place_pos.x as f32 + 1.0, place_pos.y as f32 + 1.0, place_pos.z as f32 + 1.0),
+                        );
+
+                        let p_pos = player_transform.translation;
+                        let player_aabb = Aabb::new(
+                            Vec3::new(p_pos.x - 0.3, p_pos.y, p_pos.z - 0.3),
+                            Vec3::new(p_pos.x + 0.3, p_pos.y + 1.8, p_pos.z + 0.3),
+                        );
+
+                        if player_aabb.intersects(&block_aabb) {
+                            break; 
+                        }
+
                         world.set_block_global(place_pos, BlockType::Stone, &mut q_chunks_mut);
                     }
                 }
@@ -309,89 +364,4 @@ fn player_interaction(
         }
     }
 }
-
-fn setup_crosshair(mut commands: Commands) {
-    // Crosshair container to center everything
-    commands.spawn(NodeBundle {
-        style: Style {
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            ..default()
-        },
-        ..default()
-    }).with_children(|parent| {
-        // Horizontal line
-        parent.spawn((
-            NodeBundle {
-                style: Style {
-                    width: Val::Px(10.0),
-                    height: Val::Px(2.0),
-                    position_type: PositionType::Absolute,
-                    ..default()
-                },
-                background_color: BackgroundColor(Color::srgb(0.2, 0.2, 0.2)),
-                ..default()
-            },
-            CrosshairPart,
-        ));
-        // Vertical line
-        parent.spawn((
-            NodeBundle {
-                style: Style {
-                    width: Val::Px(2.0),
-                    height: Val::Px(10.0),
-                    position_type: PositionType::Absolute,
-                    ..default()
-                },
-                background_color: BackgroundColor(Color::srgb(0.2, 0.2, 0.2)),
-                ..default()
-            },
-            CrosshairPart,
-        ));
-    });
-}
-
-fn update_crosshair(
-    mut q_crosshair: Query<&mut BackgroundColor, With<CrosshairPart>>,
-    q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
-    world: Res<WorldManager>,
-    q_chunks: Query<(Entity, &Chunk)>,
-) {
-    let mut hit_dark = false;
-
-    if let Ok(cam_transform) = q_camera.get_single() {
-        let start = cam_transform.translation();
-        let forward = cam_transform.forward();
-        let max_dist = 50.0;
-
-        let mut dist = 0.0;
-        let step = 0.5;
-        while dist < max_dist {
-            let pos = start + forward * dist;
-            let block_pos = IVec3::new(pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
-
-            let block = world.get_block_global(block_pos, &q_chunks);
-            if block.is_solid() {
-                if block == BlockType::Stone {
-                    hit_dark = true;
-                }
-                break;
-            }
-            dist += step;
-        }
-    }
-
-    let target_color = if hit_dark {
-        Color::srgb(0.9, 0.9, 0.9)
-    } else {
-        Color::srgb(0.2, 0.2, 0.2)
-    };
-
-    for mut bg in q_crosshair.iter_mut() {
-        bg.0 = target_color;
-    }
-}
-
 

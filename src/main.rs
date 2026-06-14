@@ -4,6 +4,17 @@ mod world;
 mod render;
 mod player;
 mod utils;
+mod phys;
+mod ui;
+
+#[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
+pub enum GameState {
+    MainMenu,
+    WorldCreation,
+    #[default]
+    InGame,
+    Settings,
+}
 
 fn main() {
     App::new()
@@ -20,6 +31,8 @@ fn main() {
                 ..default()
             })
         )
+        .init_state::<GameState>()
+        .add_plugins(ui::UiPlugin)
         .add_plugins(world::WorldPlugin)
         .add_plugins(render::RenderPlugin)
         .add_plugins(player::PlayerPlugin)
