@@ -1,7 +1,7 @@
 pub mod main_menu;
 pub mod hud;
 pub mod settings;
-
+pub mod debug;
 use bevy::prelude::*;
 use crate::GameState;
 
@@ -9,7 +9,8 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(GameState::MainMenu), main_menu::setup_main_menu)
+        app.add_plugins(debug::DebugUiPlugin)
+           .add_systems(OnEnter(GameState::MainMenu), main_menu::setup_main_menu)
            .add_systems(OnExit(GameState::MainMenu), main_menu::cleanup_main_menu)
            
            .add_systems(OnEnter(GameState::InGame), hud::setup_crosshair)
