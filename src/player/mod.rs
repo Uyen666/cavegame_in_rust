@@ -132,7 +132,7 @@ fn player_move(
     // --- Player dimensions ---
     player.is_crouching = keys.pressed(KeyCode::ControlLeft);
     let player_height = if player.is_crouching { 1.5_f32 } else { 1.8_f32 };
-    let player_radius = 0.6_f32;
+    let player_radius = 0.3_f32;
     let is_sprinting = keys.pressed(KeyCode::ShiftLeft);
     let move_speed = if player.is_crouching { 
         2.5_f32 
