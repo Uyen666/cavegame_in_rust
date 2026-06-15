@@ -13,15 +13,21 @@ impl Plugin for DebugUiPlugin {
         }
 
         app.insert_resource(DebugUpdateTimer(Timer::from_seconds(0.5, TimerMode::Repeating)));
+        app.init_resource::<DebugConfig>();
 
         app.add_systems(OnEnter(GameState::InGame), setup_debug_ui)
            .add_systems(OnExit(GameState::InGame), cleanup_debug_ui)
            .add_systems(
                Update,
-               (toggle_debug_ui, update_debug_text)
+               (toggle_debug_ui, update_debug_text, draw_chunk_gizmos)
                    .run_if(in_state(GameState::InGame))
            );
     }
+}
+
+#[derive(Resource, Default)]
+pub struct DebugConfig {
+    pub show_chunk_borders: bool,
 }
 
 #[derive(Component)]
@@ -74,6 +80,7 @@ fn cleanup_debug_ui(mut commands: Commands, q_root: Query<Entity, With<DebugUiRo
 fn toggle_debug_ui(
     keys: Res<ButtonInput<KeyCode>>,
     mut q_root: Query<&mut Visibility, With<DebugUiRoot>>,
+    mut config: ResMut<DebugConfig>,
 ) {
     if keys.just_pressed(KeyCode::F3) {
         for mut visibility in q_root.iter_mut() {
@@ -81,6 +88,12 @@ fn toggle_debug_ui(
                 Visibility::Hidden => Visibility::Inherited,
                 _ => Visibility::Hidden,
             };
+        }
+    }
+
+    if let Ok(vis) = q_root.get_single() {
+        if *vis != Visibility::Hidden && keys.just_pressed(KeyCode::KeyC) {
+            config.show_chunk_borders = !config.show_chunk_borders;
         }
     }
 }
@@ -145,5 +158,23 @@ fn update_debug_text(
 
     for mut text in q_text.iter_mut() {
         text.sections[0].value = text_content.clone();
+    }
+}
+
+fn draw_chunk_gizmos(
+    mut gizmos: Gizmos,
+    config: Res<DebugConfig>,
+    q_chunks: Query<&Transform, With<crate::world::Chunk>>,
+) {
+    if !config.show_chunk_borders {
+        return;
+    }
+
+    for transform in q_chunks.iter() {
+        let center = transform.translation + Vec3::splat(16.0);
+        gizmos.cuboid(
+            Transform::from_translation(center).with_scale(Vec3::splat(32.0)),
+            Color::BLACK
+        );
     }
 }
