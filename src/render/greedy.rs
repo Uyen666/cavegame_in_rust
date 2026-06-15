@@ -157,12 +157,21 @@ pub fn mesh_dirty_chunks(
     let Some(gt) = game_textures else { return; };
     if !gt.ready { return; }
 
-    for (entity, mut chunk) in q_chunks.iter_mut() {
-        if !chunk.is_dirty { continue; }
+    let mut dirty_chunks = Vec::new();
+    for (entity, chunk) in q_chunks.iter() {
+        if chunk.is_dirty {
+            dirty_chunks.push((entity, chunk.position));
+        }
+    }
 
+    let mut meshes_to_apply = Vec::new();
+    for (entity, chunk_pos) in dirty_chunks {
         let mut data = empty_mesh();
-        generate_greedy_mesh(&chunk, &world_manager, &mut data);
+        generate_greedy_mesh(entity, chunk_pos, &world_manager, &q_chunks, &mut data);
+        meshes_to_apply.push((entity, chunk_pos, data));
+    }
 
+    for (entity, chunk_pos, data) in meshes_to_apply {
         commands.entity(entity).despawn_descendants();
 
         if !data.0.is_empty() {
@@ -175,7 +184,9 @@ pub fn mesh_dirty_chunks(
             commands.entity(entity).add_child(child);
         }
 
-        chunk.is_dirty = false;
+        if let Ok((_, mut chunk)) = q_chunks.get_mut(entity) {
+            chunk.is_dirty = false;
+        }
     }
 }
 
@@ -199,8 +210,10 @@ pub fn mesh_dirty_chunks(
 //   collide in a future block type redesign.
 
 fn generate_greedy_mesh(
-    chunk: &Chunk,
-    _world: &WorldManager,
+    entity: Entity,
+    chunk_pos: IVec3,
+    world: &WorldManager,
+    q_chunks: &Query<(Entity, &mut Chunk)>,
     out:   &mut MeshData,
 ) {
     for d in 0..3usize {
@@ -223,19 +236,36 @@ fn generate_greedy_mesh(
                     x[u] = i;
                     x[v] = j;
 
-                    let b0 = if x[d] >= 0 {
-                        chunk.get_block(x[0], x[1], x[2])
-                    } else {
-                        BlockType::Air
-                    };
-                    let b1 = if x[d] < CHUNK_SIZE - 1 {
-                        chunk.get_block(x[0] + q[0], x[1] + q[1], x[2] + q[2])
-                    } else {
-                        BlockType::Air
+                    // b0 = block at x[d]=slice (this voxel)
+                    // b1 = block at x[d]=slice+1 (the voxel one step in +d)
+                    let b0 = {
+                        let lx = [x[0], x[1], x[2]];
+                        if lx[0] >= 0 && lx[0] < CHUNK_SIZE
+                            && lx[1] >= 0 && lx[1] < CHUNK_SIZE
+                            && lx[2] >= 0 && lx[2] < CHUNK_SIZE
+                        {
+                            q_chunks.get(entity).unwrap().1.get_block(lx[0], lx[1], lx[2])
+                        } else {
+                            let gp = chunk_pos * CHUNK_SIZE + IVec3::new(lx[0], lx[1], lx[2]);
+                            world.get_block_global_mut(gp, q_chunks)
+                        }
                     };
 
-                    // Exactly one side solid → visible face
-                    // Both solid (same or different types) → hidden internal face
+                    let b1 = {
+                        let lx = [x[0] + q[0], x[1] + q[1], x[2] + q[2]];
+                        if lx[0] >= 0 && lx[0] < CHUNK_SIZE
+                            && lx[1] >= 0 && lx[1] < CHUNK_SIZE
+                            && lx[2] >= 0 && lx[2] < CHUNK_SIZE
+                        {
+                            q_chunks.get(entity).unwrap().1.get_block(lx[0], lx[1], lx[2])
+                        } else {
+                            let gp = chunk_pos * CHUNK_SIZE + IVec3::new(lx[0], lx[1], lx[2]);
+                            world.get_block_global_mut(gp, q_chunks)
+                        }
+                    };
+
+                    // 實心→空氣: 繪製正向面 (normal +d)
+                    // 空氣→實心: 繪製反向面 (normal -d)
                     mask[n] = match (b0.is_solid(), b1.is_solid()) {
                         (true, false) => Some(FaceInfo {
                             block:     b0,

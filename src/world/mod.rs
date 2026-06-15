@@ -130,6 +130,7 @@ fn spawn_chunk(commands: &mut Commands, chunk_pos: IVec3, world_type: WorldType,
         chunk.is_modified = false;
     }
 
+    // 所有 Chunk 一律帶正確的世界偏移，方便子 Mesh 使用 Transform::default()
     commands.spawn((
         chunk,
         SpatialBundle {
@@ -155,15 +156,16 @@ fn update_chunks(
     let player_pos_global = player_tf.translation.as_ivec3();
     let (player_chunk_pos, _) = WorldManager::global_to_chunk_pos(player_pos_global);
 
-    // 1. 載入需要顯示的區塊（九宮格/5x5）
+    // 1. 載入需要顯示的區塊（3D 動態加載）
     for dx in -RENDER_DISTANCE..=RENDER_DISTANCE {
-        for dz in -RENDER_DISTANCE..=RENDER_DISTANCE {
-            // 目前只生成 Y=0 的平坦世界層
-            let target_chunk_pos = IVec3::new(player_chunk_pos.x + dx, 0, player_chunk_pos.z + dz);
+        for cy in 0..4 {
+            for dz in -RENDER_DISTANCE..=RENDER_DISTANCE {
+                let target_chunk_pos = IVec3::new(player_chunk_pos.x + dx, cy, player_chunk_pos.z + dz);
 
-            if !world_manager.chunks.contains_key(&target_chunk_pos) {
-                let entity = spawn_chunk(&mut commands, target_chunk_pos, world_manager.world_type, world_manager.seed);
-                world_manager.chunks.insert(target_chunk_pos, entity);
+                if !world_manager.chunks.contains_key(&target_chunk_pos) {
+                    let entity = spawn_chunk(&mut commands, target_chunk_pos, world_manager.world_type, world_manager.seed);
+                    world_manager.chunks.insert(target_chunk_pos, entity);
+                }
             }
         }
     }
@@ -176,7 +178,8 @@ fn update_chunks(
         let dx = (chunk_pos.x - player_chunk_pos.x).abs();
         let dz = (chunk_pos.z - player_chunk_pos.z).abs();
 
-        if dx > unload_distance || dz > unload_distance {
+        // 超過水平卸載距離，或是超出垂直邊界 (0..=3) 時強制卸載
+        if dx > unload_distance || dz > unload_distance || chunk_pos.y < 0 || chunk_pos.y > 3 {
             // 如果超過卸載距離，標記為需要移除
             chunks_to_remove.push(chunk_pos);
             
