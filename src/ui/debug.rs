@@ -142,18 +142,19 @@ fn update_debug_text(
     let pos_ivec = IVec3::new(x.floor() as i32, y.floor() as i32, z.floor() as i32);
     let (chunk_pos, local_pos) = WorldManager::global_to_chunk_pos(pos_ivec);
     
-    let loaded_chunks = world_manager.chunks.len();
+    let loaded_entity_chunks = world_manager.chunk_entity_count();
+    let loaded_data_chunks   = world_manager.chunk_data_count();
 
     let text_content = format!(
         "Cavegame Dev 2026\n\
          {}\n\
          Pos: X: {:.2}, Y: {:.2}, Z: {:.2}\n\
          Chunk: CX: {}, CY: {}, CZ: {} [bx: {}, by: {}, bz: {}]\n\
-         Loaded Chunks: {}",
+         Loaded Chunks: [E: {} / D: {}]",
         *fps_cache,
         x, y, z,
         chunk_pos.x, chunk_pos.y, chunk_pos.z, local_pos.x, local_pos.y, local_pos.z,
-        loaded_chunks
+        loaded_entity_chunks, loaded_data_chunks
     );
 
     for mut text in q_text.iter_mut() {

@@ -120,13 +120,25 @@ fn player_move(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     world: Res<WorldManager>,
-    q_chunks: Query<(Entity, &Chunk)>,
 ) {
     let (mut player, mut transform) = q_player.single_mut();
     let dt = time.delta_seconds();
 
     if dt < 0.0001 {
         return;
+    }
+
+    // ── 安全閘門：玩家腳下的 Chunk 必須載入完成才允許物理運算 ──────────────
+    // 防止地形非同步生成期間玩家因重力而墜入虛空
+    {
+        let pos = transform.translation;
+        let feet_pos = IVec3::new(pos.x.floor() as i32, pos.y.floor() as i32 - 1, pos.z.floor() as i32);
+        let (foot_chunk, _) = WorldManager::global_to_chunk_pos(feet_pos);
+        if !world.chunks.contains_key(&foot_chunk) {
+            // 地表尚未載入：凍結重力，等待下一幀再判定
+            player.velocity = Vec3::ZERO;
+            return;
+        }
     }
 
     // --- Player dimensions ---
@@ -194,7 +206,7 @@ fn player_move(
             for y in min_y..max_y {
                 for z in min_z..max_z {
                     let b_pos = IVec3::new(x, y, z);
-                    if world.get_block_global(b_pos, &q_chunks).is_solid() {
+                    if world.get_block_global(b_pos).is_solid() {
                         let b_aabb = Aabb::new(
                             Vec3::new(x as f32, y as f32, z as f32),
                             Vec3::new(x as f32 + 1.0, y as f32 + 1.0, z as f32 + 1.0),
@@ -264,8 +276,9 @@ fn player_move(
 
 
 fn player_interaction(
+    mut commands: Commands,
     keys: Res<ButtonInput<MouseButton>>,
-    world: Res<WorldManager>,
+    mut world: ResMut<WorldManager>,
     mut q_chunks_mut: Query<(Entity, &mut Chunk)>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
@@ -297,10 +310,10 @@ fn player_interaction(
             // 修正：3D 體素座標定位必須使用 floor()，與 AABB 的標準對齊
             let block_pos = IVec3::new(pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
 
-            let block = world.get_block_global_mut(block_pos, &q_chunks_mut);
+            let block = world.get_block_global(block_pos);
             if block.is_solid() {
                 if left {
-                    world.set_block_global(block_pos, BlockType::Air, &mut q_chunks_mut);
+                    world.set_block_global(block_pos, BlockType::Air, &mut q_chunks_mut, &mut commands);
                 } else if right {
                     if let Some(place_pos) = last_air_pos {
                         let block_aabb = Aabb::new(
@@ -315,10 +328,10 @@ fn player_interaction(
                         );
 
                         if player_aabb.intersects(&block_aabb) {
-                            break; 
+                            break;
                         }
 
-                        world.set_block_global(place_pos, BlockType::Stone, &mut q_chunks_mut);
+                        world.set_block_global(place_pos, BlockType::Stone, &mut q_chunks_mut, &mut commands);
                     }
                 }
                 break;

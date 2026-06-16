@@ -109,4 +109,20 @@ impl Palette {
             self.write_index(i, pal_idx);
         }
     }
+
+    /// 嚴格的功能性純空氣檢查：遍歷 3D 空間內所有體素
+    pub fn is_pure_air(&self) -> bool {
+        // 優化：如果 palette 裡面只有空氣，直接回傳 true
+        if self.palette.len() == 1 && self.palette[0] == BlockType::Air {
+            return true;
+        }
+
+        // 若 palette 有其他方塊，則必須實際檢查空間中是否還有非空氣方塊
+        for i in 0..CHUNK_VOLUME {
+            if self.get(i) != BlockType::Air {
+                return false;
+            }
+        }
+        true
+    }
 }

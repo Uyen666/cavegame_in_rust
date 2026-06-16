@@ -168,10 +168,10 @@ pub fn mesh_dirty_chunks(
     for (entity, chunk_pos) in dirty_chunks {
         let mut data = empty_mesh();
         generate_greedy_mesh(entity, chunk_pos, &world_manager, &q_chunks, &mut data);
-        meshes_to_apply.push((entity, chunk_pos, data));
+        meshes_to_apply.push((entity, data));
     }
 
-    for (entity, chunk_pos, data) in meshes_to_apply {
+    for (entity, data) in meshes_to_apply {
         commands.entity(entity).despawn_descendants();
 
         if !data.0.is_empty() {

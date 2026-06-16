@@ -10,6 +10,7 @@ use bevy::utils::HashMap;
 pub use chunk::{Chunk, ChunkData};
 pub use voxel::BlockType;
 use crate::utils::math::CHUNK_SIZE;
+use palette::Palette;
 
 pub struct WorldPlugin;
 
@@ -34,19 +35,29 @@ pub enum WorldType {
     FloatingIslands,
 }
 
+/// 每個已加載的區塊在 WorldManager 中的條目。
+/// 資料與渲染實體徹底解耦：
+///   - `palette` 永遠存在，用於全域方塊查詢
+///   - `entity`  僅非空氣區塊才有，`None` 代表純空氣，不佔用任何 ECS Transform 開銷
+pub struct ChunkEntry {
+    pub palette: Palette,
+    pub entity:  Option<Entity>,
+    pub is_modified: bool,
+}
+
 #[derive(Resource)]
 pub struct WorldManager {
-    pub chunks: HashMap<IVec3, Entity>,
+    pub chunks:     HashMap<IVec3, ChunkEntry>,
     pub world_type: WorldType,
-    pub seed: u32,
+    pub seed:       u32,
 }
 
 impl Default for WorldManager {
     fn default() -> Self {
         Self {
-            chunks: HashMap::default(),
+            chunks:     HashMap::default(),
             world_type: WorldType::PerlinHills,
-            seed: 12345,
+            seed:       12345,
         }
     }
 }
@@ -56,41 +67,111 @@ impl WorldManager {
         let chunk_x = pos.x.div_euclid(CHUNK_SIZE);
         let chunk_y = pos.y.div_euclid(CHUNK_SIZE);
         let chunk_z = pos.z.div_euclid(CHUNK_SIZE);
-        
+
         let local_x = pos.x.rem_euclid(CHUNK_SIZE);
         let local_y = pos.y.rem_euclid(CHUNK_SIZE);
         let local_z = pos.z.rem_euclid(CHUNK_SIZE);
-        
+
         (IVec3::new(chunk_x, chunk_y, chunk_z), IVec3::new(local_x, local_y, local_z))
     }
 
-    pub fn get_block_global(&self, pos: IVec3, q_chunks: &Query<(Entity, &Chunk)>) -> BlockType {
+    /// 直接從 ChunkEntry.palette 查詢，無需 ECS Query
+    pub fn get_block_global(&self, pos: IVec3) -> BlockType {
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
-        if let Some(&entity) = self.chunks.get(&chunk_pos) {
-            if let Ok((_, chunk)) = q_chunks.get(entity) {
-                return chunk.get_block(local.x, local.y, local.z);
-            }
+        if let Some(entry) = self.chunks.get(&chunk_pos) {
+            let idx = crate::utils::math::voxel_pos_to_index(local.x, local.y, local.z);
+            return entry.palette.get(idx);
         }
         BlockType::Air
     }
 
-    pub fn get_block_global_mut(&self, pos: IVec3, q_chunks: &Query<(Entity, &mut Chunk)>) -> BlockType {
-        let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
-        if let Some(&entity) = self.chunks.get(&chunk_pos) {
-            if let Ok((_, chunk)) = q_chunks.get(entity) {
-                return chunk.get_block(local.x, local.y, local.z);
-            }
-        }
-        BlockType::Air
+    /// 相容舊簽名的全域方塊查詢（供 greedy.rs 等使用），實際上直接查 palette
+    pub fn get_block_global_mut(&self, pos: IVec3, _q_chunks: &Query<(Entity, &mut Chunk)>) -> BlockType {
+        self.get_block_global(pos)
     }
 
-    pub fn set_block_global(&self, pos: IVec3, block: BlockType, q_chunks: &mut Query<(Entity, &mut Chunk)>) {
+    /// 設定全域方塊並同步到 ECS Chunk 組件（若 Entity 存在）
+    pub fn set_block_global(
+        &mut self,
+        pos: IVec3,
+        block: BlockType,
+        q_chunks: &mut Query<(Entity, &mut Chunk)>,
+        commands: &mut Commands,
+    ) {
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
-        if let Some(&entity) = self.chunks.get(&chunk_pos) {
+        let Some(entry) = self.chunks.get_mut(&chunk_pos) else { return };
+
+        // 1. 同步資料層 palette
+        let idx = crate::utils::math::voxel_pos_to_index(local.x, local.y, local.z);
+        entry.palette.set(idx, block);
+        entry.is_modified = true;
+
+        // 2. 若該 Chunk 已有實體，同步到 ECS Chunk（set_block 內部會設 is_dirty = true）
+        if let Some(entity) = entry.entity {
             if let Ok((_, mut chunk)) = q_chunks.get_mut(entity) {
                 chunk.set_block(local.x, local.y, local.z, block);
             }
+        } else if block != BlockType::Air {
+            // 3. Lazy Spawn：純空氣 Chunk 第一次放入非空氣方塊時，動態建立實體
+            let mut chunk = Chunk::new(chunk_pos);
+            chunk.palette = entry.palette.clone();
+            chunk.set_block(local.x, local.y, local.z, block);
+            chunk.is_dirty = true;
+
+            let new_entity = commands.spawn((
+                chunk,
+                SpatialBundle {
+                    transform: Transform::from_xyz(
+                        (chunk_pos.x * CHUNK_SIZE) as f32,
+                        (chunk_pos.y * CHUNK_SIZE) as f32,
+                        (chunk_pos.z * CHUNK_SIZE) as f32,
+                    ),
+                    ..default()
+                },
+            )).id();
+
+            // 回填 entity 到 entry
+            if let Some(entry2) = self.chunks.get_mut(&chunk_pos) {
+                entry2.entity = Some(new_entity);
+            }
         }
+
+        // 4. 邊界鄰居 Dirty 傳播（Remesh Propagation）
+        // 若修改的方塊位於區塊邊界，相鄰 Chunk 的 Face Culling 結果也會改變，
+        // 必須強制令相鄰 Chunk 也重新網格化。
+        let boundary_neighbors: &[(i32, IVec3)] = &[
+            (local.x,          IVec3::new(-1,  0,  0)),  // x == 0  → 左鄰居
+            (CHUNK_SIZE - 1 - local.x, IVec3::new( 1,  0,  0)),  // x == 31 → 右鄰居
+            (local.y,          IVec3::new( 0, -1,  0)),  // y == 0  → 下鄰居
+            (CHUNK_SIZE - 1 - local.y, IVec3::new( 0,  1,  0)),  // y == 31 → 上鄰居
+            (local.z,          IVec3::new( 0,  0, -1)),  // z == 0  → 後鄰居
+            (CHUNK_SIZE - 1 - local.z, IVec3::new( 0,  0,  1)),  // z == 31 → 前鄰居
+        ];
+
+        for &(dist_to_edge, offset) in boundary_neighbors {
+            if dist_to_edge == 0 {
+                let neighbor_chunk_pos = chunk_pos + offset;
+                // 查詢鄰居是否有視覺實體，若有則標記 Dirty
+                if let Some(neighbor_entry) = self.chunks.get(&neighbor_chunk_pos) {
+                    if let Some(neighbor_entity) = neighbor_entry.entity {
+                        if let Ok((_, mut neighbor_chunk)) = q_chunks.get_mut(neighbor_entity) {
+                            neighbor_chunk.is_dirty = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+    /// 已加載的區塊總數（資料層）
+    pub fn chunk_data_count(&self) -> usize {
+        self.chunks.len()
+    }
+
+    /// 真正有渲染實體的區塊數
+    pub fn chunk_entity_count(&self) -> usize {
+        self.chunks.values().filter(|e| e.entity.is_some()).count()
     }
 }
 
@@ -99,7 +180,6 @@ fn setup_world(mut commands: Commands) {
         error!("無法建立存檔資料夾: {}", e);
     }
 
-    // 移除固定的 Chunk，只保留全域光源（太陽）
     commands.spawn(DirectionalLightBundle {
         directional_light: DirectionalLight {
             illuminance: 10000.0,
@@ -111,7 +191,15 @@ fn setup_world(mut commands: Commands) {
     });
 }
 
-fn spawn_chunk(commands: &mut Commands, chunk_pos: IVec3, world_type: WorldType, seed: u32) -> Entity {
+/// 生成並插入一個 ChunkEntry 到 WorldManager。
+/// 純空氣 → 只存資料，不建 ECS Entity。
+/// 非空氣 → 建立帶有 SpatialBundle 的 Entity，同步 palette。
+fn load_chunk(
+    commands: &mut Commands,
+    chunk_pos: IVec3,
+    world_type: WorldType,
+    seed: u32,
+) -> ChunkEntry {
     let mut chunk = Chunk::new(chunk_pos);
 
     if let Some(data) = storage::load_chunk_from_disk(chunk_pos) {
@@ -119,29 +207,44 @@ fn spawn_chunk(commands: &mut Commands, chunk_pos: IVec3, world_type: WorldType,
         chunk.is_modified = false;
     } else {
         match world_type {
-            WorldType::Flat => {
-                gen::flat::generate(&mut chunk);
-            }
-            WorldType::PerlinHills => {
-                gen::perlin::generate(&mut chunk, chunk_pos, seed);
-            }
+            WorldType::Flat          => gen::flat::generate(&mut chunk),
+            WorldType::PerlinHills   => gen::perlin::generate(&mut chunk, chunk_pos, seed),
             WorldType::FloatingIslands => {}
         }
         chunk.is_modified = false;
     }
 
-    // 所有 Chunk 一律帶正確的世界偏移，方便子 Mesh 使用 Transform::default()
-    commands.spawn((
-        chunk,
-        SpatialBundle {
-            transform: Transform::from_xyz(
-                (chunk_pos.x * CHUNK_SIZE) as f32,
-                (chunk_pos.y * CHUNK_SIZE) as f32,
-                (chunk_pos.z * CHUNK_SIZE) as f32,
-            ),
-            ..default()
-        },
-    )).id()
+    // 純空氣短路：只存資料，不建 Entity，節省大量 Transform 傳播開銷
+    let is_pure_air = chunk.palette.is_pure_air();
+
+    if is_pure_air {
+        ChunkEntry {
+            palette:     chunk.palette,
+            entity:      None,
+            is_modified: false,
+        }
+    } else {
+        // 先 clone palette 供 ChunkEntry 全域查詢使用
+        let palette_clone = chunk.palette.clone();
+
+        let entity = commands.spawn((
+            chunk,
+            SpatialBundle {
+                transform: Transform::from_xyz(
+                    (chunk_pos.x * CHUNK_SIZE) as f32,
+                    (chunk_pos.y * CHUNK_SIZE) as f32,
+                    (chunk_pos.z * CHUNK_SIZE) as f32,
+                ),
+                ..default()
+            },
+        )).id();
+
+        ChunkEntry {
+            palette:     palette_clone, // ✅ 真實資料，供 get_block_global 直接查詢
+            entity:      Some(entity),
+            is_modified: false,
+        }
+    }
 }
 
 fn update_chunks(
@@ -151,52 +254,64 @@ fn update_chunks(
     q_chunks: Query<&Chunk>,
 ) {
     let Ok(player_tf) = q_player.get_single() else { return; };
-    
-    // 玩家所在的方塊座標與 Chunk 座標
+
     let player_pos_global = player_tf.translation.as_ivec3();
     let (player_chunk_pos, _) = WorldManager::global_to_chunk_pos(player_pos_global);
 
-    // 1. 載入需要顯示的區塊（3D 動態加載）
+    // ── 1. 載入需要顯示的區塊（3D 動態加載） ──────────────────────────────
+    let mut to_load = Vec::new();
     for dx in -RENDER_DISTANCE..=RENDER_DISTANCE {
         for cy in 0..4 {
             for dz in -RENDER_DISTANCE..=RENDER_DISTANCE {
-                let target_chunk_pos = IVec3::new(player_chunk_pos.x + dx, cy, player_chunk_pos.z + dz);
-
-                if !world_manager.chunks.contains_key(&target_chunk_pos) {
-                    let entity = spawn_chunk(&mut commands, target_chunk_pos, world_manager.world_type, world_manager.seed);
-                    world_manager.chunks.insert(target_chunk_pos, entity);
+                let target = IVec3::new(player_chunk_pos.x + dx, cy, player_chunk_pos.z + dz);
+                if !world_manager.chunks.contains_key(&target) {
+                    to_load.push(target);
                 }
             }
         }
     }
+    for pos in to_load {
+        let entry = load_chunk(&mut commands, pos, world_manager.world_type, world_manager.seed);
+        world_manager.chunks.insert(pos, entry);
+    }
 
-    // 2. 卸載過遠的區塊
+    // ── 2. 卸載過遠的區塊（直接遍歷 HashMap，無需 Query） ─────────────────
     let unload_distance = RENDER_DISTANCE + 1;
-    let mut chunks_to_remove = Vec::new();
+    let mut to_remove: Vec<IVec3> = Vec::new();
 
-    for (&chunk_pos, &entity) in world_manager.chunks.iter() {
+    for (&chunk_pos, entry) in world_manager.chunks.iter() {
         let dx = (chunk_pos.x - player_chunk_pos.x).abs();
         let dz = (chunk_pos.z - player_chunk_pos.z).abs();
 
-        // 超過水平卸載距離，或是超出垂直邊界 (0..=3) 時強制卸載
         if dx > unload_distance || dz > unload_distance || chunk_pos.y < 0 || chunk_pos.y > 3 {
-            // 如果超過卸載距離，標記為需要移除
-            chunks_to_remove.push(chunk_pos);
-            
-            if let Ok(chunk) = q_chunks.get(entity) {
-                if chunk.is_modified {
+            to_remove.push(chunk_pos);
+
+            // 1. 存檔分流（僅對修改過的區塊）
+            if entry.is_modified {
+                if let Some(entity) = entry.entity {
+                    // 有 ECS 實體：從 Chunk 組件取得最新 palette 並存檔
+                    if let Ok(chunk) = q_chunks.get(entity) {
+                        storage::save_chunk_to_disk(chunk_pos, ChunkData {
+                            palette: chunk.palette.clone(),
+                        });
+                    }
+                } else {
+                    // 無 ECS 實體（純空氣資料層）：直接用 ChunkEntry.palette 觸發存檔清理
                     storage::save_chunk_to_disk(chunk_pos, ChunkData {
-                        palette: chunk.palette.clone(),
+                        palette: entry.palette.clone(),
                     });
                 }
             }
             
-            commands.entity(entity).despawn_recursive();
+            // 2. 無條件強制 ECS 實體物理銷毀
+            if let Some(entity) = entry.entity {
+                commands.entity(entity).despawn_recursive();
+            }
         }
+
     }
 
-    // 從 HashMap 中正式刪除
-    for chunk_pos in chunks_to_remove {
-        world_manager.chunks.remove(&chunk_pos);
+    for pos in to_remove {
+        world_manager.chunks.remove(&pos);
     }
 }

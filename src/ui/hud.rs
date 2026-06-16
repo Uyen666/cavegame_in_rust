@@ -69,7 +69,6 @@ pub fn update_crosshair(
     mut q_lines: Query<&mut BackgroundColor, With<CrosshairLine>>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     world: Res<WorldManager>,
-    q_chunks: Query<(Entity, &Chunk)>,
 ) {
     let mut hit_dark = false;
 
@@ -84,7 +83,7 @@ pub fn update_crosshair(
             let pos = start + forward * dist;
             let block_pos = IVec3::new(pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
 
-            let block = world.get_block_global(block_pos, &q_chunks);
+            let block = world.get_block_global(block_pos);
             if block.is_solid() {
                 if block == BlockType::Stone {
                     hit_dark = true;
