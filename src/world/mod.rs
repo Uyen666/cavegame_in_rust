@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use bevy::utils::{HashMap, HashSet};
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use futures_lite::future;
+use bevy::render::primitives::Aabb;
 
 pub use chunk::{Chunk, ChunkData};
 pub use voxel::BlockType;
@@ -138,6 +139,7 @@ impl WorldManager {
                     ),
                     ..default()
                 },
+                Aabb::from_min_max(Vec3::ZERO, Vec3::splat(CHUNK_SIZE as f32)),
             )).id();
 
             // 回填 entity 到 entry
@@ -335,6 +337,7 @@ fn poll_loading_chunks(
                         ),
                         ..default()
                     },
+                    Aabb::from_min_max(Vec3::ZERO, Vec3::splat(CHUNK_SIZE as f32)),
                 )).id();
 
                 let entry = ChunkEntry {

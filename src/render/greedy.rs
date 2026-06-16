@@ -1,16 +1,16 @@
 use bevy::prelude::*;
-use bevy::render::mesh::{Indices, PrimitiveTopology, MeshVertexAttribute};
+use bevy::render::mesh::{Indices, MeshVertexAttribute};
 use bevy::render::render_asset::RenderAssetUsages;
-use bevy::render::render_resource::VertexFormat;
+use bevy::render::render_resource::{PrimitiveTopology, VertexFormat};
 use crate::world::{Chunk, BlockType, WorldManager};
 use crate::utils::math::CHUNK_SIZE;
 use super::textures::GameTextures;
 
-pub const ATTRIBUTE_TEXTURE_INDEX: MeshVertexAttribute = MeshVertexAttribute::new(
-    "Vertex_TextureIndex",
-    99,
-    VertexFormat::Uint32,
-);
+// ── Custom Attribute ─────────────────────────────────────────────────────────
+
+// 將 x(6), y(6), z(6), face_id(3), tex_id(11) 壓縮進一個 u32 (總計 32 bits)
+pub const ATTRIBUTE_PACKED_DATA: MeshVertexAttribute =
+    MeshVertexAttribute::new("Vertex_Packed_Data", 99887, VertexFormat::Uint32);
 
 // ── Deterministic texture layer mapping ─────────────────────────────────────
 // MUST match the order in texture_array.rs TEXTURES:
@@ -49,11 +49,7 @@ struct FaceInfo {
 // ── Mesh accumulator ─────────────────────────────────────────────────────────
 
 type MeshData = (
-    Vec<[f32; 3]>, // positions
-    Vec<[f32; 3]>, // normals
-    Vec<[f32; 4]>, // colors
-    Vec<[f32; 2]>, // UVs
-    Vec<u32>,      // texture layer per vertex
+    Vec<u32>,      // packed vertex data (x, y, z, face_id, tex_id)
     Vec<u32>,      // triangle indices
 );
 
@@ -90,41 +86,43 @@ fn push_quad(
     bucket:    &mut MeshData,
     v1: [f32; 3], v2: [f32; 3], v3: [f32; 3], v4: [f32; 3],
     normal_vec: [f32; 3],
-    color:      [f32; 4],
+    _color:     [f32; 4],
     tex_layer:  u32,
-    quad_w:     i32,
-    quad_h:     i32,
+    _quad_w:    i32,
+    _quad_h:    i32,
     rev:        bool,
-    d:          usize,  // face axis → drives UV layout
+    d:          usize,  // face axis
 ) {
     let base = bucket.0.len() as u32;
 
-    bucket.0.extend_from_slice(&[v1, v2, v3, v4]);
-    bucket.1.extend_from_slice(&[normal_vec; 4]);
-    bucket.2.extend_from_slice(&[color; 4]);
-    bucket.4.extend_from_slice(&[tex_layer; 4]);
-
-    let (w, h) = (quad_w as f32, quad_h as f32);
-
-    // Per-axis UV layout (see doc-comment above for derivation)
-    let uvs: [[f32; 2]; 4] = match d {
-        // X-face: U→Z(horiz=h), V→Y(vert=w) inverted
-        0 => [[0.0, w  ], [0.0, 0.0], [h,   0.0], [h,   w  ]],
-        // Y-face: standard, no vertical correction needed
-        1 => [[0.0, 0.0], [w,   0.0], [w,   h  ], [0.0, h  ]],
-        // Z-face: U→X(horiz=w), V→Y(vert=h) inverted
-        _ => [[0.0, h  ], [w,   h  ], [w,   0.0], [0.0, 0.0]],
-    };
-    bucket.3.extend_from_slice(&uvs);
+    // 計算 face_id (0: +X, 1: -X, 2: +Y, 3: -Y, 4: +Z, 5: -Z)
+    // normal_vec 非 0 即 1 或 -1，藉由 d * 2 + (if pos then 0 else 1) 來映射
+    let normal_val = normal_vec[d];
+    let face_id = (d * 2) + if normal_val > 0.0 { 0 } else { 1 };
+    
+    // 將 4 個頂點分別打包
+    for v in [v1, v2, v3, v4].iter() {
+        let x = v[0] as u32;
+        let y = v[1] as u32;
+        let z = v[2] as u32;
+        
+        let packed: u32 = (x & 0x3F) 
+                        | ((y & 0x3F) << 6) 
+                        | ((z & 0x3F) << 12) 
+                        | ((face_id as u32 & 0x07) << 18) 
+                        | ((tex_layer & 0x7FF) << 21);
+                        
+        bucket.0.push(packed);
+    }
 
     // Triangle indices — CCW for rev=false, CW (reversed) for rev=true
     if rev {
-        bucket.5.extend_from_slice(&[
+        bucket.1.extend_from_slice(&[
             base, base + 2, base + 1,
             base, base + 3, base + 2,
         ]);
     } else {
-        bucket.5.extend_from_slice(&[
+        bucket.1.extend_from_slice(&[
             base, base + 1, base + 2,
             base, base + 2, base + 3,
         ]);
@@ -134,13 +132,9 @@ fn push_quad(
 // ── Finalise mesh ─────────────────────────────────────────────────────────────
 
 fn finalize_mesh(data: MeshData, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
-    let (pos, nrm, col, uv, tex_idx, idx) = data;
+    let (packed, idx) = data;
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION,    pos);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL,      nrm);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR,       col);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0,        uv);
-    mesh.insert_attribute(ATTRIBUTE_TEXTURE_INDEX,     tex_idx);
+    mesh.insert_attribute(ATTRIBUTE_PACKED_DATA, packed);
     mesh.insert_indices(Indices::U32(idx));
     meshes.add(mesh)
 }
