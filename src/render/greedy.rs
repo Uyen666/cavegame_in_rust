@@ -266,13 +266,16 @@ fn generate_greedy_mesh(
 
                     // 實心→空氣: 繪製正向面 (normal +d)
                     // 空氣→實心: 繪製反向面 (normal -d)
+                    // 【修正】：嚴格實施「幾何擁有權短路」
+                    // 只有當實心方塊真正屬於「當前區塊」的合法索引範圍 (0~31) 時，才允許產生網格面。
+                    // 若實心方塊在隔壁區塊，則由隔壁區塊自己負責繪製，防止跨區界產生雙重疊加的幽靈面！
                     mask[n] = match (b0.is_solid(), b1.is_solid()) {
-                        (true, false) => Some(FaceInfo {
+                        (true, false) if slice >= 0 => Some(FaceInfo {
                             block:     b0,
                             normal:    1,
                             tex_layer: get_texture_layer(b0, d, 1),
                         }),
-                        (false, true) => Some(FaceInfo {
+                        (false, true) if slice < CHUNK_SIZE - 1 => Some(FaceInfo {
                             block:     b1,
                             normal:    -1,
                             tex_layer: get_texture_layer(b1, d, -1),

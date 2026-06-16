@@ -251,7 +251,7 @@ fn update_chunks(
     mut commands: Commands,
     mut world_manager: ResMut<WorldManager>,
     q_player: Query<&Transform, With<crate::player::Player>>,
-    q_chunks: Query<&Chunk>,
+    mut q_chunks: Query<(Entity, &mut Chunk)>,
 ) {
     let Ok(player_tf) = q_player.get_single() else { return; };
 
@@ -270,9 +270,33 @@ fn update_chunks(
             }
         }
     }
+    
+    let mut newly_loaded = Vec::new();
     for pos in to_load {
         let entry = load_chunk(&mut commands, pos, world_manager.world_type, world_manager.seed);
         world_manager.chunks.insert(pos, entry);
+        newly_loaded.push(pos);
+    }
+
+    // ── 1.5. 新舊區塊交界處的 Remesh 連動 (Race Condition 修正) ───────────
+    // 當新區塊 B 誕生的瞬間，必須立刻強迫周遭早就存在的舊區塊 A 在下一影格重新網格化。
+    // 這樣舊區塊 A 就會發現隔壁不再是空氣，進而完美觸發面剔除，抹除過期的邊界殘留牆。
+    let offsets = [
+        IVec3::new(-1,  0,  0), IVec3::new( 1,  0,  0),
+        IVec3::new( 0, -1,  0), IVec3::new( 0,  1,  0),
+        IVec3::new( 0,  0, -1), IVec3::new( 0,  0,  1),
+    ];
+    for pos in newly_loaded {
+        for offset in offsets {
+            let neighbor_pos = pos + offset;
+            if let Some(neighbor_entry) = world_manager.chunks.get(&neighbor_pos) {
+                if let Some(neighbor_entity) = neighbor_entry.entity {
+                    if let Ok((_, mut neighbor_chunk)) = q_chunks.get_mut(neighbor_entity) {
+                        neighbor_chunk.is_dirty = true;
+                    }
+                }
+            }
+        }
     }
 
     // ── 2. 卸載過遠的區塊（直接遍歷 HashMap，無需 Query） ─────────────────
@@ -290,7 +314,7 @@ fn update_chunks(
             if entry.is_modified {
                 if let Some(entity) = entry.entity {
                     // 有 ECS 實體：從 Chunk 組件取得最新 palette 並存檔
-                    if let Ok(chunk) = q_chunks.get(entity) {
+                    if let Ok((_, chunk)) = q_chunks.get(entity) {
                         storage::save_chunk_to_disk(chunk_pos, ChunkData {
                             palette: chunk.palette.clone(),
                         });

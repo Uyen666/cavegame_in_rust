@@ -25,6 +25,7 @@ pub struct Player {
     pub yaw: f32,
     pub on_ground: bool,
     pub is_crouching: bool,
+    pub is_spectator: bool,
 }
 
 #[derive(Component)]
@@ -44,6 +45,7 @@ fn setup_player(mut commands: Commands, mut q_windows: Query<&mut Window, With<P
             yaw: 0.0,
             on_ground: false,
             is_crouching: false,
+            is_spectator: false,
         },
         Transform::from_xyz(16.0, 35.0, 16.0), // 為了適應山脈地形，將初始高度拉高，利用重力自然降落
         GlobalTransform::default(),
@@ -128,6 +130,37 @@ fn player_move(
         return;
     }
 
+    // ── F4 切換旁觀者模式 (必須在所有物理機制前優先處理) ──────────────
+    if keys.just_pressed(KeyCode::F4) {
+        player.is_spectator = !player.is_spectator;
+        println!("【系統通知】玩家切換模式！旁觀者狀態: {}", player.is_spectator);
+    }
+
+    if player.is_spectator {
+        // 🚀 【旁觀者分支】：擁有至高無上的相機自由，嚴禁任何物理防禦機制干涉座標！
+        player.velocity.y = 0.0; // 清除重力影響
+
+        let mut input_dir = Vec3::ZERO;
+        let forward = Vec3::new(-player.yaw.sin(), 0.0, -player.yaw.cos()).normalize();
+        let right   = Vec3::new( player.yaw.cos(), 0.0, -player.yaw.sin()).normalize();
+
+        if keys.pressed(KeyCode::KeyW) { input_dir += forward; }
+        if keys.pressed(KeyCode::KeyS) { input_dir -= forward; }
+        if keys.pressed(KeyCode::KeyD) { input_dir += right; }
+        if keys.pressed(KeyCode::KeyA) { input_dir -= right; }
+        if keys.pressed(KeyCode::Space) { input_dir.y += 1.0; }
+        if keys.pressed(KeyCode::ShiftLeft) { input_dir.y -= 1.0; }
+
+        if input_dir.length_squared() > 0.0 {
+            input_dir = input_dir.normalize();
+        }
+
+        let spec_speed = if keys.pressed(KeyCode::ControlLeft) { 32.0 } else { 16.0 };
+        transform.translation += input_dir * spec_speed * dt;
+
+        return; // 🚀 直接結束！短路下方的防虛空安全門、卡死救援與方塊碰撞！
+    }
+
     // ── 安全閘門：玩家腳下的 Chunk 必須載入完成才允許物理運算 ──────────────
     // 防止地形非同步生成期間玩家因重力而墜入虛空
     {
@@ -153,7 +186,7 @@ fn player_move(
     } else { 
         4.3_f32 
     };
-
+    // ❌ 【正常生存分支】：執行原本的重力與碰撞結算
     // --- Camera crouch lerp ---
     if let Ok(mut cam) = q_camera.get_single_mut() {
         let target_cam_y = if player.is_crouching { 1.2 } else { 1.6 }; // Adjusted camera height for 1.5 crouch
