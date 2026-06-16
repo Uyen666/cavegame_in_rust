@@ -7,7 +7,7 @@ pub fn generate(chunk: &mut Chunk) {
         for z in 0..CHUNK_SIZE {
             for y in 0..5 {
                 let block = if y == 4 { BlockType::Grass } else { BlockType::Stone };
-                chunk.set_block(x, y, z, block);
+                chunk.set_block(x as usize, y as usize, z as usize, block);
             }
         }
     }

@@ -24,7 +24,7 @@ pub fn save_chunk_to_disk(pos: IVec3, data: ChunkData) {
     let path = format!("saves/chunk_{}_{}_{}.bin", pos.x, pos.y, pos.z);
 
     // 純空氣判定：改用嚴格的 3D 體素遍歷檢查，確保被挖空的區塊也能被正確攔截
-    let is_pure_air = data.palette.is_pure_air();
+    let is_pure_air = data.buffer.is_pure_air();
 
     IoTaskPool::get().spawn(async move {
         if is_pure_air {

@@ -1,16 +1,15 @@
 pub const CHUNK_SIZE: i32 = 32;
 pub const WORLD_CHUNKS_Y: i32 = 8;
 pub const WORLD_MAX_Y: i32 = CHUNK_SIZE * WORLD_CHUNKS_Y;
-pub const CHUNK_VOLUME: usize = (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize;
 
 #[inline]
-pub fn voxel_pos_to_index(x: i32, y: i32, z: i32) -> usize {
-    (y * CHUNK_SIZE * CHUNK_SIZE + z * CHUNK_SIZE + x) as usize
+pub fn voxel_pos_to_index(x: usize, y: usize, z: usize) -> usize {
+    x + (y * (CHUNK_SIZE as usize)) + (z * (CHUNK_SIZE as usize) * (CHUNK_SIZE as usize))
 }
 
 #[inline]
-pub fn in_bounds(x: i32, y: i32, z: i32) -> bool {
-    x >= 0 && x < CHUNK_SIZE && y >= 0 && y < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE
+pub fn in_bounds(x: usize, y: usize, z: usize) -> bool {
+    x < (CHUNK_SIZE as usize) && y < (CHUNK_SIZE as usize) && z < (CHUNK_SIZE as usize)
 }
 
 use bevy::prelude::Vec3;

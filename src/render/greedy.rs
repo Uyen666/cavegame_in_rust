@@ -210,9 +210,21 @@ fn generate_greedy_mesh(
     q_chunks: &Query<(Entity, &mut Chunk)>,
     out:   &mut MeshData,
 ) {
+    // 🚀 優化 1：在進入 10 萬次迴圈前，先一次性獲取當前區塊的唯讀引用
+    let current_chunk = &q_chunks.get(entity).unwrap().1;
+
+    // 強制將 CHUNK_SIZE 轉為 i32 以便與含有 -1 的 slice 安全迭代
+    let chunk_size_i = CHUNK_SIZE as i32;
+
     for d in 0..3usize {
-        let u = (d + 1) % 3;
-        let v = (d + 2) % 3;
+        // 快取局部性校準 (Cache Locality Calibration)
+        // 記憶體步長: X=1, Y=32, Z=1024
+        // u 軸映射到最內層迴圈 (i)，必須分配給步長最小的軸！
+        let (u, v) = match d {
+            0 => (1, 2), // d=X, u=Y(32), v=Z(1024) -> 最佳
+            1 => (0, 2), // d=Y, u=X(1),  v=Z(1024) -> 交換 u,v 拯救快取！(原為 u=Z, v=X)
+            _ => (0, 1), // d=Z, u=X(1),  v=Y(32)   -> 最佳
+        };
 
         let mut q = [0i32; 3];
         q[d] = 1;
@@ -220,11 +232,12 @@ fn generate_greedy_mesh(
         let mask_len = (CHUNK_SIZE * CHUNK_SIZE) as usize;
         let mut mask = vec![None::<FaceInfo>; mask_len];
 
-        for slice in -1..CHUNK_SIZE {
+        // 🚀 優化 2：顯式轉換邊界型別，防止編譯器抗議 Range 混合
+        for slice in -1..chunk_size_i {
             // ── Build mask ─────────────────────────────────────────────────
             let mut n = 0usize;
-            for j in 0..CHUNK_SIZE {
-                for i in 0..CHUNK_SIZE {
+            for j in 0..chunk_size_i {
+                for i in 0..chunk_size_i {
                     let mut x = [0i32; 3];
                     x[d] = slice;
                     x[u] = i;
@@ -234,26 +247,28 @@ fn generate_greedy_mesh(
                     // b1 = block at x[d]=slice+1 (the voxel one step in +d)
                     let b0 = {
                         let lx = [x[0], x[1], x[2]];
-                        if lx[0] >= 0 && lx[0] < CHUNK_SIZE
-                            && lx[1] >= 0 && lx[1] < CHUNK_SIZE
-                            && lx[2] >= 0 && lx[2] < CHUNK_SIZE
+                        if lx[0] >= 0 && lx[0] < chunk_size_i
+                            && lx[1] >= 0 && lx[1] < chunk_size_i
+                            && lx[2] >= 0 && lx[2] < chunk_size_i
                         {
-                            q_chunks.get(entity).unwrap().1.get_block(lx[0], lx[1], lx[2])
+                            // 🚀 優化 3：直接讀取變數，並將 i32 安全轉型為 usize 接入一維發電機
+                            current_chunk.get_block(lx[0] as usize, lx[1] as usize, lx[2] as usize)
                         } else {
-                            let gp = chunk_pos * CHUNK_SIZE + IVec3::new(lx[0], lx[1], lx[2]);
+                            let gp = chunk_pos * chunk_size_i + IVec3::new(lx[0], lx[1], lx[2]);
                             world.get_block_global_mut(gp, q_chunks)
                         }
                     };
 
                     let b1 = {
                         let lx = [x[0] + q[0], x[1] + q[1], x[2] + q[2]];
-                        if lx[0] >= 0 && lx[0] < CHUNK_SIZE
-                            && lx[1] >= 0 && lx[1] < CHUNK_SIZE
-                            && lx[2] >= 0 && lx[2] < CHUNK_SIZE
+                        if lx[0] >= 0 && lx[0] < chunk_size_i
+                            && lx[1] >= 0 && lx[1] < chunk_size_i
+                            && lx[2] >= 0 && lx[2] < chunk_size_i
                         {
-                            q_chunks.get(entity).unwrap().1.get_block(lx[0], lx[1], lx[2])
+                            // 🚀 優化 3：同上，本地安全高速讀取
+                            current_chunk.get_block(lx[0] as usize, lx[1] as usize, lx[2] as usize)
                         } else {
-                            let gp = chunk_pos * CHUNK_SIZE + IVec3::new(lx[0], lx[1], lx[2]);
+                            let gp = chunk_pos * chunk_size_i + IVec3::new(lx[0], lx[1], lx[2]);
                             world.get_block_global_mut(gp, q_chunks)
                         }
                     };
@@ -326,7 +341,11 @@ fn generate_greedy_mesh(
                         };
 
                         // Winding: proved correct for all d when rev = (normal < 0)
-                        let rev = face.normal < 0;
+                        let mut rev = face.normal < 0;
+                        // 因為 d=1 時我們強制交換了 u(X) 與 v(Z)，外積方向翻轉，必須修正 Winding！
+                        if d == 1 {
+                            rev = !rev;
+                        }
 
                         push_quad(
                             out,

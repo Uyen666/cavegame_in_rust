@@ -13,8 +13,9 @@ src/
 ├── render/         (核心渲染管線：greedy.rs 貪婪網格、textures.rs 材質載入)
 ├── ui/             (hud.rs 準星、debug.rs F3 定時除錯疊加層、預留主選單介面)
 └── world/          (核心世界資料結構)
-    ├── storage.rs  (體素調色盤、Serde/Bincode 非同步硬碟讀寫)
-    ├── gen/        (地形生成演算法：flat.rs 超平坦、perlin.rs 3D 密度雜訊預留)
+    ├── storage.rs  (1D 扁平化 ChunkBuffer、手寫 RLE 壓縮與非同步硬碟讀寫)
+    ├── gen/        (地形生成演算法：flat.rs 超平坦預留)
+    ├── generator.rs(工業級無狀態二階段地形管線與 Fbm 噪音)
     └── mod.rs      (區塊 3D 動態加載/卸載生命週期調度)
 ```
 
@@ -48,10 +49,17 @@ src/
 * **空間結構與全域高度換算**：以 32x32x32 的方塊組成 Chunk。全域使用 HashMap 進行 3D 區塊 `IVec3::new(cx, cy, cz)` 管理。地形生成算法（如 Perlin Noise）嚴格使用 `global_y = chunk_pos.y * 32 + local_y` 的全域絕對高度對齊地層，避免地貌在不同垂直區塊被重複複製。
 * **垂直 3D 動態加載 (3D Render Distance)**：每影格以玩家為中心，向外加載 5x5 的水平範圍，並且垂直覆蓋 8 層區塊（CY = 0 到 7，對應高度 0 到 256）。當超出卸載距離或垂直邊界時觸發 GPU 網格實體銷毀與內存回收。系統於 `get_block_global` 實作了跨區界全域極限防護，任何小於 0 或大於等於 `WORLD_MAX_Y` (256) 的空間探測皆強制安全降級回傳 `Air`，確保 `greedy.rs` 的邊界 Culling 極度穩定。
 * **非同步環形螺旋加載管線 (Async Ring-Sorted Loading Pipeline)**：放棄傳統同步巢狀迴圈，改採 3D 距離平方進行排序（`diff.x^2 + diff.y^2 + diff.z^2`），確保玩家腳下與視角前方的區塊享有最高加載權重。主執行緒透過 `.take(4)` 每影格限流派發最多 4 個任務，由背景的 `AsyncComputeTaskPool` 執行 Perlin Noise 或硬碟讀取，徹底杜絕 CPU 瞬間負載超載所引發的 Stuttering（掉幀）。
-* **資料與實體徹底解耦 (Data & Entity Decoupling)**：純空氣區塊僅作為包含調色盤的資料 `ChunkEntry` 留在 HashMap 中，**不佔用任何 Bevy ECS 實體**。當玩家在純空區塊放置第一顆實心方塊時，才會觸發**延遲生成 (Lazy Spawning)** 動態建立網格實體。
-* **體素調色盤與完美存檔防禦 (Save Bloating Defense & Perfect Unload)**：使用 Palette Compression 將資料壓縮，髒區塊卸載時交由 IoTaskPool 異步寫入硬碟。若判定該區塊已被挖空退化為「純空氣」（透過嚴格的 32,768 體素遍歷檢查 `is_pure_air` 排除調色盤殘留），系統不僅拒絕產生新存檔，還會在背景自動刪除硬碟上的歷史殘留檔案。同時，卸載輪詢具備**完美閉環**：只要超出渲染距離，無論區塊是否修改過，系統必定無條件執行 `despawn_recursive` 銷毀視覺實體並從 HashMap 移除，從根源杜絕存檔無限膨脹與記憶體釘子戶。
+* **資料與實體徹底解耦 (Data & Entity Decoupling)**：純空氣區塊僅作為包含資料 `ChunkBuffer` 的 `ChunkEntry` 留在 HashMap 中，**不佔用任何 Bevy ECS 實體**。當玩家在純空區塊放置第一顆實心方塊時，才會觸發**延遲生成 (Lazy Spawning)** 動態建立網格實體。
+* **一維資料結構與 RLE 完美存檔防禦 (Save Bloating Defense)**：使用原生的一維扁平化陣列 `ChunkBuffer` `[BlockType; 32768]` 作為核心資料儲存，全面淘汰巢狀陣列。存檔時交由 IoTaskPool 異步寫入硬碟，並採用手寫的 **RLE (Run-Length Encoding) 遊程編碼** 將巨型連續空方塊極限壓縮。若透過 O(1) 的 `non_air_count` 追蹤技術判定該區塊已被挖空退化為「純空氣」，系統不僅拒絕產生新存檔，還會在背景自動刪除硬碟上的歷史殘留檔案。同時，卸載輪詢具備**完美閉環**：只要超出渲染距離，無論區塊是否修改過，系統必定無條件執行 `despawn_recursive` 銷毀視覺實體並從 HashMap 移除，從根源杜絕存檔無限膨脹與記憶體釘子戶。
 
 ## 5. 🎛️ 遊戲狀態機與 UI/Debug 系統
 * **GameState 狀態控制**：切分 `MainMenu`、`InGame` 等狀態，退回選單時背景世界與物理會凍結。
 * **F3 Debug HUD 異步更新分流**：使用 `Timer::from_seconds(0.5)` 控制 F3 疊加層上的 FPS 與 Frame Time 刷新頻率，解決文字因幀率震盪而閃爍看不清的問題；而玩家座標等空間數據則無延遲即時更新。
 * **F3 + C 區塊邊界檢視 (Chunk Borders)**：實作了致敬 Minecraft 的除錯快捷鍵。在 F3 開啟狀態下按下 C 鍵，可透過獨立且零干擾的 `Bevy Gizmos` 系統，精準繪製出對齊世界座標的 32x32x32 黑色區塊邊界，大幅協助空間除錯。
+
+## 6. ⛰️ 全域無狀態地形生成器 (1D Stateless Terrain Generator)
+* **無狀態二階段生成 (Two-Pass Generation)**：屏除所有局部計數器與光線透射邏輯。第一階段生成純粹的密度場緩存 `density_cache` 與地表高度緩存 `base_h_cache`；第二階段嚴格根據給定的 XY 座標查找緩存陣列，決定方塊材質，避免地形邊界出現割裂與狀態不一致。
+* **Fbm 碎形布朗運動 (Fractal Brownian Motion)**：捨棄單調的 Perlin 噪音，改為搭載 6 個八度音階 (Octaves) 的 `Fbm<Perlin>` 引擎，透過高低頻的混合創造出極具細節的壯麗山脈、險峻懸崖與地底破碎溶洞。
+* **動態幾何調變 (Dynamic Geometry Modulation)**：引入超低頻的 `ruggedness` (險峻度) 噪音即時動態調節地形的 3D 震幅，使得平緩丘陵能與垂直高差達 40 格的宏大峽谷無縫交融。
+* **天坑與溶洞生態系統**：透過獨立的 3D 溶洞噪音結合距離地平線 `Y=64` 的二次函數衰減塑造龐大的地下通道；並引入特權的 `entrance_gate` 2D 破口閘門，一旦觸發，溶洞可無視高空衰減限制，暴力切開地表，形成壯觀的天然天坑。
+* **草地與生態防護線**：嚴格限制只有在接觸頂層空氣、且高度介於地平線正負 15 格以內的「丘陵區」才能生長泥土與草皮。完美隔離深淵與高山懸崖的岩石暴露，杜絕了垂直崖面上荒唐長草的生態 Bug。

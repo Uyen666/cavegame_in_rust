@@ -1,8 +1,8 @@
 pub mod voxel;
-pub mod palette;
 pub mod chunk;
 pub mod storage;
 pub mod gen;
+pub mod generator;
 
 use bevy::prelude::*;
 use bevy::utils::{HashMap, HashSet};
@@ -13,8 +13,18 @@ use bevy::render::primitives::Aabb;
 pub use chunk::{Chunk, ChunkData};
 pub use voxel::BlockType;
 use crate::utils::math::CHUNK_SIZE;
-use palette::Palette;
+use noise::{NoiseFn, Perlin, Fbm};
 
+struct TerrainNoise(Fbm<Perlin>);
+
+impl generator::NoiseModule for TerrainNoise {
+    fn sample_2d(&self, x: f64, z: f64) -> f32 {
+        self.0.get([x, z]) as f32
+    }
+    fn sample_3d(&self, x: f64, y: f64, z: f64) -> f32 {
+        self.0.get([x, y, z]) as f32
+    }
+}
 pub struct WorldPlugin;
 
 impl Plugin for WorldPlugin {
@@ -32,7 +42,7 @@ impl Plugin for WorldPlugin {
 }
 
 #[derive(Component)]
-pub struct GeneratingChunk(pub Task<(IVec3, ChunkData)>);
+pub struct GeneratingChunk(pub Task<(IVec3, ChunkData, u16)>);
 
 const RENDER_DISTANCE: i32 = 2;
 
@@ -50,7 +60,7 @@ pub enum WorldType {
 ///   - `palette` 永遠存在，用於全域方塊查詢
 ///   - `entity`  僅非空氣區塊才有，`None` 代表純空氣，不佔用任何 ECS Transform 開銷
 pub struct ChunkEntry {
-    pub palette: Palette,
+    pub buffer: generator::ChunkBuffer,
     pub entity:  Option<Entity>,
     pub is_modified: bool,
 }
@@ -94,8 +104,8 @@ impl WorldManager {
         }
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
         if let Some(entry) = self.chunks.get(&chunk_pos) {
-            let idx = crate::utils::math::voxel_pos_to_index(local.x, local.y, local.z);
-            return entry.palette.get(idx);
+            let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
+            return entry.buffer.blocks[idx];
         }
         BlockType::Air
     }
@@ -116,21 +126,21 @@ impl WorldManager {
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
         let Some(entry) = self.chunks.get_mut(&chunk_pos) else { return };
 
-        // 1. 同步資料層 palette
-        let idx = crate::utils::math::voxel_pos_to_index(local.x, local.y, local.z);
-        entry.palette.set(idx, block);
+        // 1. 同步資料層 buffer
+        let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
+        entry.buffer.blocks[idx] = block;
         entry.is_modified = true;
 
         // 2. 若該 Chunk 已有實體，同步到 ECS Chunk（set_block 內部會設 is_dirty = true）
         if let Some(entity) = entry.entity {
             if let Ok((_, mut chunk)) = q_chunks.get_mut(entity) {
-                chunk.set_block(local.x, local.y, local.z, block);
+                chunk.set_block(local.x as usize, local.y as usize, local.z as usize, block);
             }
         } else if block != BlockType::Air {
             // 3. Lazy Spawn：純空氣 Chunk 第一次放入非空氣方塊時，動態建立實體
             let mut chunk = Chunk::new(chunk_pos);
-            chunk.palette = entry.palette.clone();
-            chunk.set_block(local.x, local.y, local.z, block);
+            chunk.buffer = generator::ChunkBuffer { blocks: entry.buffer.blocks };
+            chunk.set_block(local.x as usize, local.y as usize, local.z as usize, block);
             chunk.is_dirty = true;
 
             let new_entity = commands.spawn((
@@ -246,18 +256,27 @@ fn update_chunks(
         world_manager.loading_chunks.insert(pos);
         
         let task = task_pool.spawn(async move {
-            let mut chunk = Chunk::new(pos);
-            if let Some(data) = storage::load_chunk_from_disk(pos) {
-                chunk.palette = data.palette;
+            let (chunk_buffer, non_air_count) = if let Some(data) = storage::load_chunk_from_disk(pos) {
+                let count = data.buffer.blocks.iter().filter(|&&b| b != BlockType::Air).count() as u16;
+                (data.buffer, count)
             } else {
                 match world_type {
-                    WorldType::Flat          => gen::flat::generate(&mut chunk),
-                    WorldType::PerlinHills   => gen::perlin::generate(&mut chunk, pos, seed),
-                    WorldType::FloatingIslands => {}
+                    WorldType::Flat => {
+                        let mut chunk = Chunk::new(pos);
+                        gen::flat::generate(&mut chunk);
+                        (chunk.buffer, chunk.non_air_count)
+                    },
+                    WorldType::PerlinHills => {
+                        let fbm = Fbm::<Perlin>::new(seed);
+                        let noise = TerrainNoise(fbm);
+                        let generator = generator::TerrainGenerator { noise_provider: noise };
+                        generator.generate_chunk_data(pos)
+                    },
+                    WorldType::FloatingIslands => (generator::ChunkBuffer::default(), 0),
                 }
-            }
-            // 回傳完整 ChunkData，包含 palette 內的所有 3D 體素索引陣列與種類
-            (pos, ChunkData { palette: chunk.palette })
+            };
+            // 回傳完整 ChunkData 與 non_air_count
+            (pos, ChunkData { buffer: chunk_buffer }, non_air_count)
         });
 
         commands.spawn(GeneratingChunk(task));
@@ -277,16 +296,16 @@ fn update_chunks(
             // 1. 存檔分流（僅對修改過的區塊）
             if entry.is_modified {
                 if let Some(entity) = entry.entity {
-                    // 有 ECS 實體：從 Chunk 組件取得最新 palette 並存檔
+                    // 有 ECS 實體：從 Chunk 組件取得最新 buffer 並存檔
                     if let Ok((_, chunk)) = q_chunks.get(entity) {
                         storage::save_chunk_to_disk(chunk_pos, ChunkData {
-                            palette: chunk.palette.clone(),
+                            buffer: generator::ChunkBuffer { blocks: chunk.buffer.blocks },
                         });
                     }
                 } else {
-                    // 無 ECS 實體（純空氣資料層）：直接用 ChunkEntry.palette 觸發存檔清理
+                    // 無 ECS 實體（純空氣資料層）：直接用 ChunkEntry.buffer 觸發存檔清理
                     storage::save_chunk_to_disk(chunk_pos, ChunkData {
-                        palette: entry.palette.clone(),
+                        buffer: generator::ChunkBuffer { blocks: entry.buffer.blocks },
                     });
                 }
             }
@@ -312,22 +331,26 @@ fn poll_loading_chunks(
     mut q_chunks: Query<(Entity, &mut Chunk)>,
 ) {
     for (entity, mut task) in &mut q_tasks {
-        if let Some((chunk_pos, chunk_data)) = future::block_on(future::poll_once(&mut task.0)) {
+        if let Some((chunk_pos, chunk_data, non_air_count)) = future::block_on(future::poll_once(&mut task.0)) {
             // 從追蹤名單移除
             world_manager.loading_chunks.remove(&chunk_pos);
 
-            let is_pure_air = chunk_data.palette.is_pure_air();
+            let is_pure_air = non_air_count == 0;
 
             if is_pure_air {
                 let entry = ChunkEntry {
-                    palette:     chunk_data.palette,
+                    buffer:      chunk_data.buffer,
                     entity:      None,
                     is_modified: false,
                 };
                 world_manager.chunks.insert(chunk_pos, entry);
             } else {
                 let mut chunk = Chunk::new(chunk_pos);
-                chunk.palette = chunk_data.palette.clone();
+                chunk.buffer = generator::ChunkBuffer { blocks: chunk_data.buffer.blocks };
+                
+                // 動態校準 non_air_count 防禦邊界
+                chunk.non_air_count = non_air_count;
+
                 chunk.is_dirty = true;
                 chunk.is_modified = false;
 
@@ -345,7 +368,7 @@ fn poll_loading_chunks(
                 )).id();
 
                 let entry = ChunkEntry {
-                    palette:     chunk_data.palette, // ✅ 保存完整資料與 3D 陣列供鄰居全域查詢
+                    buffer:      generator::ChunkBuffer { blocks: chunk_data.buffer.blocks }, // ✅ 保存完整資料與 3D 陣列供鄰居全域查詢
                     entity:      Some(chunk_entity),
                     is_modified: false,
                 };
