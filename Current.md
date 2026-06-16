@@ -46,6 +46,7 @@ src/
 ## 4. 🌍 動態 3D 無限世界與持久化存檔
 * **空間結構與全域高度換算**：以 32x32x32 的方塊組成 Chunk。全域使用 HashMap 進行 3D 區塊 `IVec3::new(cx, cy, cz)` 管理。地形生成算法（如 Perlin Noise）嚴格使用 `global_y = chunk_pos.y * 32 + local_y` 的全域絕對高度對齊地層，避免地貌在不同垂直區塊被重複複製。
 * **垂直 3D 動態加載 (3D Render Distance)**：每影格以玩家為中心，向外加載 5x5 的水平範圍，並且垂直覆蓋 4 層區塊（CY = 0 到 3，對應高度 0 到 128）。當超出卸載距離或垂直邊界時觸發 GPU 網格實體銷毀與內存回收。
+* **非同步環形螺旋加載管線 (Async Ring-Sorted Loading Pipeline)**：放棄傳統同步巢狀迴圈，改採 3D 距離平方進行排序（`diff.x^2 + diff.y^2 + diff.z^2`），確保玩家腳下與視角前方的區塊享有最高加載權重。主執行緒透過 `.take(4)` 每影格限流派發最多 4 個任務，由背景的 `AsyncComputeTaskPool` 執行 Perlin Noise 或硬碟讀取，徹底杜絕 CPU 瞬間負載超載所引發的 Stuttering（掉幀）。
 * **資料與實體徹底解耦 (Data & Entity Decoupling)**：純空氣區塊僅作為包含調色盤的資料 `ChunkEntry` 留在 HashMap 中，**不佔用任何 Bevy ECS 實體**。當玩家在純空區塊放置第一顆實心方塊時，才會觸發**延遲生成 (Lazy Spawning)** 動態建立網格實體。
 * **體素調色盤與完美存檔防禦 (Save Bloating Defense & Perfect Unload)**：使用 Palette Compression 將資料壓縮，髒區塊卸載時交由 IoTaskPool 異步寫入硬碟。若判定該區塊已被挖空退化為「純空氣」（透過嚴格的 32,768 體素遍歷檢查 `is_pure_air` 排除調色盤殘留），系統不僅拒絕產生新存檔，還會在背景自動刪除硬碟上的歷史殘留檔案。同時，卸載輪詢具備**完美閉環**：只要超出渲染距離，無論區塊是否修改過，系統必定無條件執行 `despawn_recursive` 銷毀視覺實體並從 HashMap 移除，從根源杜絕存檔無限膨脹與記憶體釘子戶。
 

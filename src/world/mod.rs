@@ -5,7 +5,9 @@ pub mod storage;
 pub mod gen;
 
 use bevy::prelude::*;
-use bevy::utils::HashMap;
+use bevy::utils::{HashMap, HashSet};
+use bevy::tasks::{AsyncComputeTaskPool, Task};
+use futures_lite::future;
 
 pub use chunk::{Chunk, ChunkData};
 pub use voxel::BlockType;
@@ -20,10 +22,16 @@ impl Plugin for WorldPlugin {
             .add_systems(Startup, setup_world)
             .add_systems(
                 Update,
-                update_chunks.run_if(in_state(crate::GameState::InGame))
+                (
+                    update_chunks,
+                    poll_loading_chunks,
+                ).run_if(in_state(crate::GameState::InGame))
             );
     }
 }
+
+#[derive(Component)]
+pub struct GeneratingChunk(pub Task<(IVec3, ChunkData)>);
 
 const RENDER_DISTANCE: i32 = 2;
 
@@ -47,17 +55,19 @@ pub struct ChunkEntry {
 
 #[derive(Resource)]
 pub struct WorldManager {
-    pub chunks:     HashMap<IVec3, ChunkEntry>,
-    pub world_type: WorldType,
-    pub seed:       u32,
+    pub chunks:         HashMap<IVec3, ChunkEntry>,
+    pub loading_chunks: HashSet<IVec3>,
+    pub world_type:     WorldType,
+    pub seed:           u32,
 }
 
 impl Default for WorldManager {
     fn default() -> Self {
         Self {
-            chunks:     HashMap::default(),
-            world_type: WorldType::PerlinHills,
-            seed:       12345,
+            chunks:         HashMap::default(),
+            loading_chunks: HashSet::default(),
+            world_type:     WorldType::PerlinHills,
+            seed:           12345,
         }
     }
 }
@@ -191,62 +201,6 @@ fn setup_world(mut commands: Commands) {
     });
 }
 
-/// 生成並插入一個 ChunkEntry 到 WorldManager。
-/// 純空氣 → 只存資料，不建 ECS Entity。
-/// 非空氣 → 建立帶有 SpatialBundle 的 Entity，同步 palette。
-fn load_chunk(
-    commands: &mut Commands,
-    chunk_pos: IVec3,
-    world_type: WorldType,
-    seed: u32,
-) -> ChunkEntry {
-    let mut chunk = Chunk::new(chunk_pos);
-
-    if let Some(data) = storage::load_chunk_from_disk(chunk_pos) {
-        chunk.palette = data.palette;
-        chunk.is_modified = false;
-    } else {
-        match world_type {
-            WorldType::Flat          => gen::flat::generate(&mut chunk),
-            WorldType::PerlinHills   => gen::perlin::generate(&mut chunk, chunk_pos, seed),
-            WorldType::FloatingIslands => {}
-        }
-        chunk.is_modified = false;
-    }
-
-    // 純空氣短路：只存資料，不建 Entity，節省大量 Transform 傳播開銷
-    let is_pure_air = chunk.palette.is_pure_air();
-
-    if is_pure_air {
-        ChunkEntry {
-            palette:     chunk.palette,
-            entity:      None,
-            is_modified: false,
-        }
-    } else {
-        // 先 clone palette 供 ChunkEntry 全域查詢使用
-        let palette_clone = chunk.palette.clone();
-
-        let entity = commands.spawn((
-            chunk,
-            SpatialBundle {
-                transform: Transform::from_xyz(
-                    (chunk_pos.x * CHUNK_SIZE) as f32,
-                    (chunk_pos.y * CHUNK_SIZE) as f32,
-                    (chunk_pos.z * CHUNK_SIZE) as f32,
-                ),
-                ..default()
-            },
-        )).id();
-
-        ChunkEntry {
-            palette:     palette_clone, // ✅ 真實資料，供 get_block_global 直接查詢
-            entity:      Some(entity),
-            is_modified: false,
-        }
-    }
-}
-
 fn update_chunks(
     mut commands: Commands,
     mut world_manager: ResMut<WorldManager>,
@@ -258,45 +212,49 @@ fn update_chunks(
     let player_pos_global = player_tf.translation.as_ivec3();
     let (player_chunk_pos, _) = WorldManager::global_to_chunk_pos(player_pos_global);
 
-    // ── 1. 載入需要顯示的區塊（3D 動態加載） ──────────────────────────────
-    let mut to_load = Vec::new();
+    // ── 1. 載入需要顯示的區塊（3D 動態螺旋加載） ──────────────────────────────
+    let mut potential_chunks = Vec::new();
     for dx in -RENDER_DISTANCE..=RENDER_DISTANCE {
         for cy in 0..4 {
             for dz in -RENDER_DISTANCE..=RENDER_DISTANCE {
                 let target = IVec3::new(player_chunk_pos.x + dx, cy, player_chunk_pos.z + dz);
-                if !world_manager.chunks.contains_key(&target) {
-                    to_load.push(target);
+                if !world_manager.chunks.contains_key(&target) && !world_manager.loading_chunks.contains(&target) {
+                    potential_chunks.push(target);
                 }
             }
         }
     }
     
-    let mut newly_loaded = Vec::new();
-    for pos in to_load {
-        let entry = load_chunk(&mut commands, pos, world_manager.world_type, world_manager.seed);
-        world_manager.chunks.insert(pos, entry);
-        newly_loaded.push(pos);
-    }
+    // 3D 距離環形排序 (距離玩家越近的區塊優先加載)
+    potential_chunks.sort_by_key(|pos| {
+        let diff = *pos - player_chunk_pos;
+        diff.x * diff.x + diff.y * diff.y + diff.z * diff.z
+    });
 
-    // ── 1.5. 新舊區塊交界處的 Remesh 連動 (Race Condition 修正) ───────────
-    // 當新區塊 B 誕生的瞬間，必須立刻強迫周遭早就存在的舊區塊 A 在下一影格重新網格化。
-    // 這樣舊區塊 A 就會發現隔壁不再是空氣，進而完美觸發面剔除，抹除過期的邊界殘留牆。
-    let offsets = [
-        IVec3::new(-1,  0,  0), IVec3::new( 1,  0,  0),
-        IVec3::new( 0, -1,  0), IVec3::new( 0,  1,  0),
-        IVec3::new( 0,  0, -1), IVec3::new( 0,  0,  1),
-    ];
-    for pos in newly_loaded {
-        for offset in offsets {
-            let neighbor_pos = pos + offset;
-            if let Some(neighbor_entry) = world_manager.chunks.get(&neighbor_pos) {
-                if let Some(neighbor_entity) = neighbor_entry.entity {
-                    if let Ok((_, mut neighbor_chunk)) = q_chunks.get_mut(neighbor_entity) {
-                        neighbor_chunk.is_dirty = true;
-                    }
+    let task_pool = AsyncComputeTaskPool::get();
+    let world_type = world_manager.world_type;
+    let seed = world_manager.seed;
+
+    // 每幀限流 (Throttling)：最多派發 4 個加載任務，防止塞爆背景通道掉幀
+    for pos in potential_chunks.into_iter().take(4) {
+        world_manager.loading_chunks.insert(pos);
+        
+        let task = task_pool.spawn(async move {
+            let mut chunk = Chunk::new(pos);
+            if let Some(data) = storage::load_chunk_from_disk(pos) {
+                chunk.palette = data.palette;
+            } else {
+                match world_type {
+                    WorldType::Flat          => gen::flat::generate(&mut chunk),
+                    WorldType::PerlinHills   => gen::perlin::generate(&mut chunk, pos, seed),
+                    WorldType::FloatingIslands => {}
                 }
             }
-        }
+            // 回傳完整 ChunkData，包含 palette 內的所有 3D 體素索引陣列與種類
+            (pos, ChunkData { palette: chunk.palette })
+        });
+
+        commands.spawn(GeneratingChunk(task));
     }
 
     // ── 2. 卸載過遠的區塊（直接遍歷 HashMap，無需 Query） ─────────────────
@@ -337,5 +295,75 @@ fn update_chunks(
 
     for pos in to_remove {
         world_manager.chunks.remove(&pos);
+    }
+}
+
+// 主執行緒輪詢系統：接收非同步生成的 ChunkData，並真正置入世界
+fn poll_loading_chunks(
+    mut commands: Commands,
+    mut world_manager: ResMut<WorldManager>,
+    mut q_tasks: Query<(Entity, &mut GeneratingChunk)>,
+    mut q_chunks: Query<(Entity, &mut Chunk)>,
+) {
+    for (entity, mut task) in &mut q_tasks {
+        if let Some((chunk_pos, chunk_data)) = future::block_on(future::poll_once(&mut task.0)) {
+            // 從追蹤名單移除
+            world_manager.loading_chunks.remove(&chunk_pos);
+
+            let is_pure_air = chunk_data.palette.is_pure_air();
+
+            if is_pure_air {
+                let entry = ChunkEntry {
+                    palette:     chunk_data.palette,
+                    entity:      None,
+                    is_modified: false,
+                };
+                world_manager.chunks.insert(chunk_pos, entry);
+            } else {
+                let mut chunk = Chunk::new(chunk_pos);
+                chunk.palette = chunk_data.palette.clone();
+                chunk.is_dirty = true;
+                chunk.is_modified = false;
+
+                let chunk_entity = commands.spawn((
+                    chunk,
+                    SpatialBundle {
+                        transform: Transform::from_xyz(
+                            (chunk_pos.x * CHUNK_SIZE) as f32,
+                            (chunk_pos.y * CHUNK_SIZE) as f32,
+                            (chunk_pos.z * CHUNK_SIZE) as f32,
+                        ),
+                        ..default()
+                    },
+                )).id();
+
+                let entry = ChunkEntry {
+                    palette:     chunk_data.palette, // ✅ 保存完整資料與 3D 陣列供鄰居全域查詢
+                    entity:      Some(chunk_entity),
+                    is_modified: false,
+                };
+                world_manager.chunks.insert(chunk_pos, entry);
+            }
+
+            // 新舊交界處 Remesh 連動 (只針對早已存在的實體鄰居)
+            let offsets = [
+                IVec3::new(-1,  0,  0), IVec3::new( 1,  0,  0),
+                IVec3::new( 0, -1,  0), IVec3::new( 0,  1,  0),
+                IVec3::new( 0,  0, -1), IVec3::new( 0,  0,  1),
+            ];
+            for offset in offsets {
+                let neighbor_pos = chunk_pos + offset;
+                if let Some(neighbor_entry) = world_manager.chunks.get(&neighbor_pos) {
+                    if let Some(neighbor_entity) = neighbor_entry.entity {
+                        if let Ok((_, mut neighbor_chunk)) = q_chunks.get_mut(neighbor_entity) {
+                            neighbor_chunk.is_dirty = true;
+                        }
+                    }
+                }
+            }
+
+            // 任務完成，銷毀 Task 實體
+            commands.entity(entity).despawn();
+        }
     }
 }
