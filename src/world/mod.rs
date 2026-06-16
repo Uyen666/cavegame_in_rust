@@ -89,6 +89,9 @@ impl WorldManager {
 
     /// 直接從 ChunkEntry.palette 查詢，無需 ECS Query
     pub fn get_block_global(&self, pos: IVec3) -> BlockType {
+        if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y {
+            return BlockType::Air;
+        }
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
         if let Some(entry) = self.chunks.get(&chunk_pos) {
             let idx = crate::utils::math::voxel_pos_to_index(local.x, local.y, local.z);
@@ -102,7 +105,6 @@ impl WorldManager {
         self.get_block_global(pos)
     }
 
-    /// 設定全域方塊並同步到 ECS Chunk 組件（若 Entity 存在）
     pub fn set_block_global(
         &mut self,
         pos: IVec3,
@@ -110,6 +112,7 @@ impl WorldManager {
         q_chunks: &mut Query<(Entity, &mut Chunk)>,
         commands: &mut Commands,
     ) {
+        if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y { return; }
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
         let Some(entry) = self.chunks.get_mut(&chunk_pos) else { return };
 
@@ -218,7 +221,7 @@ fn update_chunks(
     // ── 1. 載入需要顯示的區塊（3D 動態螺旋加載） ──────────────────────────────
     let mut potential_chunks = Vec::new();
     for dx in -RENDER_DISTANCE..=RENDER_DISTANCE {
-        for cy in 0..4 {
+        for cy in 0..crate::utils::math::WORLD_CHUNKS_Y {
             for dz in -RENDER_DISTANCE..=RENDER_DISTANCE {
                 let target = IVec3::new(player_chunk_pos.x + dx, cy, player_chunk_pos.z + dz);
                 if !world_manager.chunks.contains_key(&target) && !world_manager.loading_chunks.contains(&target) {
@@ -268,7 +271,7 @@ fn update_chunks(
         let dx = (chunk_pos.x - player_chunk_pos.x).abs();
         let dz = (chunk_pos.z - player_chunk_pos.z).abs();
 
-        if dx > unload_distance || dz > unload_distance || chunk_pos.y < 0 || chunk_pos.y > 3 {
+        if dx > unload_distance || dz > unload_distance || chunk_pos.y < 0 || chunk_pos.y >= crate::utils::math::WORLD_CHUNKS_Y {
             to_remove.push(chunk_pos);
 
             // 1. 存檔分流（僅對修改過的區塊）

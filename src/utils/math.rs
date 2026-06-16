@@ -1,4 +1,6 @@
 pub const CHUNK_SIZE: i32 = 32;
+pub const WORLD_CHUNKS_Y: i32 = 8;
+pub const WORLD_MAX_Y: i32 = CHUNK_SIZE * WORLD_CHUNKS_Y;
 pub const CHUNK_VOLUME: usize = (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize;
 
 #[inline]

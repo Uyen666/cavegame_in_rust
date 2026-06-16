@@ -315,7 +315,7 @@ fn player_interaction(
     mut q_chunks_mut: Query<(Entity, &mut Chunk)>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
-    q_player: Query<&Transform, With<Player>>,
+    q_player: Query<(&Transform, &Player)>,
 ) {
     let left = keys.just_pressed(MouseButton::Left);
     let right = keys.just_pressed(MouseButton::Right);
@@ -327,7 +327,12 @@ fn player_interaction(
     let Ok(window) = q_windows.get_single() else { return; };
     if window.cursor.grab_mode != CursorGrabMode::Locked { return; }
     
-    let Ok(player_transform) = q_player.get_single() else { return; };
+    let Ok((player_transform, player)) = q_player.get_single() else { return; };
+
+    // 🚀 旁觀者權限閹割：禁止修改世界幾何
+    if player.is_spectator {
+        return; 
+    }
 
     if let Ok(cam_transform) = q_camera.get_single() {
         let start = cam_transform.translation();
