@@ -23,6 +23,7 @@ impl Aabb {
         Self { min, max }
     }
 
+    #[allow(dead_code)]
     pub fn expand_by_velocity(&self, velocity: Vec3) -> Self {
         let mut min = self.min;
         let mut max = self.max;

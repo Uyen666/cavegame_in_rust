@@ -36,6 +36,7 @@ pub struct GeneratingChunk(pub Task<(IVec3, ChunkData)>);
 
 const RENDER_DISTANCE: i32 = 2;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorldType {
     Flat,
@@ -207,7 +208,7 @@ fn update_chunks(
     mut commands: Commands,
     mut world_manager: ResMut<WorldManager>,
     q_player: Query<&Transform, With<crate::player::Player>>,
-    mut q_chunks: Query<(Entity, &mut Chunk)>,
+    q_chunks: Query<(Entity, &Chunk)>,
 ) {
     let Ok(player_tf) = q_player.get_single() else { return; };
 

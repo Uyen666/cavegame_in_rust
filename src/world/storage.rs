@@ -3,7 +3,7 @@ use bevy::tasks::IoTaskPool;
 use std::fs::File;
 use std::io::{Read, Write};
 use super::chunk::ChunkData;
-use super::voxel::BlockType;
+
 
 pub fn load_chunk_from_disk(pos: IVec3) -> Option<ChunkData> {
     let path = format!("saves/chunk_{}_{}_{}.bin", pos.x, pos.y, pos.z);

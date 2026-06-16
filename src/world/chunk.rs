@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use super::voxel::BlockType;
 use super::palette::Palette;
-use crate::utils::math::{voxel_pos_to_index, in_bounds, CHUNK_SIZE};
+use crate::utils::math::{voxel_pos_to_index, in_bounds};
 
 use serde::{Serialize, Deserialize};
 

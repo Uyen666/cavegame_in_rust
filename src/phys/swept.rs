@@ -1,6 +1,7 @@
 use bevy::prelude::Vec3;
 use crate::utils::math::Aabb;
 
+#[allow(dead_code)]
 pub fn swept_aabb(
     player_aabb: &Aabb,
     velocity: Vec3,

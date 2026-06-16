@@ -1,7 +1,6 @@
 use bevy::prelude::*;
-use crate::GameState;
 use crate::player::PlayerCamera;
-use crate::world::{WorldManager, BlockType, Chunk};
+use crate::world::{WorldManager, BlockType};
 
 #[derive(Component)]
 pub struct CrosshairContainer;
