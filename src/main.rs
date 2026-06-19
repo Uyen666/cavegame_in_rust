@@ -18,6 +18,10 @@ pub enum GameState {
 }
 
 fn main() {
+    std::panic::set_hook(Box::new(|info| {
+        let backtrace = std::backtrace::Backtrace::capture();
+        let _ = std::fs::write("panic.log", format!("Panic occurred: {}\nBacktrace:\n{}", info, backtrace));
+    }));
     App::new()
         .add_plugins(DefaultPlugins
             .set(WindowPlugin {

@@ -10,7 +10,6 @@ pub struct EnvironmentUniform {
     pub fog_start: f32,
     pub fog_end: f32,
     pub is_fluid: u32,
-    pub time: f32,
     pub fluid_scroll_speed: f32,
 }
 

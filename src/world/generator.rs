@@ -15,6 +15,7 @@ pub trait NoiseModule: Send + Sync {
 
 use crate::world::voxel::BlockType;
 
+#[derive(Clone)]
 pub struct ChunkBuffer {
     pub blocks: [BlockType; TOTAL_V_SIZE],
 }

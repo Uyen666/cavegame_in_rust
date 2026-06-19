@@ -1,4 +1,5 @@
 #import bevy_pbr::mesh_functions::{get_world_from_local, mesh_position_local_to_clip}
+#import bevy_pbr::mesh_view_bindings as view_bindings
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -25,7 +26,6 @@ struct EnvironmentUniform {
     fog_start: f32,
     fog_end: f32,
     is_fluid: u32,
-    time: f32,
     fluid_scroll_speed: f32,
 };
 @group(2) @binding(2) var<uniform> env: EnvironmentUniform;
@@ -113,7 +113,8 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
             world_uv = fract(vec2<f32>(in.world_position.x, -in.world_position.y));
         }
         
-        animated_uv = fract(world_uv + env.time * env.fluid_scroll_speed * in.flow_vector);
+        // Use globals.time for zero-CPU-overhead animation
+        animated_uv = fract(world_uv + view_bindings::globals.time * env.fluid_scroll_speed * in.flow_vector);
     }
 
     // Sample texture array
@@ -132,7 +133,7 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     }
     
     let dist = length(in.world_position.xyz - env.camera_pos);
-    let fog_factor = smoothstep(env.fog_start, env.fog_end, dist);
+    let fog_factor = clamp((dist - env.fog_start) / (env.fog_end - env.fog_start), 0.0, 1.0);
     let fogged_color = mix(final_rgb, env.fog_color.rgb, fog_factor);
     
     return vec4<f32>(fogged_color, final_alpha);

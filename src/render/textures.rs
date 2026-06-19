@@ -54,10 +54,9 @@ fn load_textures(
         env: crate::render::material::EnvironmentUniform {
             fog_color: bevy::color::LinearRgba::rgb(0.5, 0.8, 1.0),
             camera_pos: Vec3::ZERO,
-            fog_start: 32.0,
-            fog_end: 128.0,
+            fog_start: 0.0,
+            fog_end: 100.0,
             is_fluid: 0,
-            time: 0.0,
             fluid_scroll_speed: 0.12,
         },
         alpha_mode: AlphaMode::Opaque,
@@ -71,7 +70,6 @@ fn load_textures(
             fog_start: 32.0,
             fog_end: 128.0,
             is_fluid: 1,
-            time: 0.0,
             fluid_scroll_speed: 0.12,
         },
         // 流體通道必須使用 AlphaMode::Blend

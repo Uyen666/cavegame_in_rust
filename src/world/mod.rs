@@ -47,7 +47,7 @@ impl Plugin for WorldPlugin {
 #[derive(Component)]
 pub struct GeneratingChunk(pub Task<(IVec3, ChunkData, ChunkLightBuffer, u16, Box<[i32; 1024]>)>);
 
-const RENDER_DISTANCE: i32 = 2;
+
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -62,6 +62,7 @@ pub enum WorldType {
 /// 資料與渲染實體徹底解耦：
 ///   - `palette` 永遠存在，用於全域方塊查詢
 ///   - `entity`  僅非空氣區塊才有，`None` 代表純空氣，不佔用任何 ECS Transform 開銷
+#[derive(Clone)]
 pub struct ChunkEntry {
     pub buffer: generator::ChunkBuffer,
     pub light_buffer: ChunkLightBuffer,
@@ -70,10 +71,11 @@ pub struct ChunkEntry {
     pub is_modified: bool,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Clone)]
 pub struct WorldManager {
     pub chunks: HashMap<IVec3, ChunkEntry>,
     pub loading_chunks: HashSet<IVec3>,
+    pub vacuum_chunks: HashSet<IVec3>, // 已確認為純空氣的區塊，不需重複加載
     pub world_type: WorldType,
     pub seed: u32,
     pub heightmap_cache: HashMap<IVec2, Box<[i32; 1024]>>,
@@ -86,6 +88,7 @@ impl Default for WorldManager {
         Self {
             chunks: HashMap::default(),
             loading_chunks: HashSet::default(),
+            vacuum_chunks: HashSet::default(),
             world_type: WorldType::PerlinHills,
             seed: 12345,
             heightmap_cache: HashMap::default(),
@@ -106,6 +109,10 @@ impl WorldManager {
         let local_z = pos.z.rem_euclid(CHUNK_SIZE);
 
         (IVec3::new(chunk_x, chunk_y, chunk_z), IVec3::new(local_x, local_y, local_z))
+    }
+
+    pub fn get_chunk_ref(&self, pos: IVec3) -> Option<&ChunkEntry> {
+        self.chunks.get(&pos)
     }
 
     /// 直接從 ChunkEntry.palette 查詢，無需 ECS Query
@@ -133,13 +140,18 @@ impl WorldManager {
     }
 
     pub fn set_fluid_global(&mut self, pos: IVec3, val: u8) {
+        if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y { return; }
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
+        
+        // 🛡️ 铁律：只對已在 HashMap 中的區塊操作流體，絕不學生區塊
         if let Some(entry) = self.chunks.get_mut(&chunk_pos) {
             let fluid_buf = entry.fluid_buffer.get_or_insert(Box::new([0; 32768]));
             let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
             fluid_buf[idx] = val;
+            entry.is_modified = true;
             self.dirty_chunks_for_meshing.insert(chunk_pos);
         }
+        // 若區塊不存在，直接捨棄流體訪寫（絕不創建新區塊）
     }
 
     /// 相容舊簽名的全域方塊查詢（供 greedy.rs 等使用），實際上直接查 palette
@@ -219,6 +231,8 @@ impl WorldManager {
     ) {
         if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y { return; }
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
+        
+        // 🛡️ 防御線：只對已在 HashMap 中的區塊修改方塊，絕不自創新區塊
         let Some(entry) = self.chunks.get_mut(&chunk_pos) else { return };
 
         // 1. 同步資料層 buffer
@@ -357,6 +371,7 @@ fn update_chunks(
     mut world_manager: ResMut<WorldManager>,
     q_player: Query<&Transform, With<crate::player::Player>>,
     q_chunks: Query<(Entity, &Chunk)>,
+    config: Res<crate::config::EngineConfig>,
 ) {
     let Ok(player_tf) = q_player.get_single() else { return; };
 
@@ -365,11 +380,20 @@ fn update_chunks(
 
     // ── 1. 載入需要顯示的區塊（3D 動態螺旋加載） ──────────────────────────────
     let mut potential_chunks = Vec::new();
-    for dx in -RENDER_DISTANCE..=RENDER_DISTANCE {
-        for cy in 0..crate::utils::math::WORLD_CHUNKS_Y {
-            for dz in -RENDER_DISTANCE..=RENDER_DISTANCE {
+    let render_dist = config.render_distance as i32;
+    // Y 軸以玩家所在 chunk 為中心，上下各 2 層（共 5 層），並限制在世界邊界內
+    let y_render_dist: i32 = 2;
+    let cy_min = (player_chunk_pos.y - y_render_dist).max(0);
+    let cy_max = (player_chunk_pos.y + y_render_dist).min(crate::utils::math::WORLD_CHUNKS_Y - 1);
+    for dx in -render_dist..=render_dist {
+        for cy in cy_min..=cy_max {
+            for dz in -render_dist..=render_dist {
                 let target = IVec3::new(player_chunk_pos.x + dx, cy, player_chunk_pos.z + dz);
-                if !world_manager.chunks.contains_key(&target) && !world_manager.loading_chunks.contains(&target) {
+                // 🛡️ 三重防線：已在 chunks、正在載入、或已確認純空氣的，一律跳過
+                if !world_manager.chunks.contains_key(&target)
+                    && !world_manager.loading_chunks.contains(&target)
+                    && !world_manager.vacuum_chunks.contains(&target)
+                {
                     potential_chunks.push(target);
                 }
             }
@@ -444,14 +468,16 @@ fn update_chunks(
     }
 
     // ── 2. 卸載過遠的區塊（直接遍歷 HashMap，無需 Query） ─────────────────
-    let unload_distance = RENDER_DISTANCE + 1;
+    let unload_distance = config.render_distance as i32 + 1;
+    let y_unload_dist = 2 + 1; // 與 y_render_dist (2) 對應，+1 給予緩衝
     let mut to_remove: Vec<IVec3> = Vec::new();
 
     for (&chunk_pos, entry) in world_manager.chunks.iter() {
         let dx = (chunk_pos.x - player_chunk_pos.x).abs();
+        let dy = (chunk_pos.y - player_chunk_pos.y).abs();
         let dz = (chunk_pos.z - player_chunk_pos.z).abs();
 
-        if dx > unload_distance || dz > unload_distance || chunk_pos.y < 0 || chunk_pos.y >= crate::utils::math::WORLD_CHUNKS_Y {
+        if dx > unload_distance || dz > unload_distance || dy > y_unload_dist || chunk_pos.y < 0 || chunk_pos.y >= crate::utils::math::WORLD_CHUNKS_Y {
             to_remove.push(chunk_pos);
 
             // 1. 存檔分流（僅對修改過的區塊）
@@ -480,7 +506,11 @@ fn update_chunks(
     }
 
     for pos in to_remove {
-        world_manager.chunks.remove(&pos);
+        if world_manager.chunks.contains_key(&pos) {
+            world_manager.chunks.remove(&pos);
+        }
+        // 區塊移出視野後清除 vacuum 紀錄，下次走回附近時重新產生即可
+        world_manager.vacuum_chunks.remove(&pos);
     }
 }
 
@@ -497,17 +527,14 @@ fn poll_loading_chunks(
             world_manager.loading_chunks.remove(&chunk_pos);
             world_manager.heightmap_cache.insert(IVec2::new(chunk_pos.x, chunk_pos.z), max_surface_y_map);
 
-            let is_pure_air = non_air_count == 0;
+            let is_pure_vacuum = chunk_data.buffer.is_pure_air(); // Fluid is None upon initial generation
 
-            if is_pure_air {
-                let entry = ChunkEntry {
-                    buffer:      chunk_data.buffer,
-                    light_buffer: light_buffer.clone(),
-                    fluid_buffer: None,
-                    entity:      None,
-                    is_modified: false,
-                };
-                world_manager.chunks.insert(chunk_pos, entry);
+            if is_pure_vacuum {
+                // 🚀 純空氣區塊自我審查機制：直接捨棄，拒絕寫入記憶體！
+                // 並登錄到 vacuum_chunks 避免重複加載
+                world_manager.vacuum_chunks.insert(chunk_pos);
+                commands.entity(entity).despawn();
+                continue;
             } else {
                 let mut chunk = Chunk::new(chunk_pos);
                 chunk.buffer = generator::ChunkBuffer { blocks: chunk_data.buffer.blocks };

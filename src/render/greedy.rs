@@ -137,6 +137,63 @@ fn push_quad(
     }
 }
 
+pub struct ChunkMeshInputData {
+    pub chunk_pos: IVec3,
+    pub blocks: [Option<Box<crate::world::generator::ChunkBuffer>>; 27],
+    pub fluids: [Option<Box<[u8; 32768]>>; 27],
+    pub lights: [Option<Box<crate::world::chunk::ChunkLightBuffer>>; 27],
+}
+
+impl ChunkMeshInputData {
+    pub fn get_block_global(&self, gp: IVec3) -> crate::world::voxel::BlockType {
+        let (cp, lp) = crate::world::WorldManager::global_to_chunk_pos(gp);
+        let diff = cp - self.chunk_pos;
+        if diff.x < -1 || diff.x > 1 || diff.y < -1 || diff.y > 1 || diff.z < -1 || diff.z > 1 {
+            return if gp.y >= 64 { crate::world::voxel::BlockType::Air } else { crate::world::voxel::BlockType::Stone };
+        }
+        let idx = ((diff.x + 1) * 9 + (diff.y + 1) * 3 + (diff.z + 1)) as usize;
+        if let Some(buf) = &self.blocks[idx] {
+            let i = crate::utils::math::voxel_pos_to_index(lp.x as usize, lp.y as usize, lp.z as usize);
+            buf.blocks[i]
+        } else {
+            if gp.y >= 64 { crate::world::voxel::BlockType::Air } else { crate::world::voxel::BlockType::Stone }
+        }
+    }
+
+    pub fn get_fluid_global(&self, gp: IVec3) -> u8 {
+        let (cp, lp) = crate::world::WorldManager::global_to_chunk_pos(gp);
+        let diff = cp - self.chunk_pos;
+        if diff.x < -1 || diff.x > 1 || diff.y < -1 || diff.y > 1 || diff.z < -1 || diff.z > 1 {
+            return 0;
+        }
+        let idx = ((diff.x + 1) * 9 + (diff.y + 1) * 3 + (diff.z + 1)) as usize;
+        if let Some(buf) = &self.fluids[idx] {
+            let i = crate::utils::math::voxel_pos_to_index(lp.x as usize, lp.y as usize, lp.z as usize);
+            buf[i]
+        } else {
+            0
+        }
+    }
+
+    pub fn get_light_global(&self, gp: IVec3) -> u8 {
+        let (cp, lp) = crate::world::WorldManager::global_to_chunk_pos(gp);
+        let diff = cp - self.chunk_pos;
+        if diff.x < -1 || diff.x > 1 || diff.y < -1 || diff.y > 1 || diff.z < -1 || diff.z > 1 {
+            return if gp.y >= 64 { 15 } else { 0 }; 
+        }
+        let idx = ((diff.x + 1) * 9 + (diff.y + 1) * 3 + (diff.z + 1)) as usize;
+        if let Some(buf) = &self.lights[idx] {
+            let i = crate::utils::math::voxel_pos_to_index(lp.x as usize, lp.y as usize, lp.z as usize);
+            buf.get_sky_light(i)
+        } else {
+            if gp.y >= 64 { 15 } else { 0 }
+        }
+    }
+}
+
+#[derive(Component)]
+pub struct ComputeMeshTask(pub bevy::tasks::Task<Option<(MeshData, MeshData)>>);
+
 // ── Finalise mesh ─────────────────────────────────────────────────────────────
 
 fn finalize_mesh(data: MeshData, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
@@ -153,7 +210,6 @@ fn finalize_mesh(data: MeshData, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
 pub fn mesh_dirty_chunks(
     mut commands:   Commands,
     mut q_chunks:   Query<(Entity, &mut Chunk)>,
-    mut meshes:     ResMut<Assets<Mesh>>,
     mut world_manager:  ResMut<WorldManager>,
     game_textures:  Option<Res<GameTextures>>,
 ) {
@@ -179,40 +235,140 @@ pub fn mesh_dirty_chunks(
         }
     }
 
-    let mut meshes_to_apply = Vec::new();
+    if dirty_chunks.is_empty() { return; }
+
+    let thread_pool = bevy::tasks::ComputeTaskPool::get();
+
     for (entity, chunk_pos) in dirty_chunks {
-        let mut solid_data = empty_mesh();
-        let mut fluid_data = empty_mesh();
-        generate_greedy_mesh(entity, chunk_pos, &world_manager, false, &mut solid_data);
-        generate_greedy_mesh(entity, chunk_pos, &world_manager, true, &mut fluid_data);
-        meshes_to_apply.push((entity, solid_data, fluid_data));
-    }
+        // 極速局部提取：只拷貝當前區塊與周圍 26 個鄰居 (3x3x3，確保斜角水流與邊界遮蔽正確)
+        let mut input_data = ChunkMeshInputData {
+            chunk_pos,
+            blocks: std::array::from_fn(|_| None),
+            fluids: std::array::from_fn(|_| None),
+            lights: std::array::from_fn(|_| None),
+        };
 
-    for (entity, solid_data, fluid_data) in meshes_to_apply {
-        commands.entity(entity).despawn_descendants();
+        let mut is_completely_empty = true;
 
-        if !solid_data.0.is_empty() {
-            let child = commands.spawn(MaterialMeshBundle {
-                mesh:      finalize_mesh(solid_data, &mut meshes),
-                material:  gt.material.clone(),
-                transform: Transform::default(),
-                ..default()
-            }).id();
-            commands.entity(entity).add_child(child);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let n_pos = chunk_pos + IVec3::new(dx, dy, dz);
+                    if let Some(entry) = world_manager.get_chunk_ref(n_pos) {
+                        let idx = ((dx + 1) * 9 + (dy + 1) * 3 + (dz + 1)) as usize;
+                        input_data.blocks[idx] = Some(Box::new(entry.buffer.clone()));
+                        input_data.fluids[idx] = entry.fluid_buffer.clone();
+                        input_data.lights[idx] = Some(Box::new(entry.light_buffer.clone()));
+                        
+                        let has_fluid = entry.fluid_buffer.as_ref().map_or(false, |fb| fb.iter().any(|&f| f > 0));
+                        if !entry.buffer.is_pure_air() || has_fluid {
+                            is_completely_empty = false;
+                        }
+                    } else {
+                        // 如果鄰居尚未加載，且該鄰居在地下，我們會把它視為石頭，這會產生實體邊界，不能視為全空！
+                        if n_pos.y * crate::utils::math::CHUNK_SIZE < 64 {
+                            is_completely_empty = false;
+                        }
+                    }
+                }
+            }
         }
 
-        if !fluid_data.0.is_empty() {
-            let child = commands.spawn(MaterialMeshBundle {
-                mesh:      finalize_mesh(fluid_data, &mut meshes),
-                material:  gt.fluid_material.clone(),
-                transform: Transform::default(),
-                ..default()
-            }).id();
-            commands.entity(entity).add_child(child);
+        if is_completely_empty {
+            // 不派發任務，直接清理髒標記並返回
+            if let Ok((_, mut chunk)) = q_chunks.get_mut(entity) {
+                chunk.is_dirty = false;
+            }
+            continue;
         }
 
+        let task = thread_pool.spawn(async move {
+            let mut solid_data = empty_mesh();
+            let mut fluid_data = empty_mesh();
+            generate_greedy_mesh(entity, chunk_pos, &input_data, false, &mut solid_data);
+            generate_greedy_mesh(entity, chunk_pos, &input_data, true, &mut fluid_data);
+            Some((solid_data, fluid_data))
+        });
+        
+        commands.add(move |world: &mut World| {
+            if let Some(mut e) = world.get_entity_mut(entity) {
+                e.insert(ComputeMeshTask(task));
+            }
+        });
+        
+        // 即時標記為乾淨，避免下一幀重複派發。若後續被修改，將會重新觸發新任務蓋掉舊的
         if let Ok((_, mut chunk)) = q_chunks.get_mut(entity) {
             chunk.is_dirty = false;
+        }
+    }
+}
+
+pub fn poll_mesh_tasks(
+    mut commands: Commands,
+    mut q_tasks: Query<(Entity, &mut ComputeMeshTask)>,
+    game_textures: Option<Res<crate::render::textures::GameTextures>>,
+    config: Res<crate::config::EngineConfig>,
+) {
+    let Some(gt) = game_textures else { return; };
+    if !gt.ready { return; }
+
+    let gt_mat = gt.material.clone();
+    let gt_fluid = gt.fluid_material.clone();
+
+    let mut uploaded = 0;
+    for (entity, mut task) in q_tasks.iter_mut() {
+        if let Some(Some((solid_data, fluid_data))) = futures_lite::future::block_on(futures_lite::future::poll_once(&mut task.0)) {
+            let mat = gt_mat.clone();
+            let fluid_mat = gt_fluid.clone();
+            
+            commands.add(move |world: &mut World| {
+                if let Some(mut e) = world.get_entity_mut(entity) {
+                    e.despawn_descendants();
+                    e.remove::<ComputeMeshTask>();
+
+                    let has_geometry = !solid_data.0.is_empty() || !fluid_data.0.is_empty();
+
+                    if has_geometry {
+                        let mut children = Vec::new();
+                        if !solid_data.0.is_empty() {
+                            let mesh_handle = {
+                                let mut meshes = world.resource_mut::<Assets<Mesh>>();
+                                finalize_mesh(solid_data, &mut meshes)
+                            };
+                            let child = world.spawn(MaterialMeshBundle {
+                                mesh: mesh_handle,
+                                material: mat.clone(),
+                                transform: Transform::default(),
+                                ..Default::default()
+                            }).id();
+                            children.push(child);
+                        }
+
+                        if !fluid_data.0.is_empty() {
+                            let mesh_handle = {
+                                let mut meshes = world.resource_mut::<Assets<Mesh>>();
+                                finalize_mesh(fluid_data, &mut meshes)
+                            };
+                            let child = world.spawn(MaterialMeshBundle {
+                                mesh: mesh_handle,
+                                material: fluid_mat.clone(),
+                                transform: Transform::default(),
+                                ..Default::default()
+                            }).id();
+                            children.push(child);
+                        }
+
+                        if !children.is_empty() {
+                            world.entity_mut(entity).push_children(&children);
+                        }
+                    }
+                }
+            });
+
+            uploaded += 1;
+            if uploaded >= config.max_mesh_uploads_per_frame {
+                break;
+            }
         }
     }
 }
@@ -239,11 +395,11 @@ pub fn mesh_dirty_chunks(
 fn generate_greedy_mesh(
     _entity: Entity,
     chunk_pos: IVec3,
-    world: &WorldManager,
-    is_fluid: bool,
+    world: &ChunkMeshInputData,
+    fluid_pass: bool,
     out:   &mut MeshData,
 ) {
-    if is_fluid {
+    if fluid_pass {
         generate_fluid_mesh(chunk_pos, world, out);
         return;
     }
@@ -435,7 +591,7 @@ fn push_fluid_quad(
 
 fn generate_fluid_mesh(
     chunk_pos: IVec3,
-    world: &WorldManager,
+    world: &ChunkMeshInputData,
     out: &mut MeshData,
 ) {
     let chunk_size_i = CHUNK_SIZE as i32;
@@ -446,7 +602,7 @@ fn generate_fluid_mesh(
             for x in 0..chunk_size_i {
                 let gp = base_gp + IVec3::new(x, y, z);
                 let b0 = world.get_block_global(gp);
-                let f0 = world.get_fluid_global(gp).min(8);
+                let f0 = world.get_fluid_global(gp).min(crate::config::MAX_FLUID_LEVEL);
                 
                 if !(b0 == BlockType::Air && f0 > 0) {
                     continue;
@@ -456,12 +612,12 @@ fn generate_fluid_mesh(
                     let mut max_f = 0;
                     for (dx, dz) in [(0,0), (-1,0), (0,-1), (-1,-1)] {
                         let ngp = base_gp + IVec3::new(cx + dx, y, cz + dz);
-                        let f = world.get_fluid_global(ngp).min(8);
+                        let f = world.get_fluid_global(ngp).min(crate::config::MAX_FLUID_LEVEL);
                         let b_above = world.get_block_global(ngp + IVec3::Y);
-                        let f_above = world.get_fluid_global(ngp + IVec3::Y).min(8);
+                        let f_above = world.get_fluid_global(ngp + IVec3::Y).min(crate::config::MAX_FLUID_LEVEL);
                         
-                        if (b_above == BlockType::Air && f_above > 0) || f == 8 {
-                            return 8;
+                        if (b_above == BlockType::Air && f_above > 0) || f == crate::config::MAX_FLUID_LEVEL {
+                            return crate::config::MAX_FLUID_LEVEL;
                         }
                         if f > max_f {
                             max_f = f;
@@ -477,13 +633,13 @@ fn generate_fluid_mesh(
 
                 // 流體最低渲染高度屏障 (Min Height Clamp)
                 // 確保最外圍水位為 1 時，仍保留至少 1/8 的厚度，避免頂面與地面發生 Z-Fighting
-                let mut nw_off = (8 - nw_h).min(7);
-                let mut ne_off = (8 - ne_h).min(7);
-                let mut sw_off = (8 - sw_h).min(7);
-                let mut se_off = (8 - se_h).min(7);
+                let mut nw_off = (crate::config::MAX_FLUID_LEVEL - nw_h).min(crate::config::MAX_FLUID_LEVEL - 1);
+                let mut ne_off = (crate::config::MAX_FLUID_LEVEL - ne_h).min(crate::config::MAX_FLUID_LEVEL - 1);
+                let mut sw_off = (crate::config::MAX_FLUID_LEVEL - sw_h).min(crate::config::MAX_FLUID_LEVEL - 1);
+                let mut se_off = (crate::config::MAX_FLUID_LEVEL - se_h).min(crate::config::MAX_FLUID_LEVEL - 1);
 
                 // 【下落全滿特權】：只有自身是滿水位，且上方有水灌入，且水平四周存在幾何缺口時，才判定為真正的瀑布柱！
-                let is_waterfall_column = f0 == 8 
+                let is_waterfall_column = f0 == crate::config::MAX_FLUID_LEVEL 
                     && world.get_fluid_global(gp + IVec3::Y) > 0 
                     && (world.get_fluid_global(gp + IVec3::X) == 0 
                         || world.get_fluid_global(gp - IVec3::X) == 0 
@@ -499,7 +655,7 @@ fn generate_fluid_mesh(
 
                 let check_face = |ngp: IVec3, is_top_bottom: bool| -> bool {
                     let nb = world.get_block_global(ngp);
-                    let nf = world.get_fluid_global(ngp).min(8);
+                    let nf = world.get_fluid_global(ngp).min(crate::config::MAX_FLUID_LEVEL);
                     if nb.is_solid() {
                         return false;
                     }
@@ -520,10 +676,10 @@ fn generate_fluid_mesh(
                 let diff_b = (h_ne - h_sw).abs();
                 let flip_diagonal = diff_a > diff_b;
 
-                let nf_px = world.get_fluid_global(gp + IVec3::X).min(8);
-                let nf_nx = world.get_fluid_global(gp - IVec3::X).min(8);
-                let nf_pz = world.get_fluid_global(gp + IVec3::Z).min(8);
-                let nf_nz = world.get_fluid_global(gp - IVec3::Z).min(8);
+                let nf_px = world.get_fluid_global(gp + IVec3::X).min(crate::config::MAX_FLUID_LEVEL);
+                let nf_nx = world.get_fluid_global(gp - IVec3::X).min(crate::config::MAX_FLUID_LEVEL);
+                let nf_pz = world.get_fluid_global(gp + IVec3::Z).min(crate::config::MAX_FLUID_LEVEL);
+                let nf_nz = world.get_fluid_global(gp - IVec3::Z).min(crate::config::MAX_FLUID_LEVEL);
 
                 let flow_x = (nf_px as f32) - (nf_nx as f32);
                 let flow_z = (nf_pz as f32) - (nf_nz as f32);
@@ -550,7 +706,7 @@ fn generate_fluid_mesh(
                     if nf == 0 {
                         (y, 0)
                     } else {
-                        (y + 1, 8 - nf)
+                        (y + 1, crate::config::MAX_FLUID_LEVEL - nf)
                     }
                 };
 
