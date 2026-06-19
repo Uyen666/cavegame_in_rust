@@ -44,6 +44,7 @@ struct FaceInfo {
     block:     BlockType,
     normal:    i32,
     tex_layer: u32,   // ← Key addition: makes merge direction-aware
+    sky_light: u8,
 }
 
 // ── Mesh accumulator ─────────────────────────────────────────────────────────
@@ -88,6 +89,7 @@ fn push_quad(
     normal_vec: [f32; 3],
     _color:     [f32; 4],
     tex_layer:  u32,
+    sky_light:  u8,
     _quad_w:    i32,
     _quad_h:    i32,
     rev:        bool,
@@ -110,7 +112,8 @@ fn push_quad(
                         | ((y & 0x3F) << 6) 
                         | ((z & 0x3F) << 12) 
                         | ((face_id as u32 & 0x07) << 18) 
-                        | ((tex_layer & 0x7FF) << 21);
+                        | ((tex_layer & 0x7F) << 21) 
+                        | (((sky_light as u32) & 0x0F) << 28);
                         
         bucket.0.push(packed);
     }
@@ -212,6 +215,7 @@ fn generate_greedy_mesh(
 ) {
     // 🚀 優化 1：在進入 10 萬次迴圈前，先一次性獲取當前區塊的唯讀引用
     let current_chunk = &q_chunks.get(entity).unwrap().1;
+    let current_entry = world.chunks.get(&chunk_pos).unwrap();
 
     // 強制將 CHUNK_SIZE 轉為 i32 以便與含有 -1 的 slice 安全迭代
     let chunk_size_i = CHUNK_SIZE as i32;
@@ -275,20 +279,43 @@ fn generate_greedy_mesh(
 
                     // 實心→空氣: 繪製正向面 (normal +d)
                     // 空氣→實心: 繪製反向面 (normal -d)
-                    // 【修正】：嚴格實施「幾何擁有權短路」
-                    // 只有當實心方塊真正屬於「當前區塊」的合法索引範圍 (0~31) 時，才允許產生網格面。
-                    // 若實心方塊在隔壁區塊，則由隔壁區塊自己負責繪製，防止跨區界產生雙重疊加的幽靈面！
                     mask[n] = match (b0.is_solid(), b1.is_solid()) {
-                        (true, false) if slice >= 0 => Some(FaceInfo {
-                            block:     b0,
-                            normal:    1,
-                            tex_layer: get_texture_layer(b0, d, 1),
-                        }),
-                        (false, true) if slice < CHUNK_SIZE - 1 => Some(FaceInfo {
-                            block:     b1,
-                            normal:    -1,
-                            tex_layer: get_texture_layer(b1, d, -1),
-                        }),
+                        (true, false) if slice >= 0 => {
+                            let lx = x[0] + q[0];
+                            let ly = x[1] + q[1];
+                            let lz = x[2] + q[2];
+                            let sl = if lx >= 0 && lx < chunk_size_i && ly >= 0 && ly < chunk_size_i && lz >= 0 && lz < chunk_size_i {
+                                let idx = lx as usize + (ly as usize) * 32 + (lz as usize) * 1024;
+                                current_entry.light_buffer.get_sky_light(idx)
+                            } else {
+                                let gp = chunk_pos * chunk_size_i + IVec3::new(lx, ly, lz);
+                                world.get_light_global(gp)
+                            };
+                            Some(FaceInfo {
+                                block:     b0,
+                                normal:    1,
+                                tex_layer: get_texture_layer(b0, d, 1),
+                                sky_light: sl,
+                            })
+                        },
+                        (false, true) if slice < chunk_size_i - 1 => {
+                            let lx = x[0];
+                            let ly = x[1];
+                            let lz = x[2];
+                            let sl = if lx >= 0 && lx < chunk_size_i && ly >= 0 && ly < chunk_size_i && lz >= 0 && lz < chunk_size_i {
+                                let idx = lx as usize + (ly as usize) * 32 + (lz as usize) * 1024;
+                                current_entry.light_buffer.get_sky_light(idx)
+                            } else {
+                                let gp = chunk_pos * chunk_size_i + IVec3::new(lx, ly, lz);
+                                world.get_light_global(gp)
+                            };
+                            Some(FaceInfo {
+                                block:     b1,
+                                normal:    -1,
+                                tex_layer: get_texture_layer(b1, d, -1),
+                                sky_light: sl,
+                            })
+                        },
                         _ => None,
                     };
                     n += 1;
@@ -353,6 +380,7 @@ fn generate_greedy_mesh(
                             normal_vec,
                             [1.0, 1.0, 1.0, 1.0],
                             face.tex_layer,
+                            face.sky_light,
                             w, h,
                             rev,
                             d,  // pass axis for correct UV layout

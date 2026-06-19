@@ -11,6 +11,7 @@ struct VertexOutput {
     @location(1) world_normal: vec3<f32>,
     @location(2) @interpolate(perspective, center) uv: vec2<f32>,
     @location(3) texture_index: u32,
+    @location(4) sky_light: f32,
 };
 
 @group(2) @binding(0) var array_texture: texture_2d_array<f32>;
@@ -24,7 +25,8 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     let y = f32((vertex.packed_data >> 6u) & 0x3Fu);
     let z = f32((vertex.packed_data >> 12u) & 0x3Fu);
     let face_id = (vertex.packed_data >> 18u) & 0x07u;
-    let tex_id = (vertex.packed_data >> 21u) & 0x7FFu;
+    let tex_id = (vertex.packed_data >> 21u) & 0x7Fu;
+    let sky_light_int = (vertex.packed_data >> 28u) & 0x0Fu;
 
     let local_pos = vec3<f32>(x, y, z);
     
@@ -50,6 +52,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     );
     out.uv = uv;
     out.texture_index = tex_id;
+    out.sky_light = f32(sky_light_int);
     
     return out;
 }
@@ -61,6 +64,7 @@ struct FragmentInput {
     @location(1) world_normal: vec3<f32>,
     @location(2) @interpolate(perspective, center) uv: vec2<f32>,
     @location(3) texture_index: u32,
+    @location(4) sky_light: f32,
 };
 
 #ifdef PREPASS_PIPELINE
@@ -70,22 +74,17 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
 }
 #else
-// A very basic Lambertian lighting + ambient to simulate PBR-like looks without the huge PBR overhead
+// Non-linear Sky Light Propagation Lighting
 @fragment
 fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     // Sample texture array
     let tex_color = textureSample(array_texture, array_sampler, in.uv, in.texture_index);
     
-    // Very simple directional lighting (sun)
-    let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.3));
-    let ambient = 0.4;
-    let normal = normalize(in.world_normal);
+    let light_ratio = in.sky_light / 15.0;
+    let shadow_intensity = 0.06 + (1.0 - 0.06) * (light_ratio * light_ratio);
     
-    let diffuse = max(dot(normal, light_dir), 0.0);
-    let lighting = ambient + diffuse * 0.6;
+    let final_rgb = tex_color.rgb * shadow_intensity;
     
-    let final_color = tex_color.rgb * lighting;
-    
-    return vec4<f32>(final_color, tex_color.a);
+    return vec4<f32>(final_rgb, tex_color.a);
 }
 #endif

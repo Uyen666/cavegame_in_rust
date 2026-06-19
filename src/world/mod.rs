@@ -3,14 +3,14 @@ pub mod chunk;
 pub mod storage;
 pub mod gen;
 pub mod generator;
-
+pub mod lighting;
 use bevy::prelude::*;
 use bevy::utils::{HashMap, HashSet};
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use futures_lite::future;
 use bevy::render::primitives::Aabb;
 
-pub use chunk::{Chunk, ChunkData};
+pub use chunk::{Chunk, ChunkData, ChunkLightBuffer};
 pub use voxel::BlockType;
 use crate::utils::math::CHUNK_SIZE;
 use noise::{NoiseFn, Perlin, Fbm};
@@ -42,7 +42,7 @@ impl Plugin for WorldPlugin {
 }
 
 #[derive(Component)]
-pub struct GeneratingChunk(pub Task<(IVec3, ChunkData, u16)>);
+pub struct GeneratingChunk(pub Task<(IVec3, ChunkData, ChunkLightBuffer, u16, Box<[i32; 1024]>)>);
 
 const RENDER_DISTANCE: i32 = 2;
 
@@ -61,6 +61,7 @@ pub enum WorldType {
 ///   - `entity`  僅非空氣區塊才有，`None` 代表純空氣，不佔用任何 ECS Transform 開銷
 pub struct ChunkEntry {
     pub buffer: generator::ChunkBuffer,
+    pub light_buffer: ChunkLightBuffer,
     pub entity:  Option<Entity>,
     pub is_modified: bool,
 }
@@ -71,6 +72,7 @@ pub struct WorldManager {
     pub loading_chunks: HashSet<IVec3>,
     pub world_type:     WorldType,
     pub seed:           u32,
+    pub heightmap_cache: HashMap<IVec2, Box<[i32; 1024]>>,
 }
 
 impl Default for WorldManager {
@@ -80,6 +82,7 @@ impl Default for WorldManager {
             loading_chunks: HashSet::default(),
             world_type:     WorldType::PerlinHills,
             seed:           12345,
+            heightmap_cache: HashMap::default(),
         }
     }
 }
@@ -113,6 +116,68 @@ impl WorldManager {
     /// 相容舊簽名的全域方塊查詢（供 greedy.rs 等使用），實際上直接查 palette
     pub fn get_block_global_mut(&self, pos: IVec3, _q_chunks: &Query<(Entity, &mut Chunk)>) -> BlockType {
         self.get_block_global(pos)
+    }
+
+    pub fn get_light_global(&self, pos: IVec3) -> u8 {
+        if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y {
+            return 15; // Above world = full sky
+        }
+        let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
+        if let Some(entry) = self.chunks.get(&chunk_pos) {
+            let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
+            return entry.light_buffer.get_sky_light(idx);
+        }
+        
+        let chunk_col = IVec2::new(chunk_pos.x, chunk_pos.z);
+        if let Some(heightmap) = self.heightmap_cache.get(&chunk_col) {
+            let local_x = local.x as usize;
+            let local_z = local.z as usize;
+            let max_surface_y = heightmap[local_x + local_z * 32];
+            if pos.y > max_surface_y {
+                return 15;
+            } else {
+                return 0;
+            }
+        }
+        
+        0
+    }
+
+    pub fn set_light_global(&mut self, pos: IVec3, light: u8, q_chunks: &mut Query<(Entity, &mut Chunk)>) {
+        if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y { return; }
+        let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
+        if let Some(entry) = self.chunks.get_mut(&chunk_pos) {
+            let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
+            entry.light_buffer.set_sky_light(idx, light);
+            if let Some(entity) = entry.entity {
+                if let Ok((_, mut chunk)) = q_chunks.get_mut(entity) {
+                    chunk.light_buffer.set_sky_light(idx, light);
+                    chunk.is_dirty = true;
+                }
+            }
+        }
+
+        let boundary_neighbors: &[(i32, IVec3)] = &[
+            (local.x,          IVec3::new(-1,  0,  0)),
+            (crate::utils::math::CHUNK_SIZE - 1 - local.x, IVec3::new( 1,  0,  0)),
+            (local.y,          IVec3::new( 0, -1,  0)),
+            (crate::utils::math::CHUNK_SIZE - 1 - local.y, IVec3::new( 0,  1,  0)),
+            (local.z,          IVec3::new( 0,  0, -1)),
+            (crate::utils::math::CHUNK_SIZE - 1 - local.z, IVec3::new( 0,  0,  1)),
+        ];
+
+        for &(dist_to_edge, offset) in boundary_neighbors {
+            if dist_to_edge == 0 {
+                let neighbor_chunk_pos = chunk_pos + offset;
+                if let Some(neighbor_entry) = self.chunks.get(&neighbor_chunk_pos) {
+                    if let Some(neighbor_entity) = neighbor_entry.entity {
+                        if let Ok((_, mut neighbor_chunk)) = q_chunks.get_mut(neighbor_entity) {
+                            neighbor_chunk.is_dirty = true;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub fn set_block_global(
@@ -187,6 +252,44 @@ impl WorldManager {
                 }
             }
         }
+
+        // 5. Light update hook (Runtime block destruction)
+        if block == BlockType::Air {
+            let max_surface_y = match self.world_type {
+                WorldType::Flat => 4,
+                WorldType::PerlinHills => {
+                    let fbm = Fbm::<Perlin>::new(self.seed);
+                    let noise = TerrainNoise(fbm);
+                    let generator = generator::TerrainGenerator { noise_provider: noise };
+                    generator.get_max_surface_y(pos.x, pos.z)
+                },
+                WorldType::FloatingIslands => -1,
+            };
+
+            let mut start_light = 0;
+            if pos.y > max_surface_y {
+                start_light = 15;
+            } else {
+                let neighbors = [
+                    pos + IVec3::X, pos - IVec3::X,
+                    pos + IVec3::Y, pos - IVec3::Y,
+                    pos + IVec3::Z, pos - IVec3::Z,
+                ];
+                let mut max_adj = 0;
+                for &npos in &neighbors {
+                    let l = self.get_light_global(npos);
+                    if l > max_adj { max_adj = l; }
+                }
+                if max_adj > 0 {
+                    start_light = max_adj - 1;
+                }
+            }
+
+            self.set_light_global(pos, start_light, q_chunks);
+            let mut queue = std::collections::VecDeque::new();
+            queue.push_back(pos);
+            crate::world::lighting::propagate_sky_light_global(self, q_chunks, queue);
+        }
     }
 
 
@@ -256,6 +359,28 @@ fn update_chunks(
         world_manager.loading_chunks.insert(pos);
         
         let task = task_pool.spawn(async move {
+            let mut max_surface_y_map = [0i32; 1024];
+            match world_type {
+                WorldType::Flat => {
+                    for i in 0..1024 { max_surface_y_map[i] = 4; }
+                },
+                WorldType::PerlinHills => {
+                    let fbm = Fbm::<Perlin>::new(seed);
+                    let noise = TerrainNoise(fbm);
+                    let generator = generator::TerrainGenerator { noise_provider: noise };
+                    for bz in 0..32 {
+                        for bx in 0..32 {
+                            let gx = pos.x * 32 + bx as i32;
+                            let gz = pos.z * 32 + bz as i32;
+                            max_surface_y_map[bx + bz * 32] = generator.get_max_surface_y(gx, gz);
+                        }
+                    }
+                },
+                WorldType::FloatingIslands => {
+                    for i in 0..1024 { max_surface_y_map[i] = -1; }
+                },
+            }
+
             let (chunk_buffer, non_air_count) = if let Some(data) = storage::load_chunk_from_disk(pos) {
                 let count = data.buffer.blocks.iter().filter(|&&b| b != BlockType::Air).count() as u16;
                 (data.buffer, count)
@@ -275,8 +400,12 @@ fn update_chunks(
                     WorldType::FloatingIslands => (generator::ChunkBuffer::default(), 0),
                 }
             };
-            // 回傳完整 ChunkData 與 non_air_count
-            (pos, ChunkData { buffer: chunk_buffer }, non_air_count)
+            let mut light_buffer = ChunkLightBuffer::default();
+            lighting::init_sunlight(pos, &chunk_buffer, &mut light_buffer, &max_surface_y_map);
+            lighting::propagate_sky_light(&chunk_buffer, &mut light_buffer);
+
+            // 回傳完整 ChunkData, ChunkLightBuffer 與 non_air_count
+            (pos, ChunkData { buffer: chunk_buffer }, light_buffer, non_air_count, Box::new(max_surface_y_map))
         });
 
         commands.spawn(GeneratingChunk(task));
@@ -331,15 +460,17 @@ fn poll_loading_chunks(
     mut q_chunks: Query<(Entity, &mut Chunk)>,
 ) {
     for (entity, mut task) in &mut q_tasks {
-        if let Some((chunk_pos, chunk_data, non_air_count)) = future::block_on(future::poll_once(&mut task.0)) {
+        if let Some((chunk_pos, chunk_data, light_buffer, non_air_count, max_surface_y_map)) = future::block_on(future::poll_once(&mut task.0)) {
             // 從追蹤名單移除
             world_manager.loading_chunks.remove(&chunk_pos);
+            world_manager.heightmap_cache.insert(IVec2::new(chunk_pos.x, chunk_pos.z), max_surface_y_map);
 
             let is_pure_air = non_air_count == 0;
 
             if is_pure_air {
                 let entry = ChunkEntry {
                     buffer:      chunk_data.buffer,
+                    light_buffer: light_buffer.clone(),
                     entity:      None,
                     is_modified: false,
                 };
@@ -347,6 +478,7 @@ fn poll_loading_chunks(
             } else {
                 let mut chunk = Chunk::new(chunk_pos);
                 chunk.buffer = generator::ChunkBuffer { blocks: chunk_data.buffer.blocks };
+                chunk.light_buffer = light_buffer.clone();
                 
                 // 動態校準 non_air_count 防禦邊界
                 chunk.non_air_count = non_air_count;
@@ -369,6 +501,7 @@ fn poll_loading_chunks(
 
                 let entry = ChunkEntry {
                     buffer:      generator::ChunkBuffer { blocks: chunk_data.buffer.blocks }, // ✅ 保存完整資料與 3D 陣列供鄰居全域查詢
+                    light_buffer: light_buffer.clone(),
                     entity:      Some(chunk_entity),
                     is_modified: false,
                 };
@@ -390,6 +523,51 @@ fn poll_loading_chunks(
                         }
                     }
                 }
+            }
+
+            // --- 邊界光照縫合 (Chunk Boundary Light Stitching) ---
+            let mut lighting_queue = std::collections::VecDeque::new();
+            for offset in offsets {
+                let neighbor_pos = chunk_pos + offset;
+                if world_manager.chunks.contains_key(&neighbor_pos) {
+                    let (dx, dy, dz) = (offset.x, offset.y, offset.z);
+                    let mut start_x = 0; let mut end_x = 32;
+                    let mut start_y = 0; let mut end_y = 32;
+                    let mut start_z = 0; let mut end_z = 32;
+
+                    if dx == 1 { start_x = 31; end_x = 32; }
+                    if dx == -1 { start_x = 0; end_x = 1; }
+                    if dy == 1 { start_y = 31; end_y = 32; }
+                    if dy == -1 { start_y = 0; end_y = 1; }
+                    if dz == 1 { start_z = 31; end_z = 32; }
+                    if dz == -1 { start_z = 0; end_z = 1; }
+
+                    for y in start_y..end_y {
+                        for z in start_z..end_z {
+                            for x in start_x..end_x {
+                                let global_pos = IVec3::new(chunk_pos.x * 32 + x, chunk_pos.y * 32 + y, chunk_pos.z * 32 + z);
+                                let n_global_pos = global_pos + offset;
+
+                                let this_block = world_manager.get_block_global(global_pos);
+                                let n_block   = world_manager.get_block_global(n_global_pos);
+
+                                let light   = world_manager.get_light_global(global_pos);
+                                let n_light = world_manager.get_light_global(n_global_pos);
+
+                                // Push: new chunk has more light → spill into neighbour
+                                if light > 1 && n_light < light - 1 && n_block == BlockType::Air {
+                                    lighting_queue.push_back(global_pos);
+                                // Pull: neighbour has more light → pull into new chunk
+                                } else if n_light > 1 && light < n_light - 1 && this_block == BlockType::Air {
+                                    lighting_queue.push_back(n_global_pos);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !lighting_queue.is_empty() {
+                crate::world::lighting::propagate_sky_light_global(&mut world_manager, &mut q_chunks, lighting_queue);
             }
 
             // 任務完成，銷毀 Task 實體

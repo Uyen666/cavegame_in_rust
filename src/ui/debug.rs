@@ -28,6 +28,7 @@ impl Plugin for DebugUiPlugin {
 #[derive(Resource, Default)]
 pub struct DebugConfig {
     pub show_chunk_borders: bool,
+    pub show_light_levels: bool,
 }
 
 #[derive(Component)]
@@ -92,8 +93,15 @@ fn toggle_debug_ui(
     }
 
     if let Ok(vis) = q_root.get_single() {
-        if *vis != Visibility::Hidden && keys.just_pressed(KeyCode::KeyC) {
-            config.show_chunk_borders = !config.show_chunk_borders;
+        if *vis != Visibility::Hidden {
+            if keys.just_pressed(KeyCode::KeyC) {
+                config.show_chunk_borders = !config.show_chunk_borders;
+                println!("【系統通知】區塊邊界: {}", if config.show_chunk_borders { "ON" } else { "OFF" });
+            }
+            if keys.just_pressed(KeyCode::KeyL) {
+                config.show_light_levels = !config.show_light_levels;
+                println!("【系統通知】光照除錯面板: {}", if config.show_light_levels { "ON" } else { "OFF" });
+            }
         }
     }
 }
@@ -103,6 +111,7 @@ fn update_debug_text(
     mut q_text: Query<&mut Text, With<DebugText>>,
     q_root: Query<&Visibility, With<DebugUiRoot>>,
     q_player: Query<&Transform, With<Player>>,
+    q_camera: Query<&GlobalTransform, With<crate::player::PlayerCamera>>,
     world_manager: Res<WorldManager>,
     mut timer: ResMut<DebugUpdateTimer>,
     time: Res<Time>,
@@ -139,21 +148,65 @@ fn update_debug_text(
         (0.0, 0.0, 0.0)
     };
 
-    let pos_ivec = IVec3::new(x.floor() as i32, y.floor() as i32, z.floor() as i32);
+    let foot_pos = IVec3::new(x.floor() as i32, y.floor() as i32, z.floor() as i32);
+    let eye_pos = foot_pos + IVec3::Y;
+
+    let foot_light = world_manager.get_light_global(foot_pos);
+    let eye_light = world_manager.get_light_global(eye_pos);
+
+    let pos_ivec = foot_pos;
     let (chunk_pos, local_pos) = WorldManager::global_to_chunk_pos(pos_ivec);
     
     let loaded_entity_chunks = world_manager.chunk_entity_count();
     let loaded_data_chunks   = world_manager.chunk_data_count();
+
+    // ── 實作視線射線 (Raycast Target Query) ──
+    let mut targeted_text = String::from("Targeted Block: Looking at air");
+    if let Ok(cam_tf) = q_camera.get_single() {
+        let cam_pos = cam_tf.translation();
+        let cam_forward = cam_tf.forward();
+        
+        let mut prev_ivec = IVec3::new(cam_pos.x.floor() as i32, cam_pos.y.floor() as i32, cam_pos.z.floor() as i32);
+        
+        // 步長 0.1，探測 6 公尺 (約 60 步)
+        for step in 1..=60 {
+            let t = step as f32 * 0.1;
+            let current_pos = cam_pos + cam_forward * t;
+            let current_ivec = IVec3::new(current_pos.x.floor() as i32, current_pos.y.floor() as i32, current_pos.z.floor() as i32);
+            
+            if current_ivec != prev_ivec {
+                let block = world_manager.get_block_global(current_ivec);
+                if block != crate::world::BlockType::Air {
+                    // 撞擊到固體！
+                    let target_light = world_manager.get_light_global(prev_ivec);
+                    targeted_text = format!(
+                        "Targeted Block: {}, {}, {}\n\
+                         Targeted Light: {} (sky: {}, block: 0)",
+                        current_ivec.x, current_ivec.y, current_ivec.z,
+                        target_light, target_light
+                    );
+                    break;
+                }
+                prev_ivec = current_ivec;
+            }
+        }
+    }
 
     let text_content = format!(
         "Cavegame Dev 2026\n\
          {}\n\
          Pos: X: {:.2}, Y: {:.2}, Z: {:.2}\n\
          Chunk: CX: {}, CY: {}, CZ: {} [bx: {}, by: {}, bz: {}]\n\
+         Client Light: Eye: {} (sky: {}, block: 0)\n\
+                       Foot: {} (sky: {}, block: 0)\n\
+         {}\n\
          Loaded Chunks: [E: {} / D: {}]",
         *fps_cache,
         x, y, z,
         chunk_pos.x, chunk_pos.y, chunk_pos.z, local_pos.x, local_pos.y, local_pos.z,
+        eye_light, eye_light,
+        foot_light, foot_light,
+        targeted_text,
         loaded_entity_chunks, loaded_data_chunks
     );
 
@@ -179,3 +232,5 @@ fn draw_chunk_gizmos(
         );
     }
 }
+
+

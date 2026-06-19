@@ -141,6 +141,31 @@ impl<N: NoiseModule> TerrainGenerator<N> {
         (density, base_h)
     }
 
+    pub fn get_max_surface_y(&self, gx: i32, gz: i32) -> i32 {
+        let fx = gx as f64;
+        let fz = gz as f64;
+        let r = (self.noise_provider.sample_2d(fx * 0.0015, fz * 0.0015) + 0.5).clamp(0.0, 1.0);
+        let (base_h, amplitude, _) = if r < 0.4 {
+            let t = r / 0.4;
+            (95.0 + t * 10.0, 4.0 + t * 10.0, 0.0f32)
+        } else if r < 0.7 {
+            let t = (r - 0.4) / 0.3;
+            (105.0 + t * 20.0, 14.0 + t * 6.0, t * 0.3)
+        } else {
+            let t = (r - 0.7) / 0.3;
+            (125.0 + t * 45.0, 20.0 + t * 35.0, 0.3 + t * 0.7)
+        };
+        let max_possible_y = (base_h + amplitude).ceil() as i32 + 1;
+        
+        for y in (0..=max_possible_y).rev() {
+            let (density, _) = self.calculate_global_density(gx, y, gz);
+            if density > 0.0 {
+                return y;
+            }
+        }
+        0
+    }
+
     pub fn resolve_block_type(&self, gy: i32, density: f32, base_h: f32, local_by: usize, y_densities: &[f32]) -> BlockType {
         if density <= 0.0 {
             return BlockType::Air;
