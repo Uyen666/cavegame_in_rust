@@ -95,15 +95,33 @@ impl<N: NoiseModule> TerrainGenerator<N> {
         let fy = gy as f64;
         let fz = gz as f64;
 
-        let base_h = self.noise_provider.sample_2d(fx * 0.005, fz * 0.005) * 35.0 + 96.0;
-        
-        // 1. 2D 險峻度調變
-        let ruggedness = self.noise_provider.sample_2d(fx * 0.002, fz * 0.002).max(0.0);
-        let amplitude = 6.0 + ruggedness * 35.0;
-        let terrain_noise = self.noise_provider.sample_3d(fx * 0.008, fy * 0.008, fz * 0.008) * amplitude;
-        
-        let mut density = base_h - (gy as f32) + terrain_noise;
+        // 【第一階段：採樣生態分區指標】
+        let r = (self.noise_provider.sample_2d(fx * 0.0015, fz * 0.0015) + 0.5).clamp(0.0, 1.0);
 
+        // 【第二階段：多級幾何參數動態計算（解耦地形拉伸）】
+        let (base_h, amplitude, mountain_weight) = if r < 0.4 {
+            // 🟢 平原帶 (r: 0.0 ~ 0.4) -> 基底緩慢爬升，波幅極小，純波浪 Fbm
+            let t = r / 0.4;
+            (95.0 + t * 10.0, 4.0 + t * 10.0, 0.0f32)
+        } else if r < 0.7 {
+            // 🟡 丘陵帶 (r: 0.4 ~ 0.7) -> 基底中等，波幅適中，維持 Fbm 但開始引入微量峭壁感
+            let t = (r - 0.4) / 0.3;
+            (105.0 + t * 20.0, 14.0 + t * 6.0, t * 0.3)
+        } else {
+            // 🔴 巨山帶 (r: 0.7 ~ 1.0) -> 基底指數型爆發，波幅釋放至最大，全面切換為脊狀地形
+            let t = (r - 0.7) / 0.3;
+            (125.0 + t * 45.0, 20.0 + t * 35.0, 0.3 + t * 0.7)
+        };
+
+        // 【第三階段：連續幾何場複合（Fbm 與 3D 脊狀分形噪聲混合）】
+        let fbm_noise = self.noise_provider.sample_3d(fx * 0.008, fy * 0.008, fz * 0.008);
+        let ridged_noise = 1.0 - fbm_noise.abs();
+        let blended_3d = fbm_noise * (1.0 - mountain_weight) + ridged_noise * mountain_weight;
+
+        // 【最終無狀態連續密度公式】：
+        let mut density = base_h - (gy as f32) + (blended_3d * amplitude);
+
+        // 【第四階段：維持 Y=64 溶洞侵蝕與安全邊界】
         if 16 < gy && gy < 115 {
             let dy = (gy as f32 - 64.0) / 35.0;
             let mut cave_intensity = (1.0 - dy * dy).max(0.0);
@@ -131,9 +149,10 @@ impl<N: NoiseModule> TerrainGenerator<N> {
         let density_above = y_densities[local_by + 1];
 
         // 頂層暴露在空氣中
-        if density_above <= 0.0 {
-            // 如果在適合長草的高度內，則為草地，否則為裸露的石頭
-            if ((gy as f32) - base_h).abs() <= 15.0 {
+        let is_surface = density_above <= 0.0;
+        if is_surface {
+            // 🚀 只要高度高於溶洞帶 (>= 115)，或者在常規地表基準面附近，皆為合法露天地表！
+            if gy >= 115 || ((gy as f32) - base_h).abs() <= 12.0 {
                 return BlockType::Grass;
             } else {
                 return BlockType::Stone; // 高山或深淵直接裸露岩石
@@ -143,9 +162,12 @@ impl<N: NoiseModule> TerrainGenerator<N> {
         // 泥土層（草地下方的幾格）
         for offset in 1..=3 {
             if local_by + offset < y_densities.len() {
+                let is_near_air_interface = y_densities[local_by + offset] <= 0.0;
                 // 如果上方 1~3 格有空氣（代表接近地表），且高度在合理範圍，則填泥土
-                if y_densities[local_by + offset] <= 0.0 && ((gy as f32) - base_h).abs() <= 15.0 {
-                    return BlockType::Dirt;
+                if is_near_air_interface {
+                    if gy >= 115 || ((gy as f32) - base_h).abs() <= 16.0 {
+                        return BlockType::Dirt;
+                    }
                 }
             }
         }
