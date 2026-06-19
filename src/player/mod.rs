@@ -386,9 +386,21 @@ fn player_interaction(
                 } else if key_f {
                     println!("🚀 [Fluid Debug] F Key Pressed! Detecting raycast...");
                     if let Some(place_pos) = last_air_pos {
-                        world.set_fluid_global(place_pos, 8);
-                        world.fluid_queue.push_back(place_pos);
-                        println!("🌊 [Fluid Debug] Successfully spawned water source at global pos: {:?}", place_pos);
+                        if world.get_fluid_global(place_pos) > 0 {
+                            world.set_fluid_global(place_pos, 0);
+                            world.fluid_queue.push_back(place_pos);
+                            for dir in [IVec3::Y, IVec3::NEG_Y, IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
+                                world.fluid_queue.push_back(place_pos + dir);
+                            }
+                            println!("🌊 [Fluid Debug] Removed water at: {:?}", place_pos);
+                        } else {
+                            world.set_fluid_global(place_pos, 9);
+                            world.fluid_queue.push_back(place_pos);
+                            for dir in [IVec3::Y, IVec3::NEG_Y, IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
+                                world.fluid_queue.push_back(place_pos + dir);
+                            }
+                            println!("🌊 [Fluid Debug] Successfully spawned water source at global pos: {:?}", place_pos);
+                        }
                     }
                 }
                 break;

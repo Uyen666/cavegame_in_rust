@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use crate::world::{WorldManager, BlockType};
+use crate::world::WorldManager;
 
 #[derive(Resource)]
 pub struct FluidTickTimer(pub Timer);
@@ -20,46 +20,52 @@ pub fn fluid_tick_system(
 
     for _ in 0..current_len {
         let Some(pos) = world_manager.fluid_queue.pop_front() else { break; };
-        let current_level = world_manager.get_fluid_global(pos);
-        // 垂直截斷鐵律 (Vertical Drop Override)
-        let below_pos = pos + IVec3::new(0, -1, 0);
-        if below_pos.y >= 0 {
-            let below_block = world_manager.get_block_global(below_pos);
-            if below_block == BlockType::Air {
-                let below_fluid = world_manager.get_fluid_global(below_pos);
-                if below_fluid < 8 {
-                    world_manager.set_fluid_global(below_pos, 8);
-                    world_manager.fluid_queue.push_back(below_pos);
-                }
-                // 當前格水成功往下流，不再向水平 4 方向擴散！
-                continue;
-            }
-        }
-
-        // 當水位只有 1 時，不允許再向四周水平蔓延（但它剛才已經有機會往下掉落了！）
-        if current_level <= 1 {
+        
+        if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y {
             continue;
         }
 
-        // 水平 4 方向擴散
-        let next_level = current_level - 1;
-        let neighbors = [
-            pos + IVec3::X,
-            pos - IVec3::X,
-            pos + IVec3::Z,
-            pos - IVec3::Z,
-        ];
-
-        for &npos in &neighbors {
-            if npos.y < 0 || npos.y >= crate::utils::math::WORLD_MAX_Y {
-                continue;
+        let block = world_manager.get_block_global(pos);
+        if block.is_solid() {
+            if world_manager.get_fluid_global(pos) > 0 {
+                world_manager.set_fluid_global(pos, 0);
             }
+            continue;
+        }
 
-            let n_block = world_manager.get_block_global(npos);
-            if n_block == BlockType::Air {
-                let n_fluid = world_manager.get_fluid_global(npos);
-                if n_fluid < next_level {
-                    world_manager.set_fluid_global(npos, next_level);
+        let current_level = world_manager.get_fluid_global(pos);
+        let mut target_level = 0;
+        
+        if current_level == 9 {
+            target_level = 9; // 9 = Source block, never decays
+        } else {
+            let above_pos = pos + IVec3::Y;
+            if above_pos.y < crate::utils::math::WORLD_MAX_Y {
+                let fluid_above = world_manager.get_fluid_global(above_pos);
+                if fluid_above > 0 {
+                    target_level = 8;
+                } else {
+                    let mut max_n = 0;
+                    for dir in [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
+                        let npos = pos + dir;
+                        let f = world_manager.get_fluid_global(npos);
+                        let f_val = if f == 9 { 8 } else { f };
+                        if f_val > max_n { max_n = f_val; }
+                    }
+                    if max_n > 1 {
+                        target_level = max_n - 1;
+                    } else {
+                        target_level = 0;
+                    }
+                }
+            }
+        }
+
+        if current_level != target_level {
+            world_manager.set_fluid_global(pos, target_level);
+            for dir in [IVec3::Y, IVec3::NEG_Y, IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
+                let npos = pos + dir;
+                if npos.y >= 0 && npos.y < crate::utils::math::WORLD_MAX_Y {
                     world_manager.fluid_queue.push_back(npos);
                 }
             }

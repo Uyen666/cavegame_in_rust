@@ -446,7 +446,7 @@ fn generate_fluid_mesh(
             for x in 0..chunk_size_i {
                 let gp = base_gp + IVec3::new(x, y, z);
                 let b0 = world.get_block_global(gp);
-                let f0 = world.get_fluid_global(gp);
+                let f0 = world.get_fluid_global(gp).min(8);
                 
                 if !(b0 == BlockType::Air && f0 > 0) {
                     continue;
@@ -456,9 +456,9 @@ fn generate_fluid_mesh(
                     let mut max_f = 0;
                     for (dx, dz) in [(0,0), (-1,0), (0,-1), (-1,-1)] {
                         let ngp = base_gp + IVec3::new(cx + dx, y, cz + dz);
-                        let f = world.get_fluid_global(ngp);
+                        let f = world.get_fluid_global(ngp).min(8);
                         let b_above = world.get_block_global(ngp + IVec3::Y);
-                        let f_above = world.get_fluid_global(ngp + IVec3::Y);
+                        let f_above = world.get_fluid_global(ngp + IVec3::Y).min(8);
                         
                         if (b_above == BlockType::Air && f_above > 0) || f == 8 {
                             return 8;
@@ -499,7 +499,7 @@ fn generate_fluid_mesh(
 
                 let check_face = |ngp: IVec3, is_top_bottom: bool| -> bool {
                     let nb = world.get_block_global(ngp);
-                    let nf = world.get_fluid_global(ngp);
+                    let nf = world.get_fluid_global(ngp).min(8);
                     if nb.is_solid() {
                         return false;
                     }
@@ -520,10 +520,10 @@ fn generate_fluid_mesh(
                 let diff_b = (h_ne - h_sw).abs();
                 let flip_diagonal = diff_a > diff_b;
 
-                let nf_px = world.get_fluid_global(gp + IVec3::X);
-                let nf_nx = world.get_fluid_global(gp - IVec3::X);
-                let nf_pz = world.get_fluid_global(gp + IVec3::Z);
-                let nf_nz = world.get_fluid_global(gp - IVec3::Z);
+                let nf_px = world.get_fluid_global(gp + IVec3::X).min(8);
+                let nf_nx = world.get_fluid_global(gp - IVec3::X).min(8);
+                let nf_pz = world.get_fluid_global(gp + IVec3::Z).min(8);
+                let nf_nz = world.get_fluid_global(gp - IVec3::Z).min(8);
 
                 let flow_x = (nf_px as f32) - (nf_nx as f32);
                 let flow_z = (nf_pz as f32) - (nf_nz as f32);
