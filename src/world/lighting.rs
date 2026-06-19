@@ -119,15 +119,15 @@ pub fn propagate_sky_light_global(
         }
 
         let neighbors = [
-            pos + bevy::prelude::IVec3::X,
-            pos - bevy::prelude::IVec3::X,
-            pos + bevy::prelude::IVec3::Y,
-            pos - bevy::prelude::IVec3::Y,
-            pos + bevy::prelude::IVec3::Z,
-            pos - bevy::prelude::IVec3::Z,
+            (pos + bevy::prelude::IVec3::X, bevy::prelude::IVec3::new(1, 0, 0)),
+            (pos - bevy::prelude::IVec3::X, bevy::prelude::IVec3::new(-1, 0, 0)),
+            (pos + bevy::prelude::IVec3::Y, bevy::prelude::IVec3::new(0, 1, 0)),
+            (pos - bevy::prelude::IVec3::Y, bevy::prelude::IVec3::new(0, -1, 0)),
+            (pos + bevy::prelude::IVec3::Z, bevy::prelude::IVec3::new(0, 0, 1)),
+            (pos - bevy::prelude::IVec3::Z, bevy::prelude::IVec3::new(0, 0, -1)),
         ];
 
-        for &npos in &neighbors {
+        for &(npos, offset) in &neighbors {
             if npos.y < 0 || npos.y >= crate::utils::math::WORLD_MAX_Y {
                 continue;
             }
@@ -135,9 +135,16 @@ pub fn propagate_sky_light_global(
             let n_block = world_manager.get_block_global(npos);
             
             if n_block == BlockType::Air {
+                // 🚀 太陽直射不減光鐵律
+                let next_light = if light == 15 && offset == bevy::prelude::IVec3::new(0, -1, 0) {
+                    15
+                } else {
+                    light.saturating_sub(1)
+                };
+
                 let n_light = world_manager.get_light_global(npos);
-                if n_light < light - 1 {
-                    world_manager.set_light_global(npos, light - 1, q_chunks);
+                if n_light < next_light {
+                    world_manager.set_light_global(npos, next_light, q_chunks);
                     queue.push_back(npos);
                 }
             }

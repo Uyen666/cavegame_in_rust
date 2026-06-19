@@ -63,3 +63,8 @@ src/
 * **脊狀分形噪聲混合 (Ridged Noise Blending)**：引入幾何對折公式將 Fbm 的波峰翻轉為刀鋒峭壁。根據 `mountain_weight` 動態融合圓潤的 Fbm 與尖銳的脊狀噪聲，確保平原柔和、高山崢嶸。
 * **天坑與溶洞生態系統**：透過獨立的 3D 溶洞噪音結合距離地平線 `Y=64` 的二次函數衰減塑造龐大的地下通道；並引入特權的 `entrance_gate` 2D 破口閘門，一旦觸發，溶洞可無視高空衰減限制，暴力切開地表，形成壯觀的天然天坑。
 * **草地與生態高空雙軌制**：實施「高空無條件解鎖 ＋ 地表誤差防禦」。只要高度超過溶洞帶 (Y >= 115) 或是處於地平線 ±12 格以內的區域，即可合法披上草皮與泥土。完美解決巨山山頂光禿無草的 Bug，並保留深淵的岩石裸露感。
+
+## 7. 💡 全域光照引擎與極限效能優化 (Global Lighting Engine & Extreme Performance)
+* **O(1) 高度圖快取 (Heightmap Cache)**：為了在未生成的區塊與天空邊界判定陽光遮蔽，系統將 `get_max_surface_y` 的高昂地形噪聲計算全面移交給背景 `AsyncComputeTaskPool` 處理。生成的 2D 高度圖 `max_surface_y_map` 會被 `WorldManager` 進行快取，主執行緒的 `get_light_global` 僅需執行極速的 O(1) 陣列查表。
+* **純空氣區塊光照駐留 (Pure-Air Chunk Light Retention)**：`ChunkLightBuffer` 嚴格綁定於資料層的 `ChunkEntry`，而非 ECS 實體。這意味著就算是一個不包含任何固體的 100% 空氣區塊，依然能夠承載真實的光照漸層衰減（例如陽光從 15 衰減至 12）。此架構完美消滅了邊界交接處的死黑斷層。
+* **渲染管線資料解耦 (Data-Layer Decoupling)**：貪婪網格化 `greedy.rs` 在抓取相鄰區塊的光照資訊時，直接與 `WorldManager` 溝通取得資料層的數據，徹底跳脫對 `Query<&mut Chunk>` 的依賴，大幅提升多執行緒安全度與程式碼的執行效能。

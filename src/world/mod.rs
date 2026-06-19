@@ -270,18 +270,23 @@ impl WorldManager {
             if pos.y > max_surface_y {
                 start_light = 15;
             } else {
-                let neighbors = [
-                    pos + IVec3::X, pos - IVec3::X,
-                    pos + IVec3::Y, pos - IVec3::Y,
-                    pos + IVec3::Z, pos - IVec3::Z,
-                ];
-                let mut max_adj = 0;
-                for &npos in &neighbors {
-                    let l = self.get_light_global(npos);
-                    if l > max_adj { max_adj = l; }
-                }
-                if max_adj > 0 {
-                    start_light = max_adj - 1;
+                let top_light = self.get_light_global(pos + IVec3::Y);
+                if top_light == 15 {
+                    start_light = 15;
+                } else {
+                    let neighbors = [
+                        pos + IVec3::X, pos - IVec3::X,
+                        pos + IVec3::Y, pos - IVec3::Y,
+                        pos + IVec3::Z, pos - IVec3::Z,
+                    ];
+                    let mut max_adj = 0;
+                    for &npos in &neighbors {
+                        let l = self.get_light_global(npos);
+                        if l > max_adj { max_adj = l; }
+                    }
+                    if max_adj > 0 {
+                        start_light = max_adj - 1;
+                    }
                 }
             }
 
