@@ -10,6 +10,8 @@ pub struct EnvironmentUniform {
     pub fog_start: f32,
     pub fog_end: f32,
     pub is_fluid: u32,
+    pub time: f32,
+    pub fluid_scroll_speed: f32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -55,6 +57,7 @@ impl Material for VoxelMaterial {
         
         let vertex_layout = layout.0.get_layout(&[
             crate::render::greedy::ATTRIBUTE_PACKED_DATA.at_shader_location(0),
+            crate::render::greedy::ATTRIBUTE_FLOW_VECTOR.at_shader_location(1),
         ])?;
         
         // CRITICAL: Only overwrite the first buffer (mesh vertex data).

@@ -23,6 +23,7 @@ impl Plugin for RenderPlugin {
 
 fn update_dynamic_environment(
     time: Res<Time>,
+    config: Res<crate::config::EngineConfig>,
     mut clear_color: ResMut<ClearColor>,
     mut materials: ResMut<Assets<VoxelMaterial>>,
     game_textures: Res<crate::render::textures::GameTextures>,
@@ -57,5 +58,13 @@ fn update_dynamic_environment(
     if let Some(mat) = materials.get_mut(&game_textures.material) {
         mat.env.fog_color = next_color;
         mat.env.camera_pos = pos;
+        mat.env.time = time.elapsed_seconds();
+        mat.env.fluid_scroll_speed = config.fluid_scroll_speed;
+    }
+    if let Some(mat) = materials.get_mut(&game_textures.fluid_material) {
+        mat.env.fog_color = next_color;
+        mat.env.camera_pos = pos;
+        mat.env.time = time.elapsed_seconds();
+        mat.env.fluid_scroll_speed = config.fluid_scroll_speed;
     }
 }

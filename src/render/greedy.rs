@@ -12,6 +12,9 @@ use super::textures::GameTextures;
 pub const ATTRIBUTE_PACKED_DATA: MeshVertexAttribute =
     MeshVertexAttribute::new("Vertex_Packed_Data", 99887, VertexFormat::Uint32);
 
+pub const ATTRIBUTE_FLOW_VECTOR: MeshVertexAttribute =
+    MeshVertexAttribute::new("Mesh_Flow_Vector", 987654, VertexFormat::Float32x2);
+
 // ── Deterministic texture layer mapping ─────────────────────────────────────
 // MUST match the order in texture_array.rs TEXTURES:
 //   Layer 0: stone
@@ -53,6 +56,7 @@ struct FaceInfo {
 type MeshData = (
     Vec<u32>,      // packed vertex data (x, y, z, face_id, tex_id)
     Vec<u32>,      // triangle indices
+    Vec<[f32; 2]>, // flow vector
 );
 
 fn empty_mesh() -> MeshData { Default::default() }
@@ -116,6 +120,7 @@ fn push_quad(
                         | (((sky_light as u32) & 0x0F) << 28);
                         
         bucket.0.push(packed);
+        bucket.2.push([0.0, 0.0]);
     }
 
     // Triangle indices — CCW for rev=false, CW (reversed) for rev=true
@@ -135,9 +140,10 @@ fn push_quad(
 // ── Finalise mesh ─────────────────────────────────────────────────────────────
 
 fn finalize_mesh(data: MeshData, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
-    let (packed, idx) = data;
+    let (packed, idx, flow) = data;
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     mesh.insert_attribute(ATTRIBUTE_PACKED_DATA, packed);
+    mesh.insert_attribute(ATTRIBUTE_FLOW_VECTOR, flow);
     mesh.insert_indices(Indices::U32(idx));
     meshes.add(mesh)
 }
@@ -372,19 +378,21 @@ fn generate_greedy_mesh(
 
 fn push_fluid_quad(
     out: &mut MeshData,
-    x: i32, y: i32, z: i32,
-    face_id: u32,
+    x: i32, _y: i32, z: i32,
+    face_id: u8,
+    y_coords: [i32; 4],
     offsets: [u8; 4],
     sky_light: u8,
+    flip_diagonal: bool,
+    flow: [f32; 2],
 ) {
-    // All faces are strictly defined in CCW winding order (Bottom-Left, Bottom-Right, Top-Right, Top-Left)
     let (v1, v2, v3, v4) = match face_id {
-        0 => ( [x+1, y, z+1], [x+1, y, z], [x+1, y+1, z], [x+1, y+1, z+1] ), // +X
-        1 => ( [x, y, z], [x, y, z+1], [x, y+1, z+1], [x, y+1, z] ),         // -X
-        2 => ( [x, y+1, z+1], [x+1, y+1, z+1], [x+1, y+1, z], [x, y+1, z] ), // +Y
-        3 => ( [x, y, z], [x+1, y, z], [x+1, y, z+1], [x, y, z+1] ),         // -Y
-        4 => ( [x+1, y, z+1], [x, y, z+1], [x, y+1, z+1], [x+1, y+1, z+1] ), // +Z
-        5 => ( [x, y, z], [x+1, y, z], [x+1, y+1, z], [x, y+1, z] ),         // -Z
+        0 => ( [x+1, y_coords[0], z+1], [x+1, y_coords[1], z], [x+1, y_coords[2], z], [x+1, y_coords[3], z+1] ), // +X
+        1 => ( [x, y_coords[0], z], [x, y_coords[1], z+1], [x, y_coords[2], z+1], [x, y_coords[3], z] ),         // -X
+        2 => ( [x, y_coords[0], z+1], [x+1, y_coords[1], z+1], [x+1, y_coords[2], z], [x, y_coords[3], z] ),     // +Y
+        3 => ( [x, y_coords[0], z], [x+1, y_coords[1], z], [x+1, y_coords[2], z+1], [x, y_coords[3], z+1] ),     // -Y
+        4 => ( [x+1, y_coords[0], z+1], [x, y_coords[1], z+1], [x, y_coords[2], z+1], [x+1, y_coords[3], z+1] ), // +Z
+        5 => ( [x, y_coords[0], z], [x+1, y_coords[1], z], [x+1, y_coords[2], z], [x, y_coords[3], z] ),         // -Z
         _ => unreachable!(),
     };
 
@@ -400,18 +408,19 @@ fn push_fluid_quad(
         let packed: u32 = (vx & 0x3F) 
                         | ((vy & 0x3F) << 6) 
                         | ((vz & 0x3F) << 12) 
-                        | ((face_id & 0x07) << 18) 
+                        | ((face_id as u32 & 0x07) << 18) 
                         | ((tex_layer & 0x0F) << 21) 
                         | ((y_offset_down & 0x07) << 25)
                         | (((sky_light as u32) & 0x0F) << 28);
                         
         out.0.push(packed);
+        out.2.push(flow);
     }
 
     let indices = match face_id {
         0 => [0, 1, 2, 0, 2, 3], // +X: 法線 +X (向外)
         1 => [0, 1, 2, 0, 2, 3], // -X: 法線 -X (向外)
-        2 => [0, 1, 2, 0, 2, 3], // +Y: 法線 +Y (向外)
+        2 => if flip_diagonal { [1, 2, 3, 1, 3, 0] } else { [0, 1, 2, 0, 2, 3] }, // +Y: 法線 +Y (向外)
         3 => [0, 1, 2, 0, 2, 3], // -Y: 法線 -Y (向外)
         4 => [0, 2, 1, 0, 3, 2], // +Z: 翻轉後兩個索引，強迫法線 +Z (向外)
         5 => [0, 2, 1, 0, 3, 2], // -Z: 翻轉後兩個索引，強迫法線 -Z (向外)
@@ -468,42 +477,105 @@ fn generate_fluid_mesh(
 
                 // 流體最低渲染高度屏障 (Min Height Clamp)
                 // 確保最外圍水位為 1 時，仍保留至少 1/8 的厚度，避免頂面與地面發生 Z-Fighting
-                let nw_off = (8 - nw_h).min(7);
-                let ne_off = (8 - ne_h).min(7);
-                let sw_off = (8 - sw_h).min(7);
-                let se_off = (8 - se_h).min(7);
+                let mut nw_off = (8 - nw_h).min(7);
+                let mut ne_off = (8 - ne_h).min(7);
+                let mut sw_off = (8 - sw_h).min(7);
+                let mut se_off = (8 - se_h).min(7);
+
+                // 【下落全滿特權】：只有自身是滿水位，且上方有水灌入，且水平四周存在幾何缺口時，才判定為真正的瀑布柱！
+                let is_waterfall_column = f0 == 8 
+                    && world.get_fluid_global(gp + IVec3::Y) > 0 
+                    && (world.get_fluid_global(gp + IVec3::X) == 0 
+                        || world.get_fluid_global(gp - IVec3::X) == 0 
+                        || world.get_fluid_global(gp + IVec3::Z) == 0 
+                        || world.get_fluid_global(gp - IVec3::Z) == 0);
+
+                if is_waterfall_column {
+                    nw_off = 0;
+                    ne_off = 0;
+                    sw_off = 0;
+                    se_off = 0;
+                }
 
                 let check_face = |ngp: IVec3, is_top_bottom: bool| -> bool {
                     let nb = world.get_block_global(ngp);
                     let nf = world.get_fluid_global(ngp);
-                    let n_is_water = nb == BlockType::Air && nf > 0;
                     if nb.is_solid() {
                         return false;
                     }
                     if is_top_bottom {
+                        let n_is_water = nb == BlockType::Air && nf > 0;
                         !n_is_water
                     } else {
-                        !n_is_water || f0 > nf
+                        nf == 0
                     }
                 };
 
+                let h_nw = nw_off as i32;
+                let h_se = se_off as i32;
+                let h_ne = ne_off as i32;
+                let h_sw = sw_off as i32;
+                
+                let diff_a = (h_nw - h_se).abs();
+                let diff_b = (h_ne - h_sw).abs();
+                let flip_diagonal = diff_a > diff_b;
+
+                let nf_px = world.get_fluid_global(gp + IVec3::X);
+                let nf_nx = world.get_fluid_global(gp - IVec3::X);
+                let nf_pz = world.get_fluid_global(gp + IVec3::Z);
+                let nf_nz = world.get_fluid_global(gp - IVec3::Z);
+
+                let flow_x = (nf_px as f32) - (nf_nx as f32);
+                let flow_z = (nf_pz as f32) - (nf_nz as f32);
+                let mut flow_vec = bevy::math::Vec2::new(flow_x, flow_z);
+                
+                if flow_vec.length_squared() > 0.001 {
+                    flow_vec = flow_vec.normalize();
+                } else {
+                    flow_vec = bevy::math::Vec2::ZERO;
+                }
+                let top_flow = [flow_vec.x, flow_vec.y];
+                // For side faces, we use positive V = down.
+                // world_uv for side faces uses -y for V.
+                // If we want it to flow down (negative Y direction),
+                // V should decrease? Wait.
+                // world_uv = vec2(z, -y).
+                // We want to sample higher Y (smaller -y).
+                // So we want V to DECREASE over time.
+                // animated_uv = world_uv + time * flow.
+                // So flow for V should be NEGATIVE!
+                let side_flow = [0.0, -1.0];
+
+                let get_side_anchors = |nf: u8| -> (i32, u8) {
+                    if nf == 0 {
+                        (y, 0)
+                    } else {
+                        (y + 1, 8 - nf)
+                    }
+                };
+
+                let (y_bot_px, off_px) = get_side_anchors(nf_px);
+                let (y_bot_nx, off_nx) = get_side_anchors(nf_nx);
+                let (y_bot_pz, off_pz) = get_side_anchors(nf_pz);
+                let (y_bot_nz, off_nz) = get_side_anchors(nf_nz);
+
                 if check_face(gp + IVec3::X, false) {
-                    push_fluid_quad(out, x, y, z, 0, [0, 0, ne_off, se_off], world.get_light_global(gp + IVec3::X));
+                    push_fluid_quad(out, x, y, z, 0, [y_bot_px, y_bot_px, y+1, y+1], [off_px, off_px, ne_off, se_off], world.get_light_global(gp + IVec3::X), false, side_flow);
                 }
                 if check_face(gp - IVec3::X, false) {
-                    push_fluid_quad(out, x, y, z, 1, [0, 0, sw_off, nw_off], world.get_light_global(gp - IVec3::X));
+                    push_fluid_quad(out, x, y, z, 1, [y_bot_nx, y_bot_nx, y+1, y+1], [off_nx, off_nx, sw_off, nw_off], world.get_light_global(gp - IVec3::X), false, side_flow);
                 }
                 if check_face(gp + IVec3::Y, true) {
-                    push_fluid_quad(out, x, y, z, 2, [sw_off, se_off, ne_off, nw_off], world.get_light_global(gp + IVec3::Y));
+                    push_fluid_quad(out, x, y, z, 2, [y+1, y+1, y+1, y+1], [sw_off, se_off, ne_off, nw_off], world.get_light_global(gp + IVec3::Y), flip_diagonal, top_flow);
                 }
                 if check_face(gp - IVec3::Y, true) {
-                    push_fluid_quad(out, x, y, z, 3, [0, 0, 0, 0], world.get_light_global(gp - IVec3::Y));
+                    push_fluid_quad(out, x, y, z, 3, [y+1, y+1, y+1, y+1], [7, 7, 7, 7], world.get_light_global(gp - IVec3::Y), false, side_flow);
                 }
                 if check_face(gp + IVec3::Z, false) {
-                    push_fluid_quad(out, x, y, z, 4, [0, 0, sw_off, se_off], world.get_light_global(gp + IVec3::Z));
+                    push_fluid_quad(out, x, y, z, 4, [y_bot_pz, y_bot_pz, y+1, y+1], [off_pz, off_pz, sw_off, se_off], world.get_light_global(gp + IVec3::Z), false, side_flow);
                 }
                 if check_face(gp - IVec3::Z, false) {
-                    push_fluid_quad(out, x, y, z, 5, [0, 0, ne_off, nw_off], world.get_light_global(gp - IVec3::Z));
+                    push_fluid_quad(out, x, y, z, 5, [y_bot_nz, y_bot_nz, y+1, y+1], [off_nz, off_nz, ne_off, nw_off], world.get_light_global(gp - IVec3::Z), false, side_flow);
                 }
             }
         }

@@ -3,6 +3,7 @@
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) packed_data: u32,
+    @location(1) flow_vector: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -12,6 +13,7 @@ struct VertexOutput {
     @location(2) @interpolate(perspective, center) uv: vec2<f32>,
     @location(3) texture_index: u32,
     @location(4) sky_light: f32,
+    @location(5) flow_vector: vec2<f32>,
 };
 
 @group(2) @binding(0) var array_texture: texture_2d_array<f32>;
@@ -23,6 +25,8 @@ struct EnvironmentUniform {
     fog_start: f32,
     fog_end: f32,
     is_fluid: u32,
+    time: f32,
+    fluid_scroll_speed: f32,
 };
 @group(2) @binding(2) var<uniform> env: EnvironmentUniform;
 
@@ -71,6 +75,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.uv = uv;
     out.texture_index = tex_id;
     out.sky_light = f32(sky_light_int);
+    out.flow_vector = vertex.flow_vector;
     
     return out;
 }
@@ -83,6 +88,7 @@ struct FragmentInput {
     @location(2) @interpolate(perspective, center) uv: vec2<f32>,
     @location(3) texture_index: u32,
     @location(4) sky_light: f32,
+    @location(5) flow_vector: vec2<f32>,
 };
 
 #ifdef PREPASS_PIPELINE
@@ -95,8 +101,23 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
 // Non-linear Sky Light Propagation Lighting
 @fragment
 fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
+    var animated_uv = in.uv;
+    if env.is_fluid == 1u && in.texture_index == 4u {
+        var world_uv = in.uv;
+        let abs_n = abs(in.world_normal);
+        if abs_n.y > 0.5 {
+            world_uv = fract(in.world_position.xz);
+        } else if abs_n.x > 0.5 {
+            world_uv = fract(vec2<f32>(in.world_position.z, -in.world_position.y));
+        } else {
+            world_uv = fract(vec2<f32>(in.world_position.x, -in.world_position.y));
+        }
+        
+        animated_uv = fract(world_uv + env.time * env.fluid_scroll_speed * in.flow_vector);
+    }
+
     // Sample texture array
-    let tex_color = textureSample(array_texture, array_sampler, in.uv, in.texture_index);
+    let tex_color = textureSample(array_texture, array_sampler, animated_uv, in.texture_index);
     
     let light_ratio = in.sky_light / 15.0;
     let shadow_intensity = 0.06 + (1.0 - 0.06) * (light_ratio * light_ratio);
@@ -105,7 +126,7 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     var final_alpha = tex_color.a;
 
     if env.is_fluid == 1u && in.texture_index == 4u {
-        let water_tint = vec4<f32>(0.15, 0.35, 0.75, 0.90);
+        let water_tint = vec4<f32>(0.15, 0.35, 0.75, 0.55);
         final_rgb = final_rgb * water_tint.rgb;
         final_alpha = water_tint.a;
     }

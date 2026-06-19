@@ -6,6 +6,7 @@ mod player;
 mod utils;
 mod phys;
 mod ui;
+mod config;
 
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 pub enum GameState {
@@ -32,6 +33,7 @@ fn main() {
             })
         )
         .init_state::<GameState>()
+        .init_resource::<config::EngineConfig>()
         .add_plugins(ui::UiPlugin)
         .add_plugins(world::WorldPlugin)
         .add_plugins(render::RenderPlugin)

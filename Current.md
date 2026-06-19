@@ -73,3 +73,12 @@ src/
 ## 8. 🌫️ 動態環境霧化與視覺包覆 (Dynamic Environment & Fog Alignment)
 * **視線亮度感知與背景同步 (Eye-Light Background Sync)**：遊戲實作了 `update_dynamic_environment` 系統，每幀根據玩家眼部的天空光數據（`eye_light`），動態插值（Lerp）出合適的環境色，並套用於視窗的 `ClearColor`。確保玩家從地表潛入洞穴時，背景顏色能從明亮的天藍色滑順地過渡至深邃的漆黑，徹底消除畫面突變的生硬感。
 * **距離霧化與網格裂縫防禦 (Distance Fog & Mesh Cracking Defense)**：將 GPU 著色器的 `EnvironmentUniform` 與 `ClearColor` 達成 100% 同步。在片元著色器 (`voxel.wgsl`) 內部，根據方塊與相機的絕對距離執行 `smoothstep` 霧化混合。此舉令渲染邊緣的方塊能完美融進背景色中，達成了即使因浮點數精度導致幾何體之間存在微小縫隙，也不會透出違和的藍色背光的終極「視覺欺騙」防禦。
+
+## 9. 🌊 動態流體物理與渲染系統 (Dynamic Fluid Physics & Rendering)
+* **雙軌道貪婪網格化 (Dual-Pass Meshing)**：徹底重構了 `generate_greedy_mesh`，現在它會同步輸出固體網格與流體網格（`solid_vertices`, `fluid_vertices`）。流體網格完全繞過傳統的貪婪合併，改為**逐體素生成 (Per-Voxel Generation)**，賦予每一個水面獨立的頂點控制權。
+* **逐頂點流體內插與平滑斜面 (Per-Vertex Fluid Interpolation)**：實作了針對流體頂面（+Y）角落的 2x2 全域管柱高度採樣。每個頂點獨立結算下沉量（`y_offset_down`），使得流體表面能呈現與《Minecraft》一致的連續動態幾何斜面，且完美解決了跨 Chunk 邊界的資訊查詢。
+* **零縫隙側臉密封與法線校準 (Zero-Gap Sealing & Winding Order)**：在生成側面時強制頂端兩個頂點繼承與頂面邊角一模一樣的高度位移量，確保物理密封。並針對水平四向側面實施了極度嚴謹的方向特異性索引繞行 (Face-Specific Winding Order)，徹底擊殺 Backface Culling 漏光現象。
+* **半透明雙材質著色器 (Translucent Dual Materials)**：為流體引入 `AlphaMode::Blend` 獨立材質球，修改 `voxel.wgsl` 自動施加 0.9 的藍色透明度 Tint。利用 32-bit `ATTRIBUTE_PACKED_DATA` 冗餘位元（25~27 bits）即時解碼幾何下沉量，兼顧美學與頂級效能。
+* **全域聯鎖物理與流動擴散 (Fluid Interlocking Physics)**：引入基於 0.1 秒心跳的 BFS 擴散引擎，支援水平擴散遞減與「重力截斷鐵律」。並在玩家採掘互動中掛載「方塊破壞喚醒機制」，敲碎支撐方塊瞬間能立刻喚醒周圍 6 向休眠水體，實現真實的流瀑崩塌物理。
+* **全域無縫世界 UV 投影 (World-Space Planar Mapping)**：徹底廢除流體的 Local UV 採樣，改採 Fragment Shader 即時讀取 `in.world_position`，並搭配 `in.world_normal` 自動映射出世界坐標平面 UV。配合由 `px - nx` 高度差解算出的真實向外擴散梯度向量，讓水流紋理跨越方塊邊界完美平鋪，並呈現真正的「放射狀擴散」。
+* **下落全滿特權與去內壁化 (Falling Column & Internal Culling)**：實作了極簡去內壁化鐵律，水平面嚴格限定 `nf == 0` 才允許生成外圍水牆，徹底消滅相鄰水方塊之間的內部隔板穿幫。同時導入三維掃描算子：當方塊為滿級(8)且上方有水注入、四周存在空氣缺口時，強制觸發「下落全滿特權」，將該頂面的 4 個角落位移清零，瞬間化身 100% 飽和的垂直立體瀑布。
