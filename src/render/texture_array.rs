@@ -11,6 +11,7 @@ pub const TEXTURES: &[&str] = &[
     "dirt",              // 1
     "grass_block_top",   // 2
     "grass_block_side",  // 3
+    "water_still",       // 4
 ];
 
 

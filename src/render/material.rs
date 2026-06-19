@@ -9,6 +9,7 @@ pub struct EnvironmentUniform {
     pub camera_pos: Vec3,
     pub fog_start: f32,
     pub fog_end: f32,
+    pub is_fluid: u32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -19,6 +20,8 @@ pub struct VoxelMaterial {
     
     #[uniform(2)]
     pub env: EnvironmentUniform,
+
+    pub alpha_mode: AlphaMode,
 }
 
 impl Material for VoxelMaterial {
@@ -28,6 +31,10 @@ impl Material for VoxelMaterial {
 
     fn fragment_shader() -> ShaderRef {
         "shaders/voxel.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        self.alpha_mode
     }
 
     fn prepass_vertex_shader() -> ShaderRef {

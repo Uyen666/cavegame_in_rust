@@ -7,6 +7,7 @@ use crate::render::material::VoxelMaterial;
 pub struct GameTextures {
     pub array_texture: Handle<Image>,
     pub material: Handle<VoxelMaterial>,
+    pub fluid_material: Handle<VoxelMaterial>,
     pub ready: bool,
 }
 
@@ -55,11 +56,26 @@ fn load_textures(
             camera_pos: Vec3::ZERO,
             fog_start: 32.0,
             fog_end: 60.0,
+            is_fluid: 0,
         },
+        alpha_mode: AlphaMode::Opaque,
+    });
+
+    let fluid_material_handle = materials.add(VoxelMaterial {
+        texture_array: image_handle.clone(),
+        env: crate::render::material::EnvironmentUniform {
+            fog_color: bevy::color::LinearRgba::rgb(0.5, 0.8, 1.0),
+            camera_pos: Vec3::ZERO,
+            fog_start: 32.0,
+            fog_end: 60.0,
+            is_fluid: 1,
+        },
+        alpha_mode: AlphaMode::Blend,
     });
 
     gt.array_texture = image_handle;
     gt.material = material_handle;
+    gt.fluid_material = fluid_material_handle;
     gt.ready = true;
     info!("Texture array loaded and VoxelMaterial created.");
 }

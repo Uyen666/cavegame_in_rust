@@ -55,6 +55,7 @@ impl Chunk {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_block(&self, x: usize, y: usize, z: usize) -> BlockType {
         if in_bounds(x, y, z) {
             let idx = x + y * 32 + z * 1024;

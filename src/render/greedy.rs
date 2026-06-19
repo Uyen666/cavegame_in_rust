@@ -45,6 +45,7 @@ struct FaceInfo {
     normal:    i32,
     tex_layer: u32,   // ← Key addition: makes merge direction-aware
     sky_light: u8,
+    y_offset_down: u8,
 }
 
 // ── Mesh accumulator ─────────────────────────────────────────────────────────
@@ -90,6 +91,7 @@ fn push_quad(
     _color:     [f32; 4],
     tex_layer:  u32,
     sky_light:  u8,
+    y_offset_down: u8,
     _quad_w:    i32,
     _quad_h:    i32,
     rev:        bool,
@@ -97,22 +99,20 @@ fn push_quad(
 ) {
     let base = bucket.0.len() as u32;
 
-    // 計算 face_id (0: +X, 1: -X, 2: +Y, 3: -Y, 4: +Z, 5: -Z)
-    // normal_vec 非 0 即 1 或 -1，藉由 d * 2 + (if pos then 0 else 1) 來映射
     let normal_val = normal_vec[d];
     let face_id = (d * 2) + if normal_val > 0.0 { 0 } else { 1 };
     
-    // 將 4 個頂點分別打包
     for v in [v1, v2, v3, v4].iter() {
         let x = v[0] as u32;
         let y = v[1] as u32;
         let z = v[2] as u32;
-        
+
         let packed: u32 = (x & 0x3F) 
                         | ((y & 0x3F) << 6) 
                         | ((z & 0x3F) << 12) 
                         | ((face_id as u32 & 0x07) << 18) 
-                        | ((tex_layer & 0x7F) << 21) 
+                        | ((tex_layer & 0x0F) << 21) 
+                        | (((y_offset_down as u32) & 0x07) << 25)
                         | (((sky_light as u32) & 0x0F) << 28);
                         
         bucket.0.push(packed);
@@ -148,11 +148,23 @@ pub fn mesh_dirty_chunks(
     mut commands:   Commands,
     mut q_chunks:   Query<(Entity, &mut Chunk)>,
     mut meshes:     ResMut<Assets<Mesh>>,
-    world_manager:  Res<WorldManager>,
+    mut world_manager:  ResMut<WorldManager>,
     game_textures:  Option<Res<GameTextures>>,
 ) {
     let Some(gt) = game_textures else { return; };
     if !gt.ready { return; }
+
+    // Sync pure-data layer dirty flags to ECS layer
+    let drained_dirty: Vec<IVec3> = world_manager.dirty_chunks_for_meshing.drain().collect();
+    for chunk_pos in drained_dirty {
+        if let Some(entry) = world_manager.chunks.get(&chunk_pos) {
+            if let Some(entity) = entry.entity {
+                if let Ok((_, mut chunk)) = q_chunks.get_mut(entity) {
+                    chunk.is_dirty = true;
+                }
+            }
+        }
+    }
 
     let mut dirty_chunks = Vec::new();
     for (entity, chunk) in q_chunks.iter() {
@@ -163,18 +175,30 @@ pub fn mesh_dirty_chunks(
 
     let mut meshes_to_apply = Vec::new();
     for (entity, chunk_pos) in dirty_chunks {
-        let mut data = empty_mesh();
-        generate_greedy_mesh(entity, chunk_pos, &world_manager, &q_chunks, &mut data);
-        meshes_to_apply.push((entity, data));
+        let mut solid_data = empty_mesh();
+        let mut fluid_data = empty_mesh();
+        generate_greedy_mesh(entity, chunk_pos, &world_manager, false, &mut solid_data);
+        generate_greedy_mesh(entity, chunk_pos, &world_manager, true, &mut fluid_data);
+        meshes_to_apply.push((entity, solid_data, fluid_data));
     }
 
-    for (entity, data) in meshes_to_apply {
+    for (entity, solid_data, fluid_data) in meshes_to_apply {
         commands.entity(entity).despawn_descendants();
 
-        if !data.0.is_empty() {
+        if !solid_data.0.is_empty() {
             let child = commands.spawn(MaterialMeshBundle {
-                mesh:      finalize_mesh(data, &mut meshes),
+                mesh:      finalize_mesh(solid_data, &mut meshes),
                 material:  gt.material.clone(),
+                transform: Transform::default(),
+                ..default()
+            }).id();
+            commands.entity(entity).add_child(child);
+        }
+
+        if !fluid_data.0.is_empty() {
+            let child = commands.spawn(MaterialMeshBundle {
+                mesh:      finalize_mesh(fluid_data, &mut meshes),
+                material:  gt.fluid_material.clone(),
                 transform: Transform::default(),
                 ..default()
             }).id();
@@ -207,27 +231,24 @@ pub fn mesh_dirty_chunks(
 //   collide in a future block type redesign.
 
 fn generate_greedy_mesh(
-    entity: Entity,
+    _entity: Entity,
     chunk_pos: IVec3,
     world: &WorldManager,
-    q_chunks: &Query<(Entity, &mut Chunk)>,
+    is_fluid: bool,
     out:   &mut MeshData,
 ) {
-    // 🚀 優化 1：在進入 10 萬次迴圈前，先一次性獲取當前區塊的唯讀引用
-    let current_chunk = &q_chunks.get(entity).unwrap().1;
-    let current_entry = world.chunks.get(&chunk_pos).unwrap();
+    if is_fluid {
+        generate_fluid_mesh(chunk_pos, world, out);
+        return;
+    }
 
-    // 強制將 CHUNK_SIZE 轉為 i32 以便與含有 -1 的 slice 安全迭代
     let chunk_size_i = CHUNK_SIZE as i32;
 
     for d in 0..3usize {
-        // 快取局部性校準 (Cache Locality Calibration)
-        // 記憶體步長: X=1, Y=32, Z=1024
-        // u 軸映射到最內層迴圈 (i)，必須分配給步長最小的軸！
         let (u, v) = match d {
-            0 => (1, 2), // d=X, u=Y(32), v=Z(1024) -> 最佳
-            1 => (0, 2), // d=Y, u=X(1),  v=Z(1024) -> 交換 u,v 拯救快取！(原為 u=Z, v=X)
-            _ => (0, 1), // d=Z, u=X(1),  v=Y(32)   -> 最佳
+            0 => (1, 2),
+            1 => (0, 2),
+            _ => (0, 1),
         };
 
         let mut q = [0i32; 3];
@@ -236,9 +257,7 @@ fn generate_greedy_mesh(
         let mask_len = (CHUNK_SIZE * CHUNK_SIZE) as usize;
         let mut mask = vec![None::<FaceInfo>; mask_len];
 
-        // 🚀 優化 2：顯式轉換邊界型別，防止編譯器抗議 Range 混合
         for slice in -1..chunk_size_i {
-            // ── Build mask ─────────────────────────────────────────────────
             let mut n = 0usize;
             for j in 0..chunk_size_i {
                 for i in 0..chunk_size_i {
@@ -247,73 +266,29 @@ fn generate_greedy_mesh(
                     x[u] = i;
                     x[v] = j;
 
-                    // b0 = block at x[d]=slice (this voxel)
-                    // b1 = block at x[d]=slice+1 (the voxel one step in +d)
-                    let b0 = {
-                        let lx = [x[0], x[1], x[2]];
-                        if lx[0] >= 0 && lx[0] < chunk_size_i
-                            && lx[1] >= 0 && lx[1] < chunk_size_i
-                            && lx[2] >= 0 && lx[2] < chunk_size_i
-                        {
-                            // 🚀 優化 3：直接讀取變數，並將 i32 安全轉型為 usize 接入一維發電機
-                            current_chunk.get_block(lx[0] as usize, lx[1] as usize, lx[2] as usize)
-                        } else {
-                            let gp = chunk_pos * chunk_size_i + IVec3::new(lx[0], lx[1], lx[2]);
-                            world.get_block_global_mut(gp, q_chunks)
-                        }
-                    };
+                    let gp0 = chunk_pos * chunk_size_i + IVec3::new(x[0], x[1], x[2]);
+                    let gp1 = chunk_pos * chunk_size_i + IVec3::new(x[0] + q[0], x[1] + q[1], x[2] + q[2]);
+                    
+                    let b0 = world.get_block_global(gp0);
+                    let b1 = world.get_block_global(gp1);
 
-                    let b1 = {
-                        let lx = [x[0] + q[0], x[1] + q[1], x[2] + q[2]];
-                        if lx[0] >= 0 && lx[0] < chunk_size_i
-                            && lx[1] >= 0 && lx[1] < chunk_size_i
-                            && lx[2] >= 0 && lx[2] < chunk_size_i
-                        {
-                            // 🚀 優化 3：同上，本地安全高速讀取
-                            current_chunk.get_block(lx[0] as usize, lx[1] as usize, lx[2] as usize)
-                        } else {
-                            let gp = chunk_pos * chunk_size_i + IVec3::new(lx[0], lx[1], lx[2]);
-                            world.get_block_global_mut(gp, q_chunks)
-                        }
-                    };
-
-                    // 實心→空氣: 繪製正向面 (normal +d)
-                    // 空氣→實心: 繪製反向面 (normal -d)
                     mask[n] = match (b0.is_solid(), b1.is_solid()) {
                         (true, false) if slice >= 0 => {
-                            let lx = x[0] + q[0];
-                            let ly = x[1] + q[1];
-                            let lz = x[2] + q[2];
-                            let sl = if lx >= 0 && lx < chunk_size_i && ly >= 0 && ly < chunk_size_i && lz >= 0 && lz < chunk_size_i {
-                                let idx = lx as usize + (ly as usize) * 32 + (lz as usize) * 1024;
-                                current_entry.light_buffer.get_sky_light(idx)
-                            } else {
-                                let gp = chunk_pos * chunk_size_i + IVec3::new(lx, ly, lz);
-                                world.get_light_global(gp)
-                            };
                             Some(FaceInfo {
                                 block:     b0,
                                 normal:    1,
                                 tex_layer: get_texture_layer(b0, d, 1),
-                                sky_light: sl,
+                                sky_light: world.get_light_global(gp1),
+                                y_offset_down: 0,
                             })
                         },
                         (false, true) if slice < chunk_size_i - 1 => {
-                            let lx = x[0];
-                            let ly = x[1];
-                            let lz = x[2];
-                            let sl = if lx >= 0 && lx < chunk_size_i && ly >= 0 && ly < chunk_size_i && lz >= 0 && lz < chunk_size_i {
-                                let idx = lx as usize + (ly as usize) * 32 + (lz as usize) * 1024;
-                                current_entry.light_buffer.get_sky_light(idx)
-                            } else {
-                                let gp = chunk_pos * chunk_size_i + IVec3::new(lx, ly, lz);
-                                world.get_light_global(gp)
-                            };
                             Some(FaceInfo {
                                 block:     b1,
                                 normal:    -1,
                                 tex_layer: get_texture_layer(b1, d, -1),
-                                sky_light: sl,
+                                sky_light: world.get_light_global(gp0),
+                                y_offset_down: 0,
                             })
                         },
                         _ => None,
@@ -322,21 +297,16 @@ fn generate_greedy_mesh(
                 }
             }
 
-            // ── Greedy merge + emit quads ──────────────────────────────────
-            let face_coord = slice + 1; // vertex plane is one step ahead
-
+            let face_coord = slice + 1;
             let mut n = 0usize;
             for j in 0..CHUNK_SIZE {
                 let mut i = 0i32;
                 while i < CHUNK_SIZE {
                     if let Some(face) = mask[n] {
-                        // Expand width (u direction)
                         let mut w = 1i32;
                         while i + w < CHUNK_SIZE && mask[n + w as usize] == Some(face) {
                             w += 1;
                         }
-
-                        // Expand height (v direction)
                         let mut h = 1i32;
                         'outer: while j + h < CHUNK_SIZE {
                             for k in 0..w {
@@ -347,7 +317,6 @@ fn generate_greedy_mesh(
                             h += 1;
                         }
 
-                        // Build quad geometry
                         let mut x    = [0i32; 3];
                         x[d] = face_coord;
                         x[u] = i;
@@ -367,12 +336,8 @@ fn generate_greedy_mesh(
                             _ => [0.0, 0.0, face.normal as f32],
                         };
 
-                        // Winding: proved correct for all d when rev = (normal < 0)
                         let mut rev = face.normal < 0;
-                        // 因為 d=1 時我們強制交換了 u(X) 與 v(Z)，外積方向翻轉，必須修正 Winding！
-                        if d == 1 {
-                            rev = !rev;
-                        }
+                        if d == 1 { rev = !rev; }
 
                         push_quad(
                             out,
@@ -381,12 +346,12 @@ fn generate_greedy_mesh(
                             [1.0, 1.0, 1.0, 1.0],
                             face.tex_layer,
                             face.sky_light,
+                            face.y_offset_down,
                             w, h,
                             rev,
-                            d,  // pass axis for correct UV layout
+                            d,
                         );
 
-                        // Clear merged region from mask
                         for l in 0..h {
                             for k in 0..w {
                                 mask[n + (l * CHUNK_SIZE + k) as usize] = None;
@@ -399,6 +364,146 @@ fn generate_greedy_mesh(
                         i += 1;
                         n += 1;
                     }
+                }
+            }
+        }
+    }
+}
+
+fn push_fluid_quad(
+    out: &mut MeshData,
+    x: i32, y: i32, z: i32,
+    face_id: u32,
+    offsets: [u8; 4],
+    sky_light: u8,
+) {
+    // All faces are strictly defined in CCW winding order (Bottom-Left, Bottom-Right, Top-Right, Top-Left)
+    let (v1, v2, v3, v4) = match face_id {
+        0 => ( [x+1, y, z+1], [x+1, y, z], [x+1, y+1, z], [x+1, y+1, z+1] ), // +X
+        1 => ( [x, y, z], [x, y, z+1], [x, y+1, z+1], [x, y+1, z] ),         // -X
+        2 => ( [x, y+1, z+1], [x+1, y+1, z+1], [x+1, y+1, z], [x, y+1, z] ), // +Y
+        3 => ( [x, y, z], [x+1, y, z], [x+1, y, z+1], [x, y, z+1] ),         // -Y
+        4 => ( [x+1, y, z+1], [x, y, z+1], [x, y+1, z+1], [x+1, y+1, z+1] ), // +Z
+        5 => ( [x, y, z], [x+1, y, z], [x+1, y+1, z], [x, y+1, z] ),         // -Z
+        _ => unreachable!(),
+    };
+
+    let tex_layer = 4u32; // water_still
+    let base = out.0.len() as u32;
+
+    for (i, v) in [v1, v2, v3, v4].iter().enumerate() {
+        let vx = v[0] as u32;
+        let vy = v[1] as u32;
+        let vz = v[2] as u32;
+        let y_offset_down = offsets[i] as u32;
+
+        let packed: u32 = (vx & 0x3F) 
+                        | ((vy & 0x3F) << 6) 
+                        | ((vz & 0x3F) << 12) 
+                        | ((face_id & 0x07) << 18) 
+                        | ((tex_layer & 0x0F) << 21) 
+                        | ((y_offset_down & 0x07) << 25)
+                        | (((sky_light as u32) & 0x0F) << 28);
+                        
+        out.0.push(packed);
+    }
+
+    let indices = match face_id {
+        0 => [0, 1, 2, 0, 2, 3], // +X: 法線 +X (向外)
+        1 => [0, 1, 2, 0, 2, 3], // -X: 法線 -X (向外)
+        2 => [0, 1, 2, 0, 2, 3], // +Y: 法線 +Y (向外)
+        3 => [0, 1, 2, 0, 2, 3], // -Y: 法線 -Y (向外)
+        4 => [0, 2, 1, 0, 3, 2], // +Z: 翻轉後兩個索引，強迫法線 +Z (向外)
+        5 => [0, 2, 1, 0, 3, 2], // -Z: 翻轉後兩個索引，強迫法線 -Z (向外)
+        _ => unreachable!(),
+    };
+
+    out.1.extend_from_slice(&[
+        base + indices[0], base + indices[1], base + indices[2],
+        base + indices[3], base + indices[4], base + indices[5],
+    ]);
+}
+
+fn generate_fluid_mesh(
+    chunk_pos: IVec3,
+    world: &WorldManager,
+    out: &mut MeshData,
+) {
+    let chunk_size_i = CHUNK_SIZE as i32;
+    let base_gp = chunk_pos * chunk_size_i;
+
+    for y in 0..chunk_size_i {
+        for z in 0..chunk_size_i {
+            for x in 0..chunk_size_i {
+                let gp = base_gp + IVec3::new(x, y, z);
+                let b0 = world.get_block_global(gp);
+                let f0 = world.get_fluid_global(gp);
+                
+                if !(b0 == BlockType::Air && f0 > 0) {
+                    continue;
+                }
+
+                let get_corner_height = |cx: i32, cz: i32| -> u8 {
+                    let mut max_f = 0;
+                    for (dx, dz) in [(0,0), (-1,0), (0,-1), (-1,-1)] {
+                        let ngp = base_gp + IVec3::new(cx + dx, y, cz + dz);
+                        let f = world.get_fluid_global(ngp);
+                        let b_above = world.get_block_global(ngp + IVec3::Y);
+                        let f_above = world.get_fluid_global(ngp + IVec3::Y);
+                        
+                        if (b_above == BlockType::Air && f_above > 0) || f == 8 {
+                            return 8;
+                        }
+                        if f > max_f {
+                            max_f = f;
+                        }
+                    }
+                    max_f
+                };
+
+                let nw_h = get_corner_height(x, z);
+                let ne_h = get_corner_height(x + 1, z);
+                let sw_h = get_corner_height(x, z + 1);
+                let se_h = get_corner_height(x + 1, z + 1);
+
+                // 流體最低渲染高度屏障 (Min Height Clamp)
+                // 確保最外圍水位為 1 時，仍保留至少 1/8 的厚度，避免頂面與地面發生 Z-Fighting
+                let nw_off = (8 - nw_h).min(7);
+                let ne_off = (8 - ne_h).min(7);
+                let sw_off = (8 - sw_h).min(7);
+                let se_off = (8 - se_h).min(7);
+
+                let check_face = |ngp: IVec3, is_top_bottom: bool| -> bool {
+                    let nb = world.get_block_global(ngp);
+                    let nf = world.get_fluid_global(ngp);
+                    let n_is_water = nb == BlockType::Air && nf > 0;
+                    if nb.is_solid() {
+                        return false;
+                    }
+                    if is_top_bottom {
+                        !n_is_water
+                    } else {
+                        !n_is_water || f0 > nf
+                    }
+                };
+
+                if check_face(gp + IVec3::X, false) {
+                    push_fluid_quad(out, x, y, z, 0, [0, 0, ne_off, se_off], world.get_light_global(gp + IVec3::X));
+                }
+                if check_face(gp - IVec3::X, false) {
+                    push_fluid_quad(out, x, y, z, 1, [0, 0, sw_off, nw_off], world.get_light_global(gp - IVec3::X));
+                }
+                if check_face(gp + IVec3::Y, true) {
+                    push_fluid_quad(out, x, y, z, 2, [sw_off, se_off, ne_off, nw_off], world.get_light_global(gp + IVec3::Y));
+                }
+                if check_face(gp - IVec3::Y, true) {
+                    push_fluid_quad(out, x, y, z, 3, [0, 0, 0, 0], world.get_light_global(gp - IVec3::Y));
+                }
+                if check_face(gp + IVec3::Z, false) {
+                    push_fluid_quad(out, x, y, z, 4, [0, 0, sw_off, se_off], world.get_light_global(gp + IVec3::Z));
+                }
+                if check_face(gp - IVec3::Z, false) {
+                    push_fluid_quad(out, x, y, z, 5, [0, 0, ne_off, nw_off], world.get_light_global(gp - IVec3::Z));
                 }
             }
         }

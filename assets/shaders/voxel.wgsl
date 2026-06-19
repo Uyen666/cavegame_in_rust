@@ -22,6 +22,7 @@ struct EnvironmentUniform {
     camera_pos: vec3<f32>,
     fog_start: f32,
     fog_end: f32,
+    is_fluid: u32,
 };
 @group(2) @binding(2) var<uniform> env: EnvironmentUniform;
 
@@ -33,10 +34,19 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     let y = f32((vertex.packed_data >> 6u) & 0x3Fu);
     let z = f32((vertex.packed_data >> 12u) & 0x3Fu);
     let face_id = (vertex.packed_data >> 18u) & 0x07u;
-    let tex_id = (vertex.packed_data >> 21u) & 0x7Fu;
+    var tex_id = (vertex.packed_data >> 21u) & 0x7Fu;
     let sky_light_int = (vertex.packed_data >> 28u) & 0x0Fu;
 
-    let local_pos = vec3<f32>(x, y, z);
+    var y_offset_down = 0.0;
+    if env.is_fluid == 1u {
+        tex_id = (vertex.packed_data >> 21u) & 0x0Fu;
+        y_offset_down = f32((vertex.packed_data >> 25u) & 7u) / 8.0;
+    }
+
+    var local_pos = vec3<f32>(x, y - y_offset_down, z);
+    
+    // 防禦性 Clamp：確保流體頂點不會被錯誤的 offset 拉入虛空
+    local_pos.y = max(local_pos.y, -1.0);
     
     var normal: vec3<f32>;
     var uv: vec2<f32>;
@@ -91,12 +101,19 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     let light_ratio = in.sky_light / 15.0;
     let shadow_intensity = 0.06 + (1.0 - 0.06) * (light_ratio * light_ratio);
     
-    let final_rgb = tex_color.rgb * shadow_intensity;
+    var final_rgb = tex_color.rgb * shadow_intensity;
+    var final_alpha = tex_color.a;
+
+    if env.is_fluid == 1u && in.texture_index == 4u {
+        let water_tint = vec4<f32>(0.15, 0.35, 0.75, 0.90);
+        final_rgb = final_rgb * water_tint.rgb;
+        final_alpha = water_tint.a;
+    }
     
     let dist = length(in.world_position.xyz - env.camera_pos);
     let fog_factor = smoothstep(env.fog_start, env.fog_end, dist);
     let fogged_color = mix(final_rgb, env.fog_color.rgb, fog_factor);
     
-    return vec4<f32>(fogged_color, tex_color.a);
+    return vec4<f32>(fogged_color, final_alpha);
 }
 #endif

@@ -4,6 +4,7 @@ pub mod storage;
 pub mod gen;
 pub mod generator;
 pub mod lighting;
+pub mod fluid;
 use bevy::prelude::*;
 use bevy::utils::{HashMap, HashSet};
 use bevy::tasks::{AsyncComputeTaskPool, Task};
@@ -30,12 +31,14 @@ pub struct WorldPlugin;
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WorldManager>()
+            .insert_resource(crate::world::fluid::FluidTickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
             .add_systems(Startup, setup_world)
             .add_systems(
                 Update,
                 (
                     update_chunks,
                     poll_loading_chunks,
+                    crate::world::fluid::fluid_tick_system,
                 ).run_if(in_state(crate::GameState::InGame))
             );
     }
@@ -62,27 +65,32 @@ pub enum WorldType {
 pub struct ChunkEntry {
     pub buffer: generator::ChunkBuffer,
     pub light_buffer: ChunkLightBuffer,
+    pub fluid_buffer: Option<Box<[u8; 32768]>>,
     pub entity:  Option<Entity>,
     pub is_modified: bool,
 }
 
 #[derive(Resource)]
 pub struct WorldManager {
-    pub chunks:         HashMap<IVec3, ChunkEntry>,
+    pub chunks: HashMap<IVec3, ChunkEntry>,
     pub loading_chunks: HashSet<IVec3>,
-    pub world_type:     WorldType,
-    pub seed:           u32,
+    pub world_type: WorldType,
+    pub seed: u32,
     pub heightmap_cache: HashMap<IVec2, Box<[i32; 1024]>>,
+    pub dirty_chunks_for_meshing: std::collections::HashSet<IVec3>,
+    pub fluid_queue: std::collections::VecDeque<IVec3>,
 }
 
 impl Default for WorldManager {
     fn default() -> Self {
         Self {
-            chunks:         HashMap::default(),
+            chunks: HashMap::default(),
             loading_chunks: HashSet::default(),
-            world_type:     WorldType::PerlinHills,
-            seed:           12345,
+            world_type: WorldType::PerlinHills,
+            seed: 12345,
             heightmap_cache: HashMap::default(),
+            dirty_chunks_for_meshing: std::collections::HashSet::new(),
+            fluid_queue: std::collections::VecDeque::new(),
         }
     }
 }
@@ -113,7 +121,29 @@ impl WorldManager {
         BlockType::Air
     }
 
+    pub fn get_fluid_global(&self, pos: IVec3) -> u8 {
+        let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
+        if let Some(entry) = self.chunks.get(&chunk_pos) {
+            if let Some(fluid_buf) = &entry.fluid_buffer {
+                let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
+                return fluid_buf[idx];
+            }
+        }
+        0
+    }
+
+    pub fn set_fluid_global(&mut self, pos: IVec3, val: u8) {
+        let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
+        if let Some(entry) = self.chunks.get_mut(&chunk_pos) {
+            let fluid_buf = entry.fluid_buffer.get_or_insert(Box::new([0; 32768]));
+            let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
+            fluid_buf[idx] = val;
+            self.dirty_chunks_for_meshing.insert(chunk_pos);
+        }
+    }
+
     /// 相容舊簽名的全域方塊查詢（供 greedy.rs 等使用），實際上直接查 palette
+    #[allow(dead_code)]
     pub fn get_block_global_mut(&self, pos: IVec3, _q_chunks: &Query<(Entity, &mut Chunk)>) -> BlockType {
         self.get_block_global(pos)
     }
@@ -228,21 +258,18 @@ impl WorldManager {
         }
 
         // 4. 邊界鄰居 Dirty 傳播（Remesh Propagation）
-        // 若修改的方塊位於區塊邊界，相鄰 Chunk 的 Face Culling 結果也會改變，
-        // 必須強制令相鄰 Chunk 也重新網格化。
         let boundary_neighbors: &[(i32, IVec3)] = &[
-            (local.x,          IVec3::new(-1,  0,  0)),  // x == 0  → 左鄰居
-            (CHUNK_SIZE - 1 - local.x, IVec3::new( 1,  0,  0)),  // x == 31 → 右鄰居
-            (local.y,          IVec3::new( 0, -1,  0)),  // y == 0  → 下鄰居
-            (CHUNK_SIZE - 1 - local.y, IVec3::new( 0,  1,  0)),  // y == 31 → 上鄰居
-            (local.z,          IVec3::new( 0,  0, -1)),  // z == 0  → 後鄰居
-            (CHUNK_SIZE - 1 - local.z, IVec3::new( 0,  0,  1)),  // z == 31 → 前鄰居
+            (local.x,          IVec3::new(-1,  0,  0)),
+            (CHUNK_SIZE - 1 - local.x, IVec3::new( 1,  0,  0)),
+            (local.y,          IVec3::new( 0, -1,  0)),
+            (CHUNK_SIZE - 1 - local.y, IVec3::new( 0,  1,  0)),
+            (local.z,          IVec3::new( 0,  0, -1)),
+            (CHUNK_SIZE - 1 - local.z, IVec3::new( 0,  0,  1)),
         ];
 
         for &(dist_to_edge, offset) in boundary_neighbors {
             if dist_to_edge == 0 {
                 let neighbor_chunk_pos = chunk_pos + offset;
-                // 查詢鄰居是否有視覺實體，若有則標記 Dirty
                 if let Some(neighbor_entry) = self.chunks.get(&neighbor_chunk_pos) {
                     if let Some(neighbor_entity) = neighbor_entry.entity {
                         if let Ok((_, mut neighbor_chunk)) = q_chunks.get_mut(neighbor_entity) {
@@ -476,6 +503,7 @@ fn poll_loading_chunks(
                 let entry = ChunkEntry {
                     buffer:      chunk_data.buffer,
                     light_buffer: light_buffer.clone(),
+                    fluid_buffer: None,
                     entity:      None,
                     is_modified: false,
                 };
@@ -507,6 +535,7 @@ fn poll_loading_chunks(
                 let entry = ChunkEntry {
                     buffer:      generator::ChunkBuffer { blocks: chunk_data.buffer.blocks }, // ✅ 保存完整資料與 3D 陣列供鄰居全域查詢
                     light_buffer: light_buffer.clone(),
+                    fluid_buffer: None,
                     entity:      Some(chunk_entity),
                     is_modified: false,
                 };

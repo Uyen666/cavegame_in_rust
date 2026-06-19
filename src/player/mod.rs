@@ -310,17 +310,19 @@ fn player_move(
 
 fn player_interaction(
     mut commands: Commands,
-    keys: Res<ButtonInput<MouseButton>>,
+    mouse_keys: Res<ButtonInput<MouseButton>>,
+    kbd_keys: Res<ButtonInput<KeyCode>>,
     mut world: ResMut<WorldManager>,
     mut q_chunks_mut: Query<(Entity, &mut Chunk)>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
     q_player: Query<(&Transform, &Player)>,
 ) {
-    let left = keys.just_pressed(MouseButton::Left);
-    let right = keys.just_pressed(MouseButton::Right);
+    let left = mouse_keys.just_pressed(MouseButton::Left);
+    let right = mouse_keys.just_pressed(MouseButton::Right);
+    let key_f = kbd_keys.just_pressed(KeyCode::KeyF);
 
-    if !left && !right {
+    if !left && !right && !key_f {
         return;
     }
     
@@ -352,6 +354,16 @@ fn player_interaction(
             if block.is_solid() {
                 if left {
                     world.set_block_global(block_pos, BlockType::Air, &mut q_chunks_mut, &mut commands);
+                    
+                    // 【流體聯鎖喚醒機制】(Fluid Block Update Hook)
+                    // 當方塊被挖除時，主動探測周圍 6 個方向（尤其是正上方）
+                    // 若有流體，將其重新壓入 BFS 佇列，喚醒流體下墜與蔓延！
+                    for dir in [IVec3::Y, IVec3::NEG_Y, IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
+                        let neighbor_pos = block_pos + dir;
+                        if world.get_fluid_global(neighbor_pos) > 0 {
+                            world.fluid_queue.push_back(neighbor_pos);
+                        }
+                    }
                 } else if right {
                     if let Some(place_pos) = last_air_pos {
                         let block_aabb = Aabb::new(
@@ -370,6 +382,13 @@ fn player_interaction(
                         }
 
                         world.set_block_global(place_pos, BlockType::Stone, &mut q_chunks_mut, &mut commands);
+                    }
+                } else if key_f {
+                    println!("🚀 [Fluid Debug] F Key Pressed! Detecting raycast...");
+                    if let Some(place_pos) = last_air_pos {
+                        world.set_fluid_global(place_pos, 8);
+                        world.fluid_queue.push_back(place_pos);
+                        println!("🌊 [Fluid Debug] Successfully spawned water source at global pos: {:?}", place_pos);
                     }
                 }
                 break;
