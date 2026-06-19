@@ -17,6 +17,14 @@ struct VertexOutput {
 @group(2) @binding(0) var array_texture: texture_2d_array<f32>;
 @group(2) @binding(1) var array_sampler: sampler;
 
+struct EnvironmentUniform {
+    fog_color: vec4<f32>,
+    camera_pos: vec3<f32>,
+    fog_start: f32,
+    fog_end: f32,
+};
+@group(2) @binding(2) var<uniform> env: EnvironmentUniform;
+
 @vertex
 fn vertex(vertex: Vertex) -> VertexOutput {
     var out: VertexOutput;
@@ -85,6 +93,10 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     
     let final_rgb = tex_color.rgb * shadow_intensity;
     
-    return vec4<f32>(final_rgb, tex_color.a);
+    let dist = length(in.world_position.xyz - env.camera_pos);
+    let fog_factor = smoothstep(env.fog_start, env.fog_end, dist);
+    let fogged_color = mix(final_rgb, env.fog_color.rgb, fog_factor);
+    
+    return vec4<f32>(fogged_color, tex_color.a);
 }
 #endif

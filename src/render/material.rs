@@ -1,11 +1,24 @@
+#![allow(dead_code)]
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, ShaderRef};
+use bevy::render::render_resource::{AsBindGroup, ShaderRef, ShaderType};
+
+#[allow(dead_code)]
+#[derive(Clone, Default, ShaderType, Debug)]
+pub struct EnvironmentUniform {
+    pub fog_color: LinearRgba,
+    pub camera_pos: Vec3,
+    pub fog_start: f32,
+    pub fog_end: f32,
+}
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct VoxelMaterial {
     #[texture(0, dimension = "2d_array")]
     #[sampler(1)]
     pub texture_array: Handle<Image>,
+    
+    #[uniform(2)]
+    pub env: EnvironmentUniform,
 }
 
 impl Material for VoxelMaterial {

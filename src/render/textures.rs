@@ -50,6 +50,12 @@ fn load_textures(
     
     let material_handle = materials.add(VoxelMaterial {
         texture_array: image_handle.clone(),
+        env: crate::render::material::EnvironmentUniform {
+            fog_color: bevy::color::LinearRgba::rgb(0.5, 0.8, 1.0),
+            camera_pos: Vec3::ZERO,
+            fog_start: 32.0,
+            fog_end: 60.0,
+        },
     });
 
     gt.array_texture = image_handle;

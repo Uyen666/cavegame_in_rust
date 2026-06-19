@@ -68,3 +68,8 @@ src/
 * **O(1) 高度圖快取 (Heightmap Cache)**：為了在未生成的區塊與天空邊界判定陽光遮蔽，系統將 `get_max_surface_y` 的高昂地形噪聲計算全面移交給背景 `AsyncComputeTaskPool` 處理。生成的 2D 高度圖 `max_surface_y_map` 會被 `WorldManager` 進行快取，主執行緒的 `get_light_global` 僅需執行極速的 O(1) 陣列查表。
 * **純空氣區塊光照駐留 (Pure-Air Chunk Light Retention)**：`ChunkLightBuffer` 嚴格綁定於資料層的 `ChunkEntry`，而非 ECS 實體。這意味著就算是一個不包含任何固體的 100% 空氣區塊，依然能夠承載真實的光照漸層衰減（例如陽光從 15 衰減至 12）。此架構完美消滅了邊界交接處的死黑斷層。
 * **渲染管線資料解耦 (Data-Layer Decoupling)**：貪婪網格化 `greedy.rs` 在抓取相鄰區塊的光照資訊時，直接與 `WorldManager` 溝通取得資料層的數據，徹底跳脫對 `Query<&mut Chunk>` 的依賴，大幅提升多執行緒安全度與程式碼的執行效能。
+* **太陽直射不減光鐵律 (Direct Sunlight Vertical Propagation)**：優化了 BFS 光照傳播演算法與動態方塊破壞的初始賦值邏輯。現在光線向正下方（-Y）傳播時若為最高亮度（15），將無條件直接繼承 15；玩家破壞地表方塊時若上方為 15，新空氣格也將立即獲得 15。完美還原了陽光筆直穿透深洞的物理現象。
+
+## 8. 🌫️ 動態環境霧化與視覺包覆 (Dynamic Environment & Fog Alignment)
+* **視線亮度感知與背景同步 (Eye-Light Background Sync)**：遊戲實作了 `update_dynamic_environment` 系統，每幀根據玩家眼部的天空光數據（`eye_light`），動態插值（Lerp）出合適的環境色，並套用於視窗的 `ClearColor`。確保玩家從地表潛入洞穴時，背景顏色能從明亮的天藍色滑順地過渡至深邃的漆黑，徹底消除畫面突變的生硬感。
+* **距離霧化與網格裂縫防禦 (Distance Fog & Mesh Cracking Defense)**：將 GPU 著色器的 `EnvironmentUniform` 與 `ClearColor` 達成 100% 同步。在片元著色器 (`voxel.wgsl`) 內部，根據方塊與相機的絕對距離執行 `smoothstep` 霧化混合。此舉令渲染邊緣的方塊能完美融進背景色中，達成了即使因浮點數精度導致幾何體之間存在微小縫隙，也不會透出違和的藍色背光的終極「視覺欺騙」防禦。
