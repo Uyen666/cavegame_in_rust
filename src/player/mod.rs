@@ -346,14 +346,9 @@ fn player_interaction(
                     world.set_block_global(block_pos, BlockType::Air, &mut q_chunks_mut, &mut commands);
                     
                     // 【流體聯鎖喚醒機制】(Fluid Block Update Hook)
-                    // 當方塊被挖除時，主動探測周圍 6 個方向（尤其是正上方）
-                    // 若有流體，將其重新壓入 BFS 佇列，喚醒流體下墜與蔓延！
-                    for dir in [IVec3::Y, IVec3::NEG_Y, IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
-                        let neighbor_pos = block_pos + dir;
-                        if world.get_fluid_global(neighbor_pos) > 0 {
-                            world.fluid_queue.push_back(neighbor_pos);
-                        }
-                    }
+                    // 當方塊被挖除時，主動探測半徑 4 格範圍內的流體
+                    // 若有流體，將其重新壓入 BFS 佇列，觸發路徑重算與蔓延！
+                    crate::world::fluid::wake_up_fluids_in_radius(&mut world, block_pos);
                 } else if right {
                     if let Some(place_pos) = last_air_pos {
                         let block_aabb = Aabb::new(
@@ -372,6 +367,7 @@ fn player_interaction(
                         }
 
                         world.set_block_global(place_pos, BlockType::Stone, &mut q_chunks_mut, &mut commands);
+                        crate::world::fluid::wake_up_fluids_in_radius(&mut world, place_pos);
                     }
                 } else if key_f {
                     println!("🚀 [Fluid Debug] F Key Pressed! Detecting raycast...");

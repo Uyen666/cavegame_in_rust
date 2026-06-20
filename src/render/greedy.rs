@@ -679,20 +679,38 @@ fn generate_fluid_mesh(
                 let se_off = get_corner_offset(x + 1, z + 1);
 
 
-                let check_face = |ngp: IVec3, is_top_bottom: bool| -> bool {
+                let check_face = |ngp: IVec3, face_idx: usize| -> bool {
                     let nb = world.get_block_global(ngp);
                     let nf = world.get_fluid_global(ngp) & 0x0F;
+                    
+                    // 1. 頂面 (Top Face) 專屬邏輯
+                    if face_idx == 2 {
+                        // 正上方也是水，隱藏內側面
+                        if nf > 0 {
+                            return false;
+                        }
+                        // 唯二防閃爍特權：滿格水源且上方是固體，隱藏頂面防止 Z-Fighting
+                        if f0 == 8 && nb.is_solid() {
+                            return false;
+                        }
+                        // 🚀 其他情況（一格高隧道內流動水）絕對必須渲染！
+                        return true;
+                    }
+
+                    // 2. 側面與底面：若隔壁是固體，隱藏網格
                     if nb.is_solid() {
                         return false;
                     }
-                    if is_top_bottom {
-                        let n_is_water = nb == BlockType::Air && nf > 0;
-                        !n_is_water
-                    } else {
-                        // 1. 跨 Y 軸垂直斷層縫合線
-                        let neighbor_is_waterfall = (world.get_fluid_global(ngp + IVec3::Y) & 0x0F) > 0;
-                        nf == 0 || (is_waterfall_column != neighbor_is_waterfall)
+
+                    // 3. 底面 (Bottom Face) 專屬邏輯
+                    if face_idx == 3 {
+                        return nf == 0;
                     }
+
+                    // 4. 側面 (Side Faces) 專屬邏輯
+                    // 跨 Y 軸垂直斷層縫合線
+                    let neighbor_is_waterfall = (world.get_fluid_global(ngp + IVec3::Y) & 0x0F) > 0;
+                    nf == 0 || (is_waterfall_column != neighbor_is_waterfall)
                 };
 
                 let h_nw = nw_off as i32;
@@ -743,22 +761,22 @@ fn generate_fluid_mesh(
                 let (y_bot_pz, off_pz) = get_side_anchors(nf_pz);
                 let (y_bot_nz, off_nz) = get_side_anchors(nf_nz);
 
-                if check_face(gp + IVec3::X, false) {
+                if check_face(gp + IVec3::X, 0) {
                     push_fluid_quad(out, x, y, z, 0, [y_bot_px, y_bot_px, y+1, y+1], [off_px, off_px, ne_off, se_off], world.get_light_global(gp + IVec3::X), false, side_flow);
                 }
-                if check_face(gp - IVec3::X, false) {
+                if check_face(gp - IVec3::X, 1) {
                     push_fluid_quad(out, x, y, z, 1, [y_bot_nx, y_bot_nx, y+1, y+1], [off_nx, off_nx, sw_off, nw_off], world.get_light_global(gp - IVec3::X), false, side_flow);
                 }
-                if check_face(gp + IVec3::Y, true) {
+                if check_face(gp + IVec3::Y, 2) {
                     push_fluid_quad(out, x, y, z, 2, [y+1, y+1, y+1, y+1], [sw_off, se_off, ne_off, nw_off], world.get_light_global(gp + IVec3::Y), flip_diagonal, top_flow);
                 }
-                if check_face(gp - IVec3::Y, true) {
+                if check_face(gp - IVec3::Y, 3) {
                     push_fluid_quad(out, x, y, z, 3, [y+1, y+1, y+1, y+1], [7, 7, 7, 7], world.get_light_global(gp - IVec3::Y), false, side_flow);
                 }
-                if check_face(gp + IVec3::Z, false) {
+                if check_face(gp + IVec3::Z, 4) {
                     push_fluid_quad(out, x, y, z, 4, [y_bot_pz, y_bot_pz, y+1, y+1], [off_pz, off_pz, sw_off, se_off], world.get_light_global(gp + IVec3::Z), false, side_flow);
                 }
-                if check_face(gp - IVec3::Z, false) {
+                if check_face(gp - IVec3::Z, 5) {
                     push_fluid_quad(out, x, y, z, 5, [y_bot_nz, y_bot_nz, y+1, y+1], [off_nz, off_nz, ne_off, nw_off], world.get_light_global(gp - IVec3::Z), false, side_flow);
                 }
             }
