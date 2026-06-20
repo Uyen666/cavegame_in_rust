@@ -69,6 +69,7 @@ pub struct ChunkEntry {
     pub fluid_buffer: Option<Box<[u8; 32768]>>,
     pub entity:  Option<Entity>,
     pub is_modified: bool,
+    pub is_lighting_ready: bool,
 }
 
 #[derive(Resource, Clone)]
@@ -165,6 +166,7 @@ impl WorldManager {
                 fluid_buffer: None,
                 entity: None,
                 is_modified: true,
+                is_lighting_ready: false,
             };
             if chunk_pos.y < 2 {
                 // 🚀 地底深層：預設填滿石頭，天空光照保持為 0（死黑溶洞）
@@ -277,6 +279,7 @@ impl WorldManager {
                 fluid_buffer: None,
                 entity: None,
                 is_modified: true,
+                is_lighting_ready: false,
             };
             if chunk_pos.y < 2 {
                 // 🚀 如果是地底區塊，背景預設必須是石頭，否則會出現巨型灰色交界平面！
@@ -394,6 +397,21 @@ impl WorldManager {
             let mut queue = std::collections::VecDeque::new();
             queue.push_back(pos);
             crate::world::lighting::propagate_sky_light_global(self, q_chunks, queue);
+        } else {
+            // 🚀 正統光照阻斷泛洪更新 (Light Removal BFS)
+            let old_light = self.get_light_global(pos);
+            if old_light > 0 {
+                self.set_light_global(pos, 0, q_chunks);
+                let mut remove_queue = std::collections::VecDeque::new();
+                remove_queue.push_back((pos, old_light));
+                let mut propagate_queue = std::collections::VecDeque::new();
+                
+                // 1. 消除被阻斷的光源
+                crate::world::lighting::remove_sky_light_global(self, q_chunks, remove_queue, &mut propagate_queue);
+                
+                // 2. 從周圍未受影響的亮處重新蔓延光照
+                crate::world::lighting::propagate_sky_light_global(self, q_chunks, propagate_queue);
+            }
         }
     }
 
@@ -403,9 +421,12 @@ impl WorldManager {
         self.chunks.len()
     }
 
-    /// 真正有渲染實體的區塊數
     pub fn chunk_entity_count(&self) -> usize {
         self.chunks.values().filter(|e| e.entity.is_some()).count()
+    }
+
+    pub fn is_chunk_lighting_ready(&self, chunk_pos: IVec3) -> bool {
+        self.chunks.get(&chunk_pos).map(|e| e.is_lighting_ready).unwrap_or(false)
     }
 }
 
@@ -624,6 +645,7 @@ fn poll_loading_chunks(
                     fluid_buffer: None,
                     entity:      Some(chunk_entity),
                     is_modified: false,
+                    is_lighting_ready: false,
                 };
                 world_manager.chunks.insert(chunk_pos, entry);
             }
@@ -688,6 +710,23 @@ fn poll_loading_chunks(
             }
             if !lighting_queue.is_empty() {
                 crate::world::lighting::propagate_sky_light_global(&mut world_manager, &mut q_chunks, lighting_queue);
+            }
+
+            // 🚀 光照完工剛性同步鎖：標記該區塊及其鄰居 is_lighting_ready = true (資料層秒刻解鎖)
+            let mut chunks_to_ready = vec![chunk_pos];
+            for offset in offsets {
+                chunks_to_ready.push(chunk_pos + offset);
+            }
+            for pos in chunks_to_ready {
+                if let Some(entry) = world_manager.chunks.get_mut(&pos) {
+                    entry.is_lighting_ready = true;
+                    // 如果實體已經存在，標記為髒污以便 greedy.rs 重新渲染
+                    if let Some(ent) = entry.entity {
+                        if let Ok((_, mut c)) = q_chunks.get_mut(ent) {
+                            c.is_dirty = true;
+                        }
+                    }
+                }
             }
 
             // 任務完成，銷毀 Task 實體

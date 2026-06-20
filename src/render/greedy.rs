@@ -231,6 +231,10 @@ pub fn mesh_dirty_chunks(
     let mut dirty_chunks = Vec::new();
     for (entity, chunk) in q_chunks.iter() {
         if chunk.is_dirty {
+            // 🚀 渲染前直接向資料層對齊真理之源
+            if !world_manager.is_chunk_lighting_ready(chunk.position) {
+                continue; // 光照未完工，攔截施工
+            }
             dirty_chunks.push((entity, chunk.position));
         }
     }
@@ -534,11 +538,12 @@ fn generate_greedy_mesh(
 
 fn push_fluid_quad(
     out: &mut MeshData,
+    base_gp: IVec3,
+    world: &ChunkMeshInputData,
     x: i32, _y: i32, z: i32,
     face_id: u8,
     y_coords: [i32; 4],
     offsets: [u8; 4],
-    sky_light: u8,
     flip_diagonal: bool,
     flow: [f32; 2],
 ) {
@@ -556,30 +561,52 @@ fn push_fluid_quad(
     let base = out.0.len() as u32;
 
     for (i, v) in [v1, v2, v3, v4].iter().enumerate() {
-        let vx = v[0] as u32;
-        let vy = v[1] as u32;
-        let vz = v[2] as u32;
+        let vx = v[0];
+        let vy = v[1];
+        let vz = v[2];
         let y_offset_down = offsets[i] as u32;
 
-        let packed: u32 = (vx & 0x3F) 
-                        | ((vy & 0x3F) << 6) 
-                        | ((vz & 0x3F) << 12) 
+        // 🚀 邊界頂點光照平滑校準 (Vertex Ambient Light Averaging)
+        let (dx_min, dx_max, dy_min, dy_max, dz_min, dz_max) = match face_id {
+            0 => (0, 0, -1, 0, -1, 0), // +X
+            1 => (-1,-1, -1, 0, -1, 0), // -X
+            2 => (-1, 0, 0, 0, -1, 0),  // +Y
+            3 => (-1, 0, -1,-1, -1, 0), // -Y
+            4 => (-1, 0, -1, 0, 0, 0),  // +Z
+            5 => (-1, 0, -1, 0, -1,-1), // -Z
+            _ => unreachable!(),
+        };
+        
+        let mut light_sum = 0;
+        for dx in dx_min..=dx_max {
+            for dy in dy_min..=dy_max {
+                for dz in dz_min..=dz_max {
+                    let sample_gp = base_gp + IVec3::new(vx + dx, vy + dy, vz + dz);
+                    light_sum += world.get_light_global(sample_gp) as u32;
+                }
+            }
+        }
+        let smooth_light = (light_sum / 4) as u8;
+
+        let packed: u32 = ((vx as u32) & 0x3F) 
+                        | (((vy as u32) & 0x3F) << 6) 
+                        | (((vz as u32) & 0x3F) << 12) 
                         | ((face_id as u32 & 0x07) << 18) 
                         | ((tex_layer & 0x0F) << 21) 
                         | ((y_offset_down & 0x07) << 25)
-                        | (((sky_light as u32) & 0x0F) << 28);
+                        | (((smooth_light as u32) & 0x0F) << 28);
                         
         out.0.push(packed);
         out.2.push(flow);
     }
 
     let indices = match face_id {
-        0 => [0, 1, 2, 0, 2, 3], // +X: 法線 +X (向外)
-        1 => [0, 1, 2, 0, 2, 3], // -X: 法線 -X (向外)
-        2 => if flip_diagonal { [1, 2, 3, 1, 3, 0] } else { [0, 1, 2, 0, 2, 3] }, // +Y: 法線 +Y (向外)
-        3 => [0, 1, 2, 0, 2, 3], // -Y: 法線 -Y (向外)
-        4 => [0, 2, 1, 0, 3, 2], // +Z: 翻轉後兩個索引，強迫法線 +Z (向外)
-        5 => [0, 2, 1, 0, 3, 2], // -Z: 翻轉後兩個索引，強迫法線 -Z (向外)
+        0 => [0, 1, 2, 0, 2, 3], 
+        1 => [0, 1, 2, 0, 2, 3], 
+        2 => if flip_diagonal { [1, 2, 3, 1, 3, 0] } else { [0, 1, 2, 0, 2, 3] }, 
+        3 => [0, 1, 2, 0, 2, 3], 
+        4 => [0, 2, 1, 0, 3, 2], 
+        5 => [0, 2, 1, 0, 3, 2], 
         _ => unreachable!(),
     };
 
@@ -762,22 +789,22 @@ fn generate_fluid_mesh(
                 let (y_bot_nz, off_nz) = get_side_anchors(nf_nz);
 
                 if check_face(gp + IVec3::X, 0) {
-                    push_fluid_quad(out, x, y, z, 0, [y_bot_px, y_bot_px, y+1, y+1], [off_px, off_px, ne_off, se_off], world.get_light_global(gp + IVec3::X), false, side_flow);
+                    push_fluid_quad(out, base_gp, world, x, y, z, 0, [y_bot_px, y_bot_px, y+1, y+1], [off_px, off_px, ne_off, se_off], false, side_flow);
                 }
                 if check_face(gp - IVec3::X, 1) {
-                    push_fluid_quad(out, x, y, z, 1, [y_bot_nx, y_bot_nx, y+1, y+1], [off_nx, off_nx, sw_off, nw_off], world.get_light_global(gp - IVec3::X), false, side_flow);
+                    push_fluid_quad(out, base_gp, world, x, y, z, 1, [y_bot_nx, y_bot_nx, y+1, y+1], [off_nx, off_nx, sw_off, nw_off], false, side_flow);
                 }
                 if check_face(gp + IVec3::Y, 2) {
-                    push_fluid_quad(out, x, y, z, 2, [y+1, y+1, y+1, y+1], [sw_off, se_off, ne_off, nw_off], world.get_light_global(gp + IVec3::Y), flip_diagonal, top_flow);
+                    push_fluid_quad(out, base_gp, world, x, y, z, 2, [y+1, y+1, y+1, y+1], [sw_off, se_off, ne_off, nw_off], flip_diagonal, top_flow);
                 }
                 if check_face(gp - IVec3::Y, 3) {
-                    push_fluid_quad(out, x, y, z, 3, [y+1, y+1, y+1, y+1], [7, 7, 7, 7], world.get_light_global(gp - IVec3::Y), false, side_flow);
+                    push_fluid_quad(out, base_gp, world, x, y, z, 3, [y+1, y+1, y+1, y+1], [7, 7, 7, 7], false, side_flow);
                 }
                 if check_face(gp + IVec3::Z, 4) {
-                    push_fluid_quad(out, x, y, z, 4, [y_bot_pz, y_bot_pz, y+1, y+1], [off_pz, off_pz, sw_off, se_off], world.get_light_global(gp + IVec3::Z), false, side_flow);
+                    push_fluid_quad(out, base_gp, world, x, y, z, 4, [y_bot_pz, y_bot_pz, y+1, y+1], [off_pz, off_pz, sw_off, se_off], false, side_flow);
                 }
                 if check_face(gp - IVec3::Z, 5) {
-                    push_fluid_quad(out, x, y, z, 5, [y_bot_nz, y_bot_nz, y+1, y+1], [off_nz, off_nz, ne_off, nw_off], world.get_light_global(gp - IVec3::Z), false, side_flow);
+                    push_fluid_quad(out, base_gp, world, x, y, z, 5, [y_bot_nz, y_bot_nz, y+1, y+1], [off_nz, off_nz, ne_off, nw_off], false, side_flow);
                 }
             }
         }

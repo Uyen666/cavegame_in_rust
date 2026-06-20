@@ -14,6 +14,7 @@ pub struct EnvironmentUniform {
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+#[bind_group_data(u32)]
 pub struct VoxelMaterial {
     #[texture(0, dimension = "2d_array")]
     #[sampler(1)]
@@ -23,6 +24,12 @@ pub struct VoxelMaterial {
     pub env: EnvironmentUniform,
 
     pub alpha_mode: AlphaMode,
+}
+
+impl From<&VoxelMaterial> for u32 {
+    fn from(material: &VoxelMaterial) -> u32 {
+        material.env.is_fluid
+    }
 }
 
 impl Material for VoxelMaterial {
@@ -52,7 +59,11 @@ impl Material for VoxelMaterial {
         layout: &bevy::render::mesh::MeshVertexBufferLayoutRef,
         _key: bevy::pbr::MaterialPipelineKey<Self>,
     ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
-        descriptor.primitive.cull_mode = Some(bevy::render::render_resource::Face::Back);
+        if _key.bind_group_data == 1 {
+            descriptor.primitive.cull_mode = None; // 🚀 流體：關閉背面剔除，允許水底往上看見水面
+        } else {
+            descriptor.primitive.cull_mode = Some(bevy::render::render_resource::Face::Back); // 普通固體：嚴格背面剔除
+        }
         
         let vertex_layout = layout.0.get_layout(&[
             crate::render::greedy::ATTRIBUTE_PACKED_DATA.at_shader_location(0),

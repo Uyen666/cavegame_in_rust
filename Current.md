@@ -106,3 +106,8 @@ src/
 * **嚴格限制的動態復活機制 (Strict Dynamic Chunk Revival)**：徹底阻擋光照與流體蔓延至未載入區塊時誤觸發記憶體寫入。將「動態復活」權限嚴格限定於「玩家主動放置方塊」的那一刻。且復活時依據高度自動將背景填滿 `Stone` 或 `Air`，完美消滅地底邊界的 32x32 巨型灰色平面破綻。
 * **高空復活區塊光照自適應 (Height-Adaptive Sky Light for Revived Chunks)**：修正高空動態復活區塊預設為黑洞的 Bug。當高空復活時，強制將光照層填滿 15 級大自然陽光 (`0xF0`)，並即時向周圍 6 向鄰居擴散 `is_dirty` 信號，保證網格重新生成完美無瑕的陽光過渡面。
 * **防溢位精準計數器校準 (Underflow Prevention for Block Counters)**：修復了 `Chunk::new()` 預設 `non_air_count` 為 0 導致複製上萬個地底石頭後，玩家一挖方塊即觸發 `attempt to subtract with overflow` 的崩潰 Bug。在 Lazy Spawn 時強制進行 `chunk.buffer.blocks.iter().count()` 精準校準，遊戲穩定性達到新高。
+
+## 12. 🌈 光照泛洪與渲染防線同步系統 (Light Propagation & Render Synchronization)
+* **正統光照阻斷泛洪更新 (Light Removal BFS)**：徹底移除了原先硬編碼暴力灌 0 的補丁。在玩家放置固體方塊時，改為啟用正統的雙層 BFS 佇列演算法：先消除被阻斷的舊有光照 (Unpropagate)，再從周邊尚未受影響的光源重新向內蔓延 (Re-propagate)，達成極致自然的陰影衰減，完美模擬光線的遮蔽連鎖反應。
+* **區塊初始化光照完工剛性同步鎖 (Chunk Initialization Light Sync Lock)**：為了解決 ECS 生成延遲 (Spawn Latency) 導致網格烘焙過早讀取未結算光照、引發「地底幽靈牆面發光」的惡性競爭條件 (Race Condition)：將 `is_lighting_ready` 標籤從 Component 抽離，剛性寫入 `WorldManager` 的底層字典 `ChunkEntry` 中。`greedy.rs` 渲染前會直接向資料層詢問，只有當光照 BFS 徹底清空佇列後才會秒刻解鎖，徹底封殺渲染偷跑。
+* **流體頂點環境光遮蔽平滑化 (Fluid Vertex Ambient Occlusion Smoothing)**：解決了隧道口水流因吃到周邊 15 級光照而導致邊界呈現刺眼亮藍的穿幫破綻。全面廢除單一面光照採樣，升級為 4-Corner 頂點平滑採樣：在生成水方塊的 Quad 時，每一個頂點會獨立向其相鄰的 4 個方塊進行採樣並求取平均 `(light_sum / 4)`，實現了水流在明暗交界處那極其柔順的環境光過渡漸層。
