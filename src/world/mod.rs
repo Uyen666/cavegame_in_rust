@@ -125,10 +125,21 @@ impl WorldManager {
             let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
             return entry.buffer.blocks[idx];
         }
-        BlockType::Air
+        
+        // 🚀 核心物理防線：當目標區塊在記憶體中不存在（Sparse 空氣或純石頭）時
+        if chunk_pos.y >= 2 {
+            // 🚀 高空（Y >= 64）：隱含背景是絕對空曠的空氣！物理完全通行！
+            BlockType::Air
+        } else {
+            // 🚀 地底（Y < 64）：隱含背景是實心石頭！
+            BlockType::Stone
+        }
     }
 
     pub fn get_fluid_global(&self, pos: IVec3) -> u8 {
+        if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y {
+            return 0;
+        }
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
         if let Some(entry) = self.chunks.get(&chunk_pos) {
             if let Some(fluid_buf) = &entry.fluid_buffer {
@@ -136,12 +147,34 @@ impl WorldManager {
                 return fluid_buf[idx];
             }
         }
+        
         0
     }
 
     pub fn set_fluid_global(&mut self, pos: IVec3, val: u8) {
         if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y { return; }
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
+        
+        if !self.chunks.contains_key(&chunk_pos) {
+            if val == 0 {
+                return; // 空氣/無流體操作直接忽略
+            }
+            let mut new_entry = ChunkEntry {
+                buffer: crate::world::generator::ChunkBuffer { blocks: [BlockType::Air; 32768] },
+                light_buffer: ChunkLightBuffer::default(),
+                fluid_buffer: None,
+                entity: None,
+                is_modified: true,
+            };
+            if chunk_pos.y < 2 {
+                // 🚀 地底深層：預設填滿石頭，天空光照保持為 0（死黑溶洞）
+                new_entry.buffer.blocks = [BlockType::Stone; 32768];
+            } else {
+                // 🚀 高空世界：預設為空氣，天空光照必須強制填滿大自然的天空光！
+                new_entry.light_buffer.light_data.fill(0xF0); 
+            }
+            self.chunks.insert(chunk_pos, new_entry);
+        }
         
         // 🛡️ 铁律：只對已在 HashMap 中的區塊操作流體，絕不學生區塊
         if let Some(entry) = self.chunks.get_mut(&chunk_pos) {
@@ -151,7 +184,6 @@ impl WorldManager {
             entry.is_modified = true;
             self.dirty_chunks_for_meshing.insert(chunk_pos);
         }
-        // 若區塊不存在，直接捨棄流體訪寫（絕不創建新區塊）
     }
 
     /// 相容舊簽名的全域方塊查詢（供 greedy.rs 等使用），實際上直接查 palette
@@ -232,7 +264,32 @@ impl WorldManager {
         if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y { return; }
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
         
-        // 🛡️ 防御線：只對已在 HashMap 中的區塊修改方塊，絕不自創新區塊
+        let mut is_revived = false;
+        if !self.chunks.contains_key(&chunk_pos) {
+            if block == BlockType::Air {
+                return; // 純粹的空氣操作或無效寫入，絕對不准在 HashMap 裡 insert 新區塊
+            }
+            
+            // 🚀 動態復活限制：只有玩家真正主動放置非空氣方塊時，才觸發復活機制
+            let mut new_entry = ChunkEntry {
+                buffer: crate::world::generator::ChunkBuffer { blocks: [BlockType::Air; 32768] },
+                light_buffer: ChunkLightBuffer::default(),
+                fluid_buffer: None,
+                entity: None,
+                is_modified: true,
+            };
+            if chunk_pos.y < 2 {
+                // 🚀 如果是地底區塊，背景預設必須是石頭，否則會出現巨型灰色交界平面！
+                new_entry.buffer.blocks = [BlockType::Stone; 32768];
+            } else {
+                // 🚀 高空世界：預設為空氣，天空光照必須強制填滿大自然的天空光！
+                new_entry.light_buffer.light_data.fill(0xF0);
+            }
+            self.chunks.insert(chunk_pos, new_entry);
+            is_revived = true;
+        }
+        
+        // 🛡️ 防御線：取得區塊（經過上方復活邏輯後，必定能取得，除非意外）
         let Some(entry) = self.chunks.get_mut(&chunk_pos) else { return };
 
         // 1. 同步資料層 buffer
@@ -249,6 +306,8 @@ impl WorldManager {
             // 3. Lazy Spawn：純空氣 Chunk 第一次放入非空氣方塊時，動態建立實體
             let mut chunk = Chunk::new(chunk_pos);
             chunk.buffer = generator::ChunkBuffer { blocks: entry.buffer.blocks };
+            chunk.light_buffer = entry.light_buffer.clone();
+            chunk.non_air_count = chunk.buffer.blocks.iter().filter(|&&b| b != BlockType::Air).count() as u16;
             chunk.set_block(local.x as usize, local.y as usize, local.z as usize, block);
             chunk.is_dirty = true;
 
@@ -282,7 +341,7 @@ impl WorldManager {
         ];
 
         for &(dist_to_edge, offset) in boundary_neighbors {
-            if dist_to_edge == 0 {
+            if dist_to_edge == 0 || is_revived {
                 let neighbor_chunk_pos = chunk_pos + offset;
                 if let Some(neighbor_entry) = self.chunks.get(&neighbor_chunk_pos) {
                     if let Some(neighbor_entity) = neighbor_entry.entity {

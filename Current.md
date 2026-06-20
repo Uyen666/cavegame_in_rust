@@ -94,3 +94,10 @@ src/
 * **扁平化 3D 螺旋視野 (Flattened 3D Render Distance)**：將區塊掃描系統從原本的「無視高度無限柱子 (0~7)」升級為以玩家為中心，上下各 2 層的「動態 3D 扁平包圍盒」。加載與卸載邏輯雙管齊下同步限制 Y 軸，大幅砍掉了高達 70% 的無效地下/高空區塊運算。
 * **動態視野迷霧連動 (Dynamic Fog Distance Alignment)**：將 Shader `voxel.wgsl` 中死板的 64 格距離常數徹底拔除。現在迷霧的 `fog_start` 與 `fog_end` 完全綁定 `render_distance` 動態變化，並在片元著色器中採用精準的 `clamp` 線性插值，實現了與視距完美連動的遼闊地平線。
 * **空網格實體剛性剔除 (Zero-Vertex Entity Culling)**：針對地底深層 100% 被岩石包覆、完全無法被看見的區塊，在非同步任務完成後加入了 `has_geometry` 頂點長度過濾。一旦返回零頂點網格，系統將直接清空任務標籤，**拒絕呼叫** `commands.spawn` 分配 Bevy 子實體，維持 ECS 場景圖的絕對輕盈乾淨。
+
+## 11. 🛸 高度自適應邊界與動態復活系統 (Height-Adaptive Boundary & Revival System)
+* **高度自適應隱含背景 (Height-Adaptive Implicit Background)**：重構了全域查詢接口，當遇到尚未加載或被剔除的純空氣區塊 (`None`) 時，依據 Y 軸高度動態回傳環境值：高空 (Y>=2) 回傳 `Air`，地底 (Y<2) 回傳 `Stone`。徹底解決了邊界隱形牆與掉入虛空的物理 Bug。
+* **物理碰撞與重力解鎖 (Unified Physics Collision Interface)**：移除了舊有粗暴的「第一幀地形安全鎖」，物理引擎現已全盤信賴高度自適應查詢。允許玩家在高空未加載區塊自由落體，並在地底未加載區塊安全行走。
+* **嚴格限制的動態復活機制 (Strict Dynamic Chunk Revival)**：徹底阻擋光照與流體蔓延至未載入區塊時誤觸發記憶體寫入。將「動態復活」權限嚴格限定於「玩家主動放置方塊」的那一刻。且復活時依據高度自動將背景填滿 `Stone` 或 `Air`，完美消滅地底邊界的 32x32 巨型灰色平面破綻。
+* **高空復活區塊光照自適應 (Height-Adaptive Sky Light for Revived Chunks)**：修正高空動態復活區塊預設為黑洞的 Bug。當高空復活時，強制將光照層填滿 15 級大自然陽光 (`0xF0`)，並即時向周圍 6 向鄰居擴散 `is_dirty` 信號，保證網格重新生成完美無瑕的陽光過渡面。
+* **防溢位精準計數器校準 (Underflow Prevention for Block Counters)**：修復了 `Chunk::new()` 預設 `non_air_count` 為 0 導致複製上萬個地底石頭後，玩家一挖方塊即觸發 `attempt to subtract with overflow` 的崩潰 Bug。在 Lazy Spawn 時強制進行 `chunk.buffer.blocks.iter().count()` 精準校準，遊戲穩定性達到新高。

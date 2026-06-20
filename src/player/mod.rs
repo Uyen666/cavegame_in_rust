@@ -161,18 +161,8 @@ fn player_move(
         return; // 🚀 直接結束！短路下方的防虛空安全門、卡死救援與方塊碰撞！
     }
 
-    // ── 安全閘門：玩家腳下的 Chunk 必須載入完成才允許物理運算 ──────────────
-    // 防止地形非同步生成期間玩家因重力而墜入虛空
-    {
-        let pos = transform.translation;
-        let feet_pos = IVec3::new(pos.x.floor() as i32, pos.y.floor() as i32 - 1, pos.z.floor() as i32);
-        let (foot_chunk, _) = WorldManager::global_to_chunk_pos(feet_pos);
-        if !world.chunks.contains_key(&foot_chunk) {
-            // 地表尚未載入：凍結重力，等待下一幀再判定
-            player.velocity = Vec3::ZERO;
-            return;
-        }
-    }
+    // 安全閘門已移除：現在 get_block_global 會自動對超出加載邊界的區塊進行高度自適應回傳，
+    // 高空為 Air 允許自由下落，地底為 Stone 給予實心支撐。
 
     // --- Player dimensions ---
     player.is_crouching = keys.pressed(KeyCode::ControlLeft);
