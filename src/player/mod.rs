@@ -384,7 +384,7 @@ fn player_interaction(
                             }
                             println!("🌊 [Fluid Debug] Removed water at: {:?}", place_pos);
                         } else {
-                            world.set_fluid_global(place_pos, crate::config::MAX_FLUID_LEVEL + 1);
+                            world.set_fluid_global(place_pos, crate::config::MAX_FLUID_LEVEL | 0x80);
                             world.fluid_queue.push_back(place_pos);
                             for dir in [IVec3::Y, IVec3::NEG_Y, IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
                                 world.fluid_queue.push_back(place_pos + dir);

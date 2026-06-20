@@ -76,7 +76,9 @@ src/
 
 ## 9. 🌊 動態流體物理與渲染系統 (Dynamic Fluid Physics & Rendering)
 * **雙軌道貪婪網格化 (Dual-Pass Meshing)**：徹底重構了 `generate_greedy_mesh`，現在它會同步輸出固體網格與流體網格（`solid_vertices`, `fluid_vertices`）。流體網格完全繞過傳統的貪婪合併，改為**逐體素生成 (Per-Voxel Generation)**，賦予每一個水面獨立的頂點控制權。
-* **逐頂點流體內插與平滑斜面 (Per-Vertex Fluid Interpolation)**：實作了針對流體頂面（+Y）角落的 2x2 全域管柱高度採樣。每個頂點獨立結算下沉量（`y_offset_down`），使得流體表面能呈現與《Minecraft》一致的連續動態幾何斜面，且完美解決了跨 Chunk 邊界的資訊查詢。
+* **逐頂點流體內插與動態分母平滑斜面 (Dynamic Per-Vertex Fluid Interpolation)**：實作了針對流體頂面（+Y）角落的 2x2 全域管柱高度採樣。採用「動態流體分母演算法」，空氣方塊不參與平均以避免邊緣塌陷；同時牆壁頂點會對稱地採樣周圍 4 象限的「最高真實水位」作為鏡像基準，確保水流斜面左右絕對對稱，並呈現與《Minecraft》一致的連續動態幾何斜面。
+* **無限水源剛性幾何封頂 (Rigid Source Block Meshing)**：原生水源 (`0x80`) 與瀑布落水柱擁有最高渲染特權，直接繞過周圍高度採樣，無條件強制鎖死為 100% 滿格，確保高空水塊維持完美 3D 立方體不變形。
+* **純淨位元傳播與階梯重力自適應 (Pure Bitwise Flow & Gravity-Aware Stairs)**：BFS 擴散嚴格執行 `0x0F` 純淨水位解碼與 `0x80` 水源標籤隔離，消滅惡性水源遺傳。同時具備階梯重力感知，瀑布落在實心方塊上會自動轉為水平自然遞減，而非暴力灌滿。
 * **零縫隙側臉密封與法線校準 (Zero-Gap Sealing & Winding Order)**：在生成側面時強制頂端兩個頂點繼承與頂面邊角一模一樣的高度位移量，確保物理密封。並針對水平四向側面實施了極度嚴謹的方向特異性索引繞行 (Face-Specific Winding Order)，徹底擊殺 Backface Culling 漏光現象。
 * **半透明雙材質著色器 (Translucent Dual Materials)**：為流體引入 `AlphaMode::Blend` 獨立材質球，修改 `voxel.wgsl` 自動施加 0.9 的藍色透明度 Tint。利用 32-bit `ATTRIBUTE_PACKED_DATA` 冗餘位元（25~27 bits）即時解碼幾何下沉量，兼顧美學與頂級效能。
 * **全域聯鎖物理與流動擴散 (Fluid Interlocking Physics)**：引入基於 0.1 秒心跳的 BFS 擴散引擎，支援水平擴散遞減與「重力截斷鐵律」。並在玩家採掘互動中掛載「方塊破壞喚醒機制」，敲碎支撐方塊瞬間能立刻喚醒周圍 6 向休眠水體，實現真實的流瀑崩塌物理。

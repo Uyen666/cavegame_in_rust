@@ -179,14 +179,15 @@ fn update_debug_text(
                 if block != crate::world::BlockType::Air {
                     // 撞擊到固體！
                     let target_light = world_manager.get_light_global(prev_ivec);
-                    let target_fluid = world_manager.get_fluid_global(prev_ivec);
+                    let raw_target_fluid = world_manager.get_fluid_global(prev_ivec);
+                    let target_fluid_level = raw_target_fluid & 0x0F;
                     targeted_text = format!(
                         "Targeted Block: {}, {}, {}\n\
                          Targeted Light: {} (sky: {}, block: 0)\n\
                          Targeted Fluid Level: {}",
                         current_ivec.x, current_ivec.y, current_ivec.z,
                         target_light, target_light,
-                        target_fluid
+                        target_fluid_level
                     );
                     break;
                 }

@@ -602,60 +602,86 @@ fn generate_fluid_mesh(
             for x in 0..chunk_size_i {
                 let gp = base_gp + IVec3::new(x, y, z);
                 let b0 = world.get_block_global(gp);
-                let f0 = world.get_fluid_global(gp).min(crate::config::MAX_FLUID_LEVEL);
+                let raw_f0_base = world.get_fluid_global(gp);
+                let is_source0 = (raw_f0_base & 0x80) != 0;
+                let f0 = raw_f0_base & 0x0F;
                 
                 if !(b0 == BlockType::Air && f0 > 0) {
                     continue;
                 }
 
-                let get_corner_height = |cx: i32, cz: i32| -> u8 {
-                    let mut max_f = 0;
+                // 【垂直落水獨立柱狀】：只要上方有水，就強制呈現筆直的垂直柱狀，不與平地拉扯
+                let is_waterfall_column = (world.get_fluid_global(gp + IVec3::Y) & 0x0F) > 0;
+
+                let get_corner_offset = |cx: i32, cz: i32| -> u8 {
+                    if is_source0 {
+                        return 0; // 🚀 剛性繞過：無限水源強制滿格 (offset 0)，維持完美立方體
+                    }
+                    if is_waterfall_column {
+                        return 0; // 垂直落水強制滿格
+                    }
+
+                    // 🚀 核心防線：為了保證左右牆壁鏡像對稱，f0 必須是該頂點四周的「最高真實水位」，
+                    // 這樣無論是從左邊的方塊還是右邊的方塊呼叫，這個頂點算出的 f0 都會絕對一致，徹底消除歪斜！
+                    let mut max_fluid = 0;
                     for (dx, dz) in [(0,0), (-1,0), (0,-1), (-1,-1)] {
                         let ngp = base_gp + IVec3::new(cx + dx, y, cz + dz);
-                        let f = world.get_fluid_global(ngp).min(crate::config::MAX_FLUID_LEVEL);
-                        let b_above = world.get_block_global(ngp + IVec3::Y);
-                        let f_above = world.get_fluid_global(ngp + IVec3::Y).min(crate::config::MAX_FLUID_LEVEL);
-                        
-                        if (b_above == BlockType::Air && f_above > 0) || f == crate::config::MAX_FLUID_LEVEL {
-                            return crate::config::MAX_FLUID_LEVEL;
+                        let raw_f = world.get_fluid_global(ngp);
+                        let f = raw_f & 0x0F;
+                        let n_is_source = (raw_f & 0x80) != 0;
+                        let raw_f_above = world.get_fluid_global(ngp + IVec3::Y);
+                        let n_is_waterfall_column = (raw_f_above & 0x0F) > 0;
+
+                        if n_is_source || n_is_waterfall_column {
+                            return 0; // 只要有任何一角是無限水源或垂直落水柱，剛性強制滿格 (offset 0)
                         }
-                        if f > max_f {
-                            max_f = f;
+                        if f > max_fluid {
+                            max_fluid = f;
                         }
                     }
-                    max_f
+                    let f0 = max_fluid;
+
+                    let mut fluid_sum = 0.0;
+                    let mut valid_water_count = 0.0;
+
+                    for (dx, dz) in [(0,0), (-1,0), (0,-1), (-1,-1)] {
+                        let ngp = base_gp + IVec3::new(cx + dx, y, cz + dz);
+                        
+                        // 2. 動態流體分母演算法：消滅先凹陷 Bug
+                        let b = world.get_block_global(ngp);
+                        let raw_f = world.get_fluid_global(ngp);
+                        let f = raw_f & 0x0F;
+
+                        if b.is_solid() {
+                            // 鄰居是固體：虛擬水位複製本體 f0
+                            fluid_sum += f0 as f32;
+                            valid_water_count += 1.0;
+                        } else if f > 0 {
+                            // 鄰居是流動水：正常累加
+                            fluid_sum += f as f32;
+                            valid_water_count += 1.0;
+                        }
+                        // 鄰居是空氣 (f == 0)：直接 skip，不累加水位，絕對不准增加分母
+                    }
+
+                    if valid_water_count > 0.0 {
+                        let corner_height = fluid_sum / valid_water_count;
+                        let off = 8.0 - corner_height;
+                        off.clamp(0.0, 7.0) as u8
+                    } else {
+                        8 // valid_water_count == 0.0，corner_height = 0.0，offset = 8 (雖受限 clamp 不會用到，但邏輯上正確)
+                    }
                 };
 
-                let nw_h = get_corner_height(x, z);
-                let ne_h = get_corner_height(x + 1, z);
-                let sw_h = get_corner_height(x, z + 1);
-                let se_h = get_corner_height(x + 1, z + 1);
+                let nw_off = get_corner_offset(x, z);
+                let ne_off = get_corner_offset(x + 1, z);
+                let sw_off = get_corner_offset(x, z + 1);
+                let se_off = get_corner_offset(x + 1, z + 1);
 
-                // 流體最低渲染高度屏障 (Min Height Clamp)
-                // 確保最外圍水位為 1 時，仍保留至少 1/8 的厚度，避免頂面與地面發生 Z-Fighting
-                let mut nw_off = (crate::config::MAX_FLUID_LEVEL - nw_h).min(crate::config::MAX_FLUID_LEVEL - 1);
-                let mut ne_off = (crate::config::MAX_FLUID_LEVEL - ne_h).min(crate::config::MAX_FLUID_LEVEL - 1);
-                let mut sw_off = (crate::config::MAX_FLUID_LEVEL - sw_h).min(crate::config::MAX_FLUID_LEVEL - 1);
-                let mut se_off = (crate::config::MAX_FLUID_LEVEL - se_h).min(crate::config::MAX_FLUID_LEVEL - 1);
-
-                // 【下落全滿特權】：只有自身是滿水位，且上方有水灌入，且水平四周存在幾何缺口時，才判定為真正的瀑布柱！
-                let is_waterfall_column = f0 == crate::config::MAX_FLUID_LEVEL 
-                    && world.get_fluid_global(gp + IVec3::Y) > 0 
-                    && (world.get_fluid_global(gp + IVec3::X) == 0 
-                        || world.get_fluid_global(gp - IVec3::X) == 0 
-                        || world.get_fluid_global(gp + IVec3::Z) == 0 
-                        || world.get_fluid_global(gp - IVec3::Z) == 0);
-
-                if is_waterfall_column {
-                    nw_off = 0;
-                    ne_off = 0;
-                    sw_off = 0;
-                    se_off = 0;
-                }
 
                 let check_face = |ngp: IVec3, is_top_bottom: bool| -> bool {
                     let nb = world.get_block_global(ngp);
-                    let nf = world.get_fluid_global(ngp).min(crate::config::MAX_FLUID_LEVEL);
+                    let nf = world.get_fluid_global(ngp) & 0x0F;
                     if nb.is_solid() {
                         return false;
                     }
@@ -663,7 +689,9 @@ fn generate_fluid_mesh(
                         let n_is_water = nb == BlockType::Air && nf > 0;
                         !n_is_water
                     } else {
-                        nf == 0
+                        // 1. 跨 Y 軸垂直斷層縫合線
+                        let neighbor_is_waterfall = (world.get_fluid_global(ngp + IVec3::Y) & 0x0F) > 0;
+                        nf == 0 || (is_waterfall_column != neighbor_is_waterfall)
                     }
                 };
 
@@ -676,10 +704,10 @@ fn generate_fluid_mesh(
                 let diff_b = (h_ne - h_sw).abs();
                 let flip_diagonal = diff_a > diff_b;
 
-                let nf_px = world.get_fluid_global(gp + IVec3::X).min(crate::config::MAX_FLUID_LEVEL);
-                let nf_nx = world.get_fluid_global(gp - IVec3::X).min(crate::config::MAX_FLUID_LEVEL);
-                let nf_pz = world.get_fluid_global(gp + IVec3::Z).min(crate::config::MAX_FLUID_LEVEL);
-                let nf_nz = world.get_fluid_global(gp - IVec3::Z).min(crate::config::MAX_FLUID_LEVEL);
+                let nf_px = world.get_fluid_global(gp + IVec3::X) & 0x0F;
+                let nf_nx = world.get_fluid_global(gp - IVec3::X) & 0x0F;
+                let nf_pz = world.get_fluid_global(gp + IVec3::Z) & 0x0F;
+                let nf_nz = world.get_fluid_global(gp - IVec3::Z) & 0x0F;
 
                 let flow_x = (nf_px as f32) - (nf_nx as f32);
                 let flow_z = (nf_pz as f32) - (nf_nz as f32);
