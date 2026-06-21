@@ -7,16 +7,40 @@
 ### 📂 目錄結構與分工
 ```text
 src/
-├── main.rs         (狀態機初始化與全域 Plugin 註冊)
-├── phys/           (一級物理模組，專職處理 AABB 空間幾何與分軸碰撞消解)
-├── player/         (玩家控制器、滑鼠第一人稱視角、動態破壞/放置方塊互動)
-├── render/         (核心渲染管線：greedy.rs 貪婪網格、textures.rs 材質載入)
-├── ui/             (hud.rs 準星、debug.rs F3 定時除錯疊加層、預留主選單介面)
-└── world/          (核心世界資料結構)
-    ├── storage.rs  (1D 扁平化 ChunkBuffer、手寫 RLE 壓縮與非同步硬碟讀寫)
-    ├── gen/        (地形生成演算法：flat.rs 超平坦預留)
-    ├── generator.rs(工業級無狀態二階段地形管線與 Fbm 噪音)
-    └── mod.rs      (區塊 3D 動態加載/卸載生命週期調度)
+├── config.rs       (全域參數配置與設定檔，包含遊戲與渲染各項常數)
+├── main.rs         (狀態機初始化與全域 Plugin 註冊，程式進入點)
+├── phys/           (一級物理模組，專職處理碰撞與幾何)
+│   ├── mod.rs      (模組導出)
+│   └── swept.rs    (處理 AABB 空間幾何與 Swept AABB 連續碰撞消解)
+├── player/         (玩家控制器模組)
+│   └── mod.rs      (玩家實體、滑鼠第一人稱視角、動態破壞/放置方塊互動與背包切換邏輯)
+├── render/         (核心渲染管線模組)
+│   ├── mod.rs      (渲染器入口與自訂材質掛載、環境光配置)
+│   ├── greedy.rs   (工業級 AO 輔助型雙線性梯度貪婪網格生成演算法與 GPU 封裝)
+│   ├── material.rs (流體雙面渲染與網格材質流水線管線配置)
+│   ├── texture_array.rs (Texture2DArray 生成與管理，打包所有方塊貼圖)
+│   └── textures.rs (材質載入器與資產管理)
+├── ui/             (使用者介面模組)
+│   ├── mod.rs      (UI 系統入口)
+│   ├── debug.rs    (F3 定時除錯疊加層、包含區塊狀態與平滑光照動態開關)
+│   ├── hud.rs      (遊戲 HUD 與準星渲染)
+│   ├── main_menu.rs(預留主選單介面)
+│   └── settings.rs (預留設定選單介面)
+├── utils/          (通用工具模組)
+│   ├── mod.rs      (模組導出)
+│   └── math.rs     (全域坐標轉換、區塊索引映射與基礎數學常數)
+└── world/          (核心世界資料結構與管理系統)
+    ├── mod.rs      (WorldManager、區塊 3D 動態加載/卸載生命週期調度與真理之源)
+    ├── systems.rs  (Bevy ECS 系統分流：處理實體生成、網格髒污追蹤與非同步加載輪詢)
+    ├── chunk.rs    (Chunk 實體結構與 1D 扁平化 ChunkBuffer，儲存方塊資料)
+    ├── fluid.rs    (流體動態系統：BFS 蔓延、水流等級下降與更新隊列)
+    ├── generator.rs(工業級無狀態二階段地形管線：地形雕刻與 Fbm 噪音)
+    ├── lighting.rs (光照子系統：天空光泛洪、方塊光與阻斷 BFS 重算)
+    ├── storage.rs  (手寫 RLE 壓縮與非同步硬碟讀寫，持久化存檔)
+    ├── voxel.rs    (體素基本定義與方塊類型列舉 BlockType)
+    └── gen/        (地形生成演算法特定實作)
+        ├── mod.rs
+        └── flat.rs (超平坦地形生成器實作)
 ```
 
 ## 2. 🎨 進階圖形渲染與材質管線
@@ -29,9 +53,11 @@ src/
   * **父實體 (Chunk Entity)**：對於非空氣區塊，統一強制掛載 `SpatialBundle`，其世界座標精確鎖定為 `transform: chunk_pos * CHUNK_SIZE`。純空氣區塊則**完全不產生**實體，達成零 Transform 開銷。
   * **子實體 (Mesh Child)**：視覺網格實體作為父實體的子節點，其 `Transform` 保持 `default()`。頂點相對座標嚴格維持在 `0..32` 的局部空間內，最終位置由 Bevy 自動透過 `chunk_pos * 32 + vertex(0..32)` 公式傳播。
 * **跨區界幾何擁有權短路 (Geometry Ownership Short-Circuit)**：在 Greedy Meshing 進行鄰居探測時，嚴格實施索引判定（例如 `slice >= 0`）。只有當實心方塊真正屬於「當前區塊的合法範圍」時，才允許產生網格面。這徹底防止了相鄰區塊雙向重複繪製同一邊界，消滅了交界處的雙重疊加與幽靈夾層面。
+* **3x3 鄰居光照完工鎖 (AO Neighbor Barrier) 與 固體光照強制清零**：在網格生成前，除了檢查自身光照外，強制盤查水平相鄰的 8 個區塊是否 `is_lighting_ready`，若未完工則暫緩當前區塊的烘焙（AO Barrier）。同時，光照採樣器在遇見固體方塊時會強制歸零，杜絕固體內部殘留陽光引發的接縫透光。
 * **跨區塊全域探測與聯動更新 (Global Check & Remesh Propagation)**：
   * **動態破壞/放置**：系統依賴絕對座標全域查詢 `world.get_block_global`，當玩家在區塊交界處放置或破壞方塊時，透過 6 向邊界偵測自動將相鄰區塊標記為 Dirty，確保跨區塊接縫的 Face Culling 即時無縫重算。
   * **加載期連動 (Race Condition 修正)**：當全新的區塊完成非同步生成並插入 `WorldManager` 的瞬間，主執行緒會立即主動探測 6 個相鄰軸向的舊區塊。若存在則強制將其標記為 `is_dirty = true`，強迫舊區塊重新網格化並剔除過期的邊界殘留牆，達成無瑕疵的地形接縫。
+  * **放塊時序跨幀補償 (Spawn Latency Compensation)**：透過 `respawn_later` 剛性回寫機制，完美閃避 Bevy `commands.spawn` 的一幀延遲，達成玩家放置空區塊方塊瞬間 100% 同步烘焙的零延遲體驗。
 * **頂點位元壓縮 (Vertex Bit Packing)**：全面淘汰傳統浮點數頂點屬性，將 `x(6)`、`y(6)`、`z(6)`、`face_id(3)` 與 `tex_layer(11)` 完美壓縮進單一 32-bit 的 `u32` 屬性 `ATTRIBUTE_PACKED_DATA` 中。徹底清除了 Position 與 Color 的內存佔用。
 * **2D 紋理陣列與程序化 WGSL 著色器**：採用 `D2Array` 管理材質層級，配合手寫 `voxel.wgsl` 在 Vertex Shader 即時解包出局部座標與法線朝向，並透過 `face_id` 與 `(z, -y)` 等動態投射算法程序化生成透視插值的平鋪 UV。手動在 `commands.spawn` 掛載 Aabb 保證 Frustum Culling 在移除 Position 屬性後依然精準運作。
 * **幾何繞向完美對齊**：6 個面的頂點嚴格遵循 CCW 繞向，所有軸向遵循 `rev = normal < 0` 統一規則。
@@ -49,8 +75,8 @@ src/
 * **空間結構與全域高度換算**：以 32x32x32 的方塊組成 Chunk。全域使用 HashMap 進行 3D 區塊 `IVec3::new(cx, cy, cz)` 管理。地形生成算法（如 Perlin Noise）嚴格使用 `global_y = chunk_pos.y * 32 + local_y` 的全域絕對高度對齊地層，避免地貌在不同垂直區塊被重複複製。
 * **垂直 3D 動態加載 (3D Render Distance)**：每影格以玩家為中心，向外加載 5x5 的水平範圍，並且垂直覆蓋 8 層區塊（CY = 0 到 7，對應高度 0 到 256）。當超出卸載距離或垂直邊界時觸發 GPU 網格實體銷毀與內存回收。系統於 `get_block_global` 實作了跨區界全域極限防護，任何小於 0 或大於等於 `WORLD_MAX_Y` (256) 的空間探測皆強制安全降級回傳 `Air`，確保 `greedy.rs` 的邊界 Culling 極度穩定。
 * **非同步環形螺旋加載管線 (Async Ring-Sorted Loading Pipeline)**：放棄傳統同步巢狀迴圈，改採 3D 距離平方進行排序（`diff.x^2 + diff.y^2 + diff.z^2`），確保玩家腳下與視角前方的區塊享有最高加載權重。主執行緒透過 `.take(4)` 每影格限流派發最多 4 個任務，由背景的 `AsyncComputeTaskPool` 執行 Perlin Noise 或硬碟讀取，徹底杜絕 CPU 瞬間負載超載所引發的 Stuttering（掉幀）。
-* **資料與實體徹底解耦 (Data & Entity Decoupling)**：純空氣區塊僅作為包含資料 `ChunkBuffer` 的 `ChunkEntry` 留在 HashMap 中，**不佔用任何 Bevy ECS 實體**。當玩家在純空區塊放置第一顆實心方塊時，才會觸發**延遲生成 (Lazy Spawning)** 動態建立網格實體。
-* **一維資料結構與 RLE 完美存檔防禦 (Save Bloating Defense)**：使用原生的一維扁平化陣列 `ChunkBuffer` `[BlockType; 32768]` 作為核心資料儲存，全面淘汰巢狀陣列。存檔時交由 IoTaskPool 異步寫入硬碟，並採用手寫的 **RLE (Run-Length Encoding) 遊程編碼** 將巨型連續空方塊極限壓縮。若透過 O(1) 的 `non_air_count` 追蹤技術判定該區塊已被挖空退化為「純空氣」，系統不僅拒絕產生新存檔，還會在背景自動刪除硬碟上的歷史殘留檔案。同時，卸載輪詢具備**完美閉環**：只要超出渲染距離，無論區塊是否修改過，系統必定無條件執行 `despawn_recursive` 銷毀視覺實體並從 HashMap 移除，從根源杜絕存檔無限膨脹與記憶體釘子戶。
+* **資料與實體徹底解耦 (Data & Entity Decoupling)**：純空氣區塊僅作為包含資料 `ChunkBuffer` 的 `ChunkEntry` 留在 HashMap 中，**不佔用任何 Bevy ECS 實體**。當玩家在純空區塊放置第一顆實心方塊時，才會觸發**延遲生成 (Lazy Spawning)** 動態建立網格實體。並配合 **ECS Component Flash Sync** 於每次網格生成前深度同步，確保 `Chunk` 組件狀態與資料層真理之源 100% 一致。
+* **一維資料結構與 RLE 完美存檔防禦 (Save Bloating Defense)**：使用原生的一維扁平化陣列 `ChunkBuffer` `[BlockType; 32768]` 作為核心資料儲存，全面淘汰巢狀陣列。存檔時交由 IoTaskPool 異步寫入硬碟，並採用手寫的 **RLE (Run-Length Encoding) 遊程編碼** 將巨型連續空方塊極限壓縮。若透過 O(1) 的 `non_air_count` 或 `is_pure_air()` 判定該區塊已被挖空退化為「純空氣」，系統不僅拒絕產生新存檔，還會在背景無情刪除硬碟上的歷史舊檔，根除「高空卸載後復活幽靈方塊」的致命 Bug，徹底釋放硬碟空間。卸載輪詢具備**完美閉環**：只要超出渲染距離，無論區塊是否修改過，系統必定無條件執行 `despawn_recursive` 銷毀視覺實體並從 HashMap 移除，從根源杜絕存檔無限膨脹與記憶體釘子戶。
 
 ## 5. 🎛️ 遊戲狀態機與 UI/Debug 系統
 * **GameState 狀態控制**：切分 `MainMenu`、`InGame` 等狀態，退回選單時背景世界與物理會凍結。

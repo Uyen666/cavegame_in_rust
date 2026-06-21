@@ -104,8 +104,7 @@ pub fn propagate_sky_light(blocks: &ChunkBuffer, light_buffer: &mut ChunkLightBu
 
 pub fn propagate_sky_light_global(
     world_manager: &mut crate::world::WorldManager,
-    q_chunks: &mut bevy::prelude::Query<(bevy::prelude::Entity, &mut crate::world::Chunk)>,
-    mut queue: VecDeque<bevy::prelude::IVec3>,
+    mut queue: VecDeque<bevy::math::IVec3>,
 ) {
     while let Some(pos) = queue.pop_front() {
         let light = world_manager.get_light_global(pos);
@@ -119,12 +118,12 @@ pub fn propagate_sky_light_global(
         }
 
         let neighbors = [
-            (pos + bevy::prelude::IVec3::X, bevy::prelude::IVec3::new(1, 0, 0)),
-            (pos - bevy::prelude::IVec3::X, bevy::prelude::IVec3::new(-1, 0, 0)),
-            (pos + bevy::prelude::IVec3::Y, bevy::prelude::IVec3::new(0, 1, 0)),
-            (pos - bevy::prelude::IVec3::Y, bevy::prelude::IVec3::new(0, -1, 0)),
-            (pos + bevy::prelude::IVec3::Z, bevy::prelude::IVec3::new(0, 0, 1)),
-            (pos - bevy::prelude::IVec3::Z, bevy::prelude::IVec3::new(0, 0, -1)),
+            (pos + bevy::math::IVec3::X, bevy::math::IVec3::new(1, 0, 0)),
+            (pos - bevy::math::IVec3::X, bevy::math::IVec3::new(-1, 0, 0)),
+            (pos + bevy::math::IVec3::Y, bevy::math::IVec3::new(0, 1, 0)),
+            (pos - bevy::math::IVec3::Y, bevy::math::IVec3::new(0, -1, 0)),
+            (pos + bevy::math::IVec3::Z, bevy::math::IVec3::new(0, 0, 1)),
+            (pos - bevy::math::IVec3::Z, bevy::math::IVec3::new(0, 0, -1)),
         ];
 
         for &(npos, offset) in &neighbors {
@@ -136,7 +135,7 @@ pub fn propagate_sky_light_global(
             
             if n_block == BlockType::Air {
                 // 🚀 太陽直射不減光鐵律
-                let next_light = if light == 15 && offset == bevy::prelude::IVec3::new(0, -1, 0) {
+                let next_light = if light == 15 && offset == bevy::math::IVec3::new(0, -1, 0) {
                     15
                 } else {
                     light.saturating_sub(1)
@@ -144,7 +143,7 @@ pub fn propagate_sky_light_global(
 
                 let n_light = world_manager.get_light_global(npos);
                 if n_light < next_light {
-                    world_manager.set_light_global(npos, next_light, q_chunks);
+                    world_manager.set_light_global(npos, next_light);
                     queue.push_back(npos);
                 }
             }
@@ -154,18 +153,17 @@ pub fn propagate_sky_light_global(
 
 pub fn remove_sky_light_global(
     world_manager: &mut crate::world::WorldManager,
-    q_chunks: &mut bevy::prelude::Query<(bevy::prelude::Entity, &mut crate::world::Chunk)>,
-    mut remove_queue: std::collections::VecDeque<(bevy::prelude::IVec3, u8)>,
-    propagate_queue: &mut std::collections::VecDeque<bevy::prelude::IVec3>,
+    mut remove_queue: std::collections::VecDeque<(bevy::math::IVec3, u8)>,
+    propagate_queue: &mut std::collections::VecDeque<bevy::math::IVec3>,
 ) {
     while let Some((pos, old_light)) = remove_queue.pop_front() {
         let neighbors = [
-            (pos + bevy::prelude::IVec3::X, bevy::prelude::IVec3::new(1, 0, 0)),
-            (pos - bevy::prelude::IVec3::X, bevy::prelude::IVec3::new(-1, 0, 0)),
-            (pos + bevy::prelude::IVec3::Y, bevy::prelude::IVec3::new(0, 1, 0)),
-            (pos - bevy::prelude::IVec3::Y, bevy::prelude::IVec3::new(0, -1, 0)),
-            (pos + bevy::prelude::IVec3::Z, bevy::prelude::IVec3::new(0, 0, 1)),
-            (pos - bevy::prelude::IVec3::Z, bevy::prelude::IVec3::new(0, 0, -1)),
+            (pos + bevy::math::IVec3::X, bevy::math::IVec3::new(1, 0, 0)),
+            (pos - bevy::math::IVec3::X, bevy::math::IVec3::new(-1, 0, 0)),
+            (pos + bevy::math::IVec3::Y, bevy::math::IVec3::new(0, 1, 0)),
+            (pos - bevy::math::IVec3::Y, bevy::math::IVec3::new(0, -1, 0)),
+            (pos + bevy::math::IVec3::Z, bevy::math::IVec3::new(0, 0, 1)),
+            (pos - bevy::math::IVec3::Z, bevy::math::IVec3::new(0, 0, -1)),
         ];
 
         for &(npos, offset) in &neighbors {
@@ -180,14 +178,14 @@ pub fn remove_sky_light_global(
 
             let n_light = world_manager.get_light_global(npos);
             if n_light != 0 {
-                let expected_light = if old_light == 15 && offset == bevy::prelude::IVec3::new(0, -1, 0) {
+                let expected_light = if old_light == 15 && offset == bevy::math::IVec3::new(0, -1, 0) {
                     15
                 } else {
                     old_light.saturating_sub(1)
                 };
 
                 if n_light == expected_light {
-                    world_manager.set_light_global(npos, 0, q_chunks);
+                    world_manager.set_light_global(npos, 0);
                     remove_queue.push_back((npos, n_light));
                 } else if n_light >= expected_light {
                     propagate_queue.push_back(npos);

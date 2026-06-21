@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy::input::mouse::MouseMotion;
 use bevy::window::{CursorGrabMode, PrimaryWindow};
 use std::f32::consts::FRAC_PI_2;
-use crate::world::{WorldManager, BlockType, Chunk};
+use crate::world::{WorldManager, BlockType};
 use crate::utils::math::Aabb;
 
 pub struct PlayerPlugin;
@@ -303,7 +303,6 @@ fn player_interaction(
     mouse_keys: Res<ButtonInput<MouseButton>>,
     kbd_keys: Res<ButtonInput<KeyCode>>,
     mut world: ResMut<WorldManager>,
-    mut q_chunks_mut: Query<(Entity, &mut Chunk)>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
     q_player: Query<(&Transform, &Player)>,
@@ -343,7 +342,7 @@ fn player_interaction(
             let block = world.get_block_global(block_pos);
             if block.is_solid() {
                 if left {
-                    world.set_block_global(block_pos, BlockType::Air, &mut q_chunks_mut, &mut commands);
+                    world.set_block_global(block_pos, BlockType::Air, &mut commands);
                     
                     // 【流體聯鎖喚醒機制】(Fluid Block Update Hook)
                     // 當方塊被挖除時，主動探測半徑 4 格範圍內的流體
@@ -366,7 +365,7 @@ fn player_interaction(
                             break;
                         }
 
-                        world.set_block_global(place_pos, BlockType::Stone, &mut q_chunks_mut, &mut commands);
+                        world.set_block_global(place_pos, BlockType::Stone, &mut commands);
                         crate::world::fluid::wake_up_fluids_in_radius(&mut world, place_pos);
                     }
                 } else if key_f {

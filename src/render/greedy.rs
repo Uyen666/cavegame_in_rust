@@ -177,6 +177,10 @@ impl ChunkMeshInputData {
     }
 
     pub fn get_light_global(&self, gp: IVec3) -> u8 {
+        if self.get_block_global(gp) != crate::world::voxel::BlockType::Air {
+            return 0; // 🚀 固體方塊光照剛性歸零律
+        }
+
         let (cp, lp) = crate::world::WorldManager::global_to_chunk_pos(gp);
         let diff = cp - self.chunk_pos;
         if diff.x < -1 || diff.x > 1 || diff.y < -1 || diff.y > 1 || diff.z < -1 || diff.z > 1 {
@@ -220,14 +224,50 @@ pub fn mesh_dirty_chunks(
 
     // Sync pure-data layer dirty flags to ECS layer
     let drained_dirty: Vec<IVec3> = world_manager.dirty_chunks_for_meshing.drain().collect();
+    let mut respawn_later = Vec::new();
+    
     for chunk_pos in drained_dirty {
-        if let Some(entry) = world_manager.chunks.get(&chunk_pos) {
+        if let Some(entry) = world_manager.chunks.get_mut(&chunk_pos) {
             if let Some(entity) = entry.entity {
                 if let Ok((_, mut chunk)) = q_chunks.get_mut(entity) {
+                    // 🚀 數據真理之源剛性回寫外殼，確保存檔系統拿到的是最新狀態
+                    chunk.buffer.blocks = entry.buffer.blocks.clone();
+                    chunk.light_buffer = entry.light_buffer.clone();
+                    chunk.is_modified = entry.is_modified;
                     chunk.is_dirty = true;
                 }
+            } else {
+                // 🚀 初生實體喚醒：為剛放入方塊的全空區塊建立渲染實體
+                let mut chunk = Chunk::new(chunk_pos);
+                chunk.buffer = crate::world::generator::ChunkBuffer { blocks: entry.buffer.blocks };
+                chunk.light_buffer = entry.light_buffer.clone();
+                chunk.is_dirty = true;
+                chunk.is_modified = entry.is_modified;
+                
+                let chunk_entity = commands.spawn((
+                    chunk,
+                    SpatialBundle {
+                        transform: Transform::from_xyz(
+                            (chunk_pos.x * crate::utils::math::CHUNK_SIZE) as f32,
+                            (chunk_pos.y * crate::utils::math::CHUNK_SIZE) as f32,
+                            (chunk_pos.z * crate::utils::math::CHUNK_SIZE) as f32,
+                        ),
+                        ..default()
+                    },
+                    bevy::render::primitives::Aabb::from_min_max(Vec3::ZERO, Vec3::splat(crate::utils::math::CHUNK_SIZE as f32)),
+                )).id();
+                
+                // 雙向綁定
+                entry.entity = Some(chunk_entity);
+                
+                // 🚀 剛性時序防線：將實體推回髒污佇列，確保下一幀 Flush 後能被 q_chunks 捕獲並烘焙
+                respawn_later.push(chunk_pos);
             }
         }
+    }
+    
+    for pos in respawn_later {
+        world_manager.dirty_chunks_for_meshing.insert(pos);
     }
 
     let mut dirty_chunks = Vec::new();
@@ -237,6 +277,24 @@ pub fn mesh_dirty_chunks(
             if !world_manager.is_chunk_lighting_ready(chunk.position) {
                 continue; // 光照未完工，攔截施工
             }
+
+            // 🚀 3x3 鄰居光照完工鎖（AO Neighbor Barrier）
+            let mut neighbors_ready = true;
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    if dx == 0 && dz == 0 { continue; }
+                    let n_pos = chunk.position + IVec3::new(dx, 0, dz);
+                    if !world_manager.is_chunk_lighting_ready(n_pos) {
+                        neighbors_ready = false;
+                        break;
+                    }
+                }
+                if !neighbors_ready { break; }
+            }
+            if !neighbors_ready {
+                continue; // 鄰居未完工，暫緩施工以防破圖
+            }
+
             dirty_chunks.push((entity, chunk.position));
         }
     }
@@ -264,7 +322,9 @@ pub fn mesh_dirty_chunks(
                         let idx = ((dx + 1) * 9 + (dy + 1) * 3 + (dz + 1)) as usize;
                         input_data.blocks[idx] = Some(Box::new(entry.buffer.clone()));
                         input_data.fluids[idx] = entry.fluid_buffer.clone();
-                        input_data.lights[idx] = Some(Box::new(entry.light_buffer.clone()));
+                        if entry.is_lighting_ready {
+                            input_data.lights[idx] = Some(Box::new(entry.light_buffer.clone()));
+                        }
                         
                         let has_fluid = entry.fluid_buffer.as_ref().map_or(false, |fb| fb.iter().any(|&f| f > 0));
                         if !entry.buffer.is_pure_air() || has_fluid {
@@ -342,12 +402,11 @@ pub fn poll_mesh_tasks(
                                 let mut meshes = world.resource_mut::<Assets<Mesh>>();
                                 finalize_mesh(solid_data, &mut meshes)
                             };
-                            let child = world.spawn(MaterialMeshBundle {
-                                mesh: mesh_handle,
-                                material: mat.clone(),
-                                transform: Transform::default(),
-                                ..Default::default()
-                            }).id();
+                            let child = world.spawn((
+                                mesh_handle,
+                                mat.clone(),
+                                SpatialBundle::default(),
+                            )).id();
                             children.push(child);
                         }
 
@@ -356,12 +415,11 @@ pub fn poll_mesh_tasks(
                                 let mut meshes = world.resource_mut::<Assets<Mesh>>();
                                 finalize_mesh(fluid_data, &mut meshes)
                             };
-                            let child = world.spawn(MaterialMeshBundle {
-                                mesh: mesh_handle,
-                                material: fluid_mat.clone(),
-                                transform: Transform::default(),
-                                ..Default::default()
-                            }).id();
+                            let child = world.spawn((
+                                mesh_handle,
+                                fluid_mat.clone(),
+                                SpatialBundle::default(),
+                            )).id();
                             children.push(child);
                         }
 

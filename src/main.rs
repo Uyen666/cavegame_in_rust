@@ -37,7 +37,7 @@ fn main() {
             })
         )
         .init_state::<GameState>()
-        .init_resource::<config::EngineConfig>()
+        .insert_resource(config::EngineConfig::default())
         .add_plugins(ui::UiPlugin)
         .add_plugins(world::WorldPlugin)
         .add_plugins(render::RenderPlugin)
