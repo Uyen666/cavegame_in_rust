@@ -82,6 +82,8 @@ fn toggle_debug_ui(
     keys: Res<ButtonInput<KeyCode>>,
     mut q_root: Query<&mut Visibility, With<DebugUiRoot>>,
     mut config: ResMut<DebugConfig>,
+    mut engine_config: ResMut<crate::config::EngineConfig>,
+    mut q_chunks: Query<&mut crate::world::Chunk>,
 ) {
     if keys.just_pressed(KeyCode::F3) {
         for mut visibility in q_root.iter_mut() {
@@ -101,6 +103,15 @@ fn toggle_debug_ui(
             if keys.just_pressed(KeyCode::KeyL) {
                 config.show_light_levels = !config.show_light_levels;
                 println!("【系統通知】光照除錯面板: {}", if config.show_light_levels { "ON" } else { "OFF" });
+            }
+            if keys.just_pressed(KeyCode::KeyP) {
+                engine_config.smooth_lighting = !engine_config.smooth_lighting;
+                println!("【系統通知】平滑光照 (Smooth Lighting): {}", if engine_config.smooth_lighting { "ON" } else { "OFF" });
+                
+                // 🚀 剛性連鎖防線：強制全網格立刻失效，逼迫 greedy.rs 在下一幀集體重新烘焙！
+                for mut chunk in q_chunks.iter_mut() {
+                    chunk.is_dirty = true;
+                }
             }
         }
     }

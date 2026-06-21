@@ -46,8 +46,8 @@ fn get_texture_layer(block: BlockType, d: usize, normal: i32) -> u32 {
 struct FaceInfo {
     block:     BlockType,
     normal:    i32,
-    tex_layer: u32,   // ← Key addition: makes merge direction-aware
-    sky_light: u8,
+    tex_layer: u32,
+    sky_lights: [u8; 4],
     y_offset_down: u8,
 }
 
@@ -94,7 +94,7 @@ fn push_quad(
     normal_vec: [f32; 3],
     _color:     [f32; 4],
     tex_layer:  u32,
-    sky_light:  u8,
+    sky_lights: [u8; 4],
     y_offset_down: u8,
     _quad_w:    i32,
     _quad_h:    i32,
@@ -106,10 +106,11 @@ fn push_quad(
     let normal_val = normal_vec[d];
     let face_id = (d * 2) + if normal_val > 0.0 { 0 } else { 1 };
     
-    for v in [v1, v2, v3, v4].iter() {
+    for (i, v) in [v1, v2, v3, v4].iter().enumerate() {
         let x = v[0] as u32;
         let y = v[1] as u32;
         let z = v[2] as u32;
+        let sky_light = sky_lights[i];
 
         let packed: u32 = (x & 0x3F) 
                         | ((y & 0x3F) << 6) 
@@ -212,6 +213,7 @@ pub fn mesh_dirty_chunks(
     mut q_chunks:   Query<(Entity, &mut Chunk)>,
     mut world_manager:  ResMut<WorldManager>,
     game_textures:  Option<Res<GameTextures>>,
+    config: Res<crate::config::EngineConfig>,
 ) {
     let Some(gt) = game_textures else { return; };
     if !gt.ready { return; }
@@ -286,11 +288,12 @@ pub fn mesh_dirty_chunks(
             continue;
         }
 
+        let is_smooth_lighting = config.smooth_lighting;
         let task = thread_pool.spawn(async move {
             let mut solid_data = empty_mesh();
             let mut fluid_data = empty_mesh();
-            generate_greedy_mesh(entity, chunk_pos, &input_data, false, &mut solid_data);
-            generate_greedy_mesh(entity, chunk_pos, &input_data, true, &mut fluid_data);
+            generate_greedy_mesh(entity, chunk_pos, &input_data, false, &mut solid_data, is_smooth_lighting);
+            generate_greedy_mesh(entity, chunk_pos, &input_data, true, &mut fluid_data, is_smooth_lighting);
             Some((solid_data, fluid_data))
         });
         
@@ -402,6 +405,7 @@ fn generate_greedy_mesh(
     world: &ChunkMeshInputData,
     fluid_pass: bool,
     out:   &mut MeshData,
+    is_smooth_lighting: bool,
 ) {
     if fluid_pass {
         generate_fluid_mesh(chunk_pos, world, out);
@@ -438,27 +442,49 @@ fn generate_greedy_mesh(
                     let b0 = world.get_block_global(gp0);
                     let b1 = world.get_block_global(gp1);
 
-                    mask[n] = match (b0.is_solid(), b1.is_solid()) {
-                        (true, false) if slice >= 0 => {
-                            Some(FaceInfo {
-                                block:     b0,
-                                normal:    1,
-                                tex_layer: get_texture_layer(b0, d, 1),
-                                sky_light: world.get_light_global(gp1),
-                                y_offset_down: 0,
-                            })
-                        },
-                        (false, true) if slice < chunk_size_i - 1 => {
-                            Some(FaceInfo {
-                                block:     b1,
-                                normal:    -1,
-                                tex_layer: get_texture_layer(b1, d, -1),
-                                sky_light: world.get_light_global(gp0),
-                                y_offset_down: 0,
-                            })
-                        },
-                        _ => None,
+                    let (gp_air, block, normal) = match (b0.is_solid(), b1.is_solid()) {
+                        (true, false) if slice >= 0 => (gp1, b0, 1),
+                        (false, true) if slice < chunk_size_i - 1 => (gp0, b1, -1),
+                        _ => (IVec3::ZERO, BlockType::Air, 0),
                     };
+
+                    if block != BlockType::Air {
+                        let tex_layer = get_texture_layer(block, d, normal);
+                        let sky_lights = if is_smooth_lighting {
+                            let get_smooth_light = |cu: i32, cv: i32| -> u8 {
+                                let mut sum = 0;
+                                for du in (cu - 1)..=cu {
+                                    for dv in (cv - 1)..=cv {
+                                        let mut offset = [0i32; 3];
+                                        offset[u] = du;
+                                        offset[v] = dv;
+                                        let sample_p = gp_air + IVec3::new(offset[0], offset[1], offset[2]);
+                                        sum += world.get_light_global(sample_p) as u32;
+                                    }
+                                }
+                                (sum / 4) as u8
+                            };
+                            [
+                                get_smooth_light(0, 0),
+                                get_smooth_light(1, 0),
+                                get_smooth_light(1, 1),
+                                get_smooth_light(0, 1),
+                            ]
+                        } else {
+                            let l = world.get_light_global(gp_air);
+                            [l, l, l, l]
+                        };
+
+                        mask[n] = Some(FaceInfo {
+                            block,
+                            normal,
+                            tex_layer,
+                            sky_lights,
+                            y_offset_down: 0,
+                        });
+                    } else {
+                        mask[n] = None;
+                    }
                     n += 1;
                 }
             }
@@ -470,15 +496,52 @@ fn generate_greedy_mesh(
                 while i < CHUNK_SIZE {
                     if let Some(face) = mask[n] {
                         let mut w = 1i32;
-                        while i + w < CHUNK_SIZE && mask[n + w as usize] == Some(face) {
-                            w += 1;
+                        let dt_u = face.sky_lights[1] as i32 - face.sky_lights[0] as i32;
+                        let db_u = face.sky_lights[2] as i32 - face.sky_lights[3] as i32;
+
+                        while i + w < CHUNK_SIZE {
+                            if let Some(next) = mask[n + w as usize] {
+                                let can_merge = if is_smooth_lighting {
+                                    let basic = next.block == face.block && next.normal == face.normal && next.tex_layer == face.tex_layer;
+                                    let prev = mask[n + (w - 1) as usize].unwrap();
+                                    let conn = next.sky_lights[0] == prev.sky_lights[1] && next.sky_lights[3] == prev.sky_lights[2];
+                                    let grad = (next.sky_lights[1] as i32 - next.sky_lights[0] as i32) == dt_u &&
+                                               (next.sky_lights[2] as i32 - next.sky_lights[3] as i32) == db_u;
+                                    basic && conn && grad
+                                } else {
+                                    next == face
+                                };
+                                if can_merge { w += 1; } else { break; }
+                            } else { break; }
                         }
+
                         let mut h = 1i32;
                         'outer: while j + h < CHUNK_SIZE {
                             for k in 0..w {
-                                if mask[n + (h * CHUNK_SIZE + k) as usize] != Some(face) {
-                                    break 'outer;
-                                }
+                                if let Some(curr) = mask[n + (h * CHUNK_SIZE + k) as usize] {
+                                    let above = mask[n + ((h - 1) * CHUNK_SIZE + k) as usize].unwrap();
+                                    let can_merge = if is_smooth_lighting {
+                                        let basic = curr.block == face.block && curr.normal == face.normal && curr.tex_layer == face.tex_layer;
+                                        let v_conn = curr.sky_lights[0] == above.sky_lights[3] && curr.sky_lights[1] == above.sky_lights[2];
+                                        let mut h_conn = true;
+                                        if k > 0 {
+                                            let left = mask[n + (h * CHUNK_SIZE + k - 1) as usize].unwrap();
+                                            h_conn = curr.sky_lights[0] == left.sky_lights[1] && curr.sky_lights[3] == left.sky_lights[2];
+                                        }
+                                        let u_grad = (curr.sky_lights[1] as i32 - curr.sky_lights[0] as i32) == dt_u &&
+                                                     (curr.sky_lights[2] as i32 - curr.sky_lights[3] as i32) == db_u;
+                                        let base0 = mask[n + k as usize].unwrap();
+                                        let ref_dv_l = base0.sky_lights[3] as i32 - base0.sky_lights[0] as i32;
+                                        let ref_dv_r = base0.sky_lights[2] as i32 - base0.sky_lights[1] as i32;
+                                        let curr_dv_l = curr.sky_lights[3] as i32 - curr.sky_lights[0] as i32;
+                                        let curr_dv_r = curr.sky_lights[2] as i32 - curr.sky_lights[1] as i32;
+                                        let v_grad = curr_dv_l == ref_dv_l && curr_dv_r == ref_dv_r;
+                                        basic && v_conn && h_conn && u_grad && v_grad
+                                    } else {
+                                        Some(curr) == mask[n + k as usize]
+                                    };
+                                    if !can_merge { break 'outer; }
+                                } else { break 'outer; }
                             }
                             h += 1;
                         }
@@ -505,13 +568,24 @@ fn generate_greedy_mesh(
                         let mut rev = face.normal < 0;
                         if d == 1 { rev = !rev; }
 
+                        let merged_sky_lights = if is_smooth_lighting {
+                            [
+                                mask[n].unwrap().sky_lights[0],
+                                mask[n + (w - 1) as usize].unwrap().sky_lights[1],
+                                mask[n + ((h - 1) * CHUNK_SIZE + w - 1) as usize].unwrap().sky_lights[2],
+                                mask[n + ((h - 1) * CHUNK_SIZE) as usize].unwrap().sky_lights[3],
+                            ]
+                        } else {
+                            face.sky_lights
+                        };
+
                         push_quad(
                             out,
                             v1, v2, v3, v4,
                             normal_vec,
                             [1.0, 1.0, 1.0, 1.0],
                             face.tex_layer,
-                            face.sky_light,
+                            merged_sky_lights,
                             face.y_offset_down,
                             w, h,
                             rev,

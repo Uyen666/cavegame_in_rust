@@ -10,6 +10,7 @@ pub struct EngineConfig {
     pub min_ambient_light: f32,  // 基礎環境光 (0.02)
     pub render_distance: u32,    // 渲染半徑 (8)
     pub max_mesh_uploads_per_frame: usize, // 每影格最大 GPU 上傳區塊數 (推薦預設 2 或 3)
+    pub smooth_lighting: bool,   // 平滑光照開關
 }
 
 impl Default for EngineConfig {
@@ -20,6 +21,7 @@ impl Default for EngineConfig {
             min_ambient_light: 0.02,
             render_distance: 8,
             max_mesh_uploads_per_frame: 3,
+            smooth_lighting: true,
         }
     }
 }
