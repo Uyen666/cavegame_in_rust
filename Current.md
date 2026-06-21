@@ -66,6 +66,10 @@ src/
 * **座標慣例**：嚴格維持 Bevy 預設的 Y-up 座標系（X, Z 為水平，Y 為高度）。
 * **離散軸向分離碰撞**：玩家速度向量在每影格拆解為嚴格獨立的三階段結算（X 軸位移 → Z 軸位移 → Y 軸位移）。撞擊方塊被水平彈回時，強迫維持 0.001 格安全距離外推，根除 False Grounding 浮點數微觀滲透 Bug。
 * **玩家 AABB 尺寸與速度**：水平半徑 0.3。站立高度 1.8 格，蹲下（按住 左 Ctrl）動態縮小為 1.2 格。
+* **流體物理交互與浮力系統 (Fluid Interaction & Buoyancy)**：
+  * **雙層感知浮力大腦**：系統會分別針對玩家腳底 (`foot_in_fluid`) 與頭部 (`head_in_fluid`) 進行雙軌流體感知。當身處水中時，會自動套用黏滯阻力 (`vel.x * 0.8`) 減緩水平移動，並強制切換為流體浮力墜落曲線。
+  * **海豚跳特權 (Dolphin Jump / Surface Escape)**：當玩家腳在水中但頭部已露出水面，按住空白鍵時將觸發「水面逃脫特權」，賦予強大的向上爆發力，完美還原如海豚般躍出水面登岸的極致流暢操作。
+  * **瀑布攀爬 (Fluid Climbing)**：當玩家在水中且身體緊貼固體牆面 (`is_colliding_horizontally`)，按住空白鍵即可無視水流阻力，將水體當作梯子般向上攀爬。
 * **安全防禦機制與旁觀者模式**：
   * **第一幀地形安全鎖**：玩家腳下的區塊若尚未完成非同步載入，系統會強制凍結重力與位移，防止墜入虛空。
   * **反卡死救援**：玩家無法在自己身體 AABB 內放置新方塊；若因地形意外卡入實心方塊，系統會在單影格內自動將玩家向上溫和頂開救援。
@@ -97,8 +101,10 @@ src/
 * **太陽直射不減光鐵律 (Direct Sunlight Vertical Propagation)**：優化了 BFS 光照傳播演算法與動態方塊破壞的初始賦值邏輯。現在光線向正下方（-Y）傳播時若為最高亮度（15），將無條件直接繼承 15；玩家破壞地表方塊時若上方為 15，新空氣格也將立即獲得 15。完美還原了陽光筆直穿透深洞的物理現象。
 
 ## 8. 🌫️ 動態環境霧化與視覺包覆 (Dynamic Environment & Fog Alignment)
-* **視線亮度感知與背景同步 (Eye-Light Background Sync)**：遊戲實作了 `update_dynamic_environment` 系統，每幀根據玩家眼部的天空光數據（`eye_light`），動態插值（Lerp）出合適的環境色，並套用於視窗的 `ClearColor`。確保玩家從地表潛入洞穴時，背景顏色能從明亮的天藍色滑順地過渡至深邃的漆黑，徹底消除畫面突變的生硬感。
-* **距離霧化與網格裂縫防禦 (Distance Fog & Mesh Cracking Defense)**：將 GPU 著色器的 `EnvironmentUniform` 與 `ClearColor` 達成 100% 同步。在片元著色器 (`voxel.wgsl`) 內部，根據方塊與相機的絕對距離執行 `smoothstep` 霧化混合。此舉令渲染邊緣的方塊能完美融進背景色中，達成了即使因浮點數精度導致幾何體之間存在微小縫隙，也不會透出違和的藍色背光的終極「視覺欺騙」防禦。
+* **視線亮度感知與背景同步 (Eye-Light Background Sync)**：遊戲實作了 `update_dynamic_environment` 系統，每幀根據玩家眼部的天空光數據（`eye_light`），動態插值（Lerp）出合適的環境色，並套用於視窗的 `ClearColor`。確保玩家從地表潛入洞穴時，背景顏色能從明亮的天藍色滑順地過渡至帶有微弱環境光 (`min_ambient_light`) 的深灰色，徹底消除畫面突變的生硬感，同時維持洞穴底部的基礎幾何辨識度。
+* **相機遠剪裁面動態對齊與原生迷霧阻斷 (Far Clip Alignment & Fog Falloff)**：將相機的 `far` 剪裁面與渲染視距 (`render_distance`) 動態剛性鎖死為 `max_distance + 64.0`，賦予幾何體充裕的深層演算空間。同時結合 Bevy 原生的 `FogSettings` 實施黃金比例漸變：在 `max_distance * 0.75` 處柔和起霧，並在 `max_distance - 8.0` 處完全阻斷。這將地圖加載邊界完美遮蔽，達成了無瑕疵的超遠景深包覆。
+* **著色器端貪婪矩形幾何微外推 (Quad Edge Padding in Shader)**：廢棄了傳統消耗龐大算力的 CPU 端「頂點焊接」與錯誤的「法線外推」機制。在 GPU 的 `voxel.wgsl` 頂點著色器中，利用 `@builtin(vertex_index)` 計算出該頂點於 Greedy Quad 中的 2D 角落象限（如 BL, BR, TR, TL），並根據其所屬面 (`face_id`) 的切線 (Tangent) 與副切線 (Bitangent) 軸向，將網格邊緣向平面外側精準擴張 `0.0005` 格。此舉在物理底層促使相鄰的面片產生微觀交織重疊，以零效能折損的代價徹底絕殺了 T-Junction 所引發的靜態藍點縫隙與漏光破綻。
+* **自定義屬性佈局與不透明防線 (Strict Attribute Layout & Alpha Lock)**：採用客製化 VoxelMaterial 管線，將頂點屬性極限壓縮至 `@location(0) packed_data` 與 `@location(1) flow_vector` 雙插槽，徹底剔除了非法 Built-in 對屬性佈局的記憶體錯位污染。同時於 Fragment Shader 中將固體方塊的 Alpha 通道剛性鎖死為 `1.0`，斷絕圖集透明像素引發的地形透明化災難，確保世界實心無破綻。
 
 ## 9. 🌊 動態流體物理與渲染系統 (Dynamic Fluid Physics & Rendering)
 * **雙軌道貪婪網格化 (Dual-Pass Meshing)**：徹底重構了 `generate_greedy_mesh`，現在它會同步輸出固體網格與流體網格（`solid_vertices`, `fluid_vertices`）。流體網格完全繞過傳統的貪婪合併，改為**逐體素生成 (Per-Voxel Generation)**，賦予每一個水面獨立的頂點控制權。

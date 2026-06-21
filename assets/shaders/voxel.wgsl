@@ -1,7 +1,7 @@
 #import bevy_pbr::mesh_functions::{get_world_from_local, mesh_position_local_to_clip}
 #import bevy_pbr::mesh_view_bindings as view_bindings
 
-struct Vertex {
+struct VertexInput {
     @builtin(instance_index) instance_index: u32,
     @location(0) packed_data: u32,
     @location(1) flow_vector: vec2<f32>,
@@ -21,36 +21,32 @@ struct VertexOutput {
 @group(2) @binding(1) var array_sampler: sampler;
 
 struct EnvironmentUniform {
-    fog_color: vec4<f32>,
-    camera_pos: vec3<f32>,
-    fog_start: f32,
-    fog_end: f32,
     is_fluid: u32,
     fluid_scroll_speed: f32,
 };
 @group(2) @binding(2) var<uniform> env: EnvironmentUniform;
 
 @vertex
-fn vertex(vertex: Vertex) -> VertexOutput {
+fn vertex(
+    input: VertexInput,
+    @builtin(vertex_index) vertex_index: u32
+) -> VertexOutput {
     var out: VertexOutput;
     
-    let x = f32(vertex.packed_data & 0x3Fu);
-    let y = f32((vertex.packed_data >> 6u) & 0x3Fu);
-    let z = f32((vertex.packed_data >> 12u) & 0x3Fu);
-    let face_id = (vertex.packed_data >> 18u) & 0x07u;
-    var tex_id = (vertex.packed_data >> 21u) & 0x7Fu;
-    let sky_light_int = (vertex.packed_data >> 28u) & 0x0Fu;
+    let x = f32(input.packed_data & 0x3Fu);
+    let y = f32((input.packed_data >> 6u) & 0x3Fu);
+    let z = f32((input.packed_data >> 12u) & 0x3Fu);
+    let face_id = (input.packed_data >> 18u) & 0x7u;
+    var tex_id = (input.packed_data >> 21u) & 0x7Fu;
+    let sky_light_int = (input.packed_data >> 28u) & 0x0Fu;
 
     var y_offset_down = 0.0;
     if env.is_fluid == 1u {
-        tex_id = (vertex.packed_data >> 21u) & 0x0Fu;
-        y_offset_down = f32((vertex.packed_data >> 25u) & 7u) / 8.0;
+        tex_id = (input.packed_data >> 21u) & 0x0Fu;
+        y_offset_down = f32((input.packed_data >> 25u) & 7u) / 8.0;
     }
 
-    var local_pos = vec3<f32>(x, y - y_offset_down, z);
-    
-    // 防禦性 Clamp：確保流體頂點不會被錯誤的 offset 拉入虛空
-    local_pos.y = max(local_pos.y, -1.0);
+    let local_pos = vec3<f32>(x, max(y - y_offset_down, -1.0), z);
     
     var normal: vec3<f32>;
     var uv: vec2<f32>;
@@ -65,17 +61,43 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         default: { normal = vec3<f32>(0.0, 1.0, 0.0);  uv = vec2<f32>(0.0, 0.0); }
     }
     
-    let model = get_world_from_local(vertex.instance_index);
-    out.world_position = model * vec4<f32>(local_pos, 1.0);
+    var tangent: vec3<f32>;
+    var bitangent: vec3<f32>;
+    switch (face_id) {
+        case 0u, 1u: {
+            tangent   = vec3<f32>(0.0, 1.0, 0.0);
+            bitangent = vec3<f32>(0.0, 0.0, 1.0);
+        }
+        case 2u, 3u: {
+            tangent   = vec3<f32>(1.0, 0.0, 0.0);
+            bitangent = vec3<f32>(0.0, 0.0, 1.0);
+        }
+        default: {
+            tangent   = vec3<f32>(1.0, 0.0, 0.0);
+            bitangent = vec3<f32>(0.0, 1.0, 0.0);
+        }
+    }
+    
+    var final_pos = local_pos;
+    if env.is_fluid == 0u {
+        let vid = vertex_index % 4u;
+        let quad_sign_x = select(-1.0, 1.0, (vid == 1u || vid == 2u));
+        let quad_sign_y = select(-1.0, 1.0, (vid == 2u || vid == 3u));
+        let edge_bias = tangent * quad_sign_x * 0.0005 + bitangent * quad_sign_y * 0.0005;
+        final_pos = local_pos + edge_bias;
+    }
+
+    let model = get_world_from_local(input.instance_index);
+    out.world_position = model * vec4<f32>(final_pos, 1.0);
     out.world_normal = (model * vec4<f32>(normal, 0.0)).xyz;
     out.clip_position = mesh_position_local_to_clip(
         model,
-        vec4<f32>(local_pos, 1.0)
+        vec4<f32>(final_pos, 1.0)
     );
     out.uv = uv;
     out.texture_index = tex_id;
     out.sky_light = f32(sky_light_int);
-    out.flow_vector = vertex.flow_vector;
+    out.flow_vector = input.flow_vector;
     
     return out;
 }
@@ -94,11 +116,9 @@ struct FragmentInput {
 #ifdef PREPASS_PIPELINE
 @fragment
 fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
-    // Minimal prepass: just return black (depth is written automatically by GPU)
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
 }
 #else
-// Non-linear Sky Light Propagation Lighting
 @fragment
 fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     var animated_uv = in.uv;
@@ -112,19 +132,15 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
         } else {
             world_uv = fract(vec2<f32>(in.world_position.x, -in.world_position.y));
         }
-        
-        // Use globals.time for zero-CPU-overhead animation
         animated_uv = fract(world_uv + view_bindings::globals.time * env.fluid_scroll_speed * in.flow_vector);
     }
 
-    // Sample texture array
     let tex_color = textureSample(array_texture, array_sampler, animated_uv, in.texture_index);
-    
     let light_ratio = in.sky_light / 15.0;
-    let shadow_intensity = 0.06 + (1.0 - 0.06) * (light_ratio * light_ratio);
+    let shadow_intensity = 0.08 + (1.0 - 0.08) * (light_ratio * light_ratio);
     
     var final_rgb = tex_color.rgb * shadow_intensity;
-    var final_alpha = tex_color.a;
+    var final_alpha = 1.0; 
 
     if env.is_fluid == 1u && in.texture_index == 4u {
         let water_tint = vec4<f32>(0.15, 0.35, 0.75, 0.55);
@@ -132,10 +148,6 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
         final_alpha = water_tint.a;
     }
     
-    let dist = length(in.world_position.xyz - env.camera_pos);
-    let fog_factor = clamp((dist - env.fog_start) / (env.fog_end - env.fog_start), 0.0, 1.0);
-    let fogged_color = mix(final_rgb, env.fog_color.rgb, fog_factor);
-    
-    return vec4<f32>(fogged_color, final_alpha);
+    return vec4<f32>(final_rgb, final_alpha);
 }
 #endif

@@ -190,9 +190,8 @@ pub fn update_chunks(
 
     let mut potential_chunks = Vec::new();
     let render_dist = config.render_distance as i32;
-    let y_render_dist: i32 = 2;
-    let cy_min = (player_chunk_pos.y - y_render_dist).max(0);
-    let cy_max = (player_chunk_pos.y + y_render_dist).min(crate::utils::math::WORLD_CHUNKS_Y - 1);
+    let cy_min = 0;
+    let cy_max = crate::utils::math::WORLD_CHUNKS_Y - 1;
     for dx in -render_dist..=render_dist {
         for cy in cy_min..=cy_max {
             for dz in -render_dist..=render_dist {
@@ -209,7 +208,8 @@ pub fn update_chunks(
     
     potential_chunks.sort_by_key(|pos| {
         let diff = *pos - player_chunk_pos;
-        diff.x * diff.x + diff.y * diff.y + diff.z * diff.z
+        let dist2d = diff.x * diff.x + diff.z * diff.z;
+        (dist2d, diff.y.abs()) // 🚀 二維柱狀優先排序：優先加載同 XZ 水平距離的整根垂直柱子
     });
 
     let task_pool = AsyncComputeTaskPool::get();
@@ -272,26 +272,28 @@ pub fn update_chunks(
     }
 
     let unload_distance = config.render_distance as i32 + 1;
-    let y_unload_dist = 2 + 1;
     let mut to_remove: Vec<IVec3> = Vec::new();
 
-    for (&chunk_pos, entry) in world_manager.chunks.iter() {
+    for (&chunk_pos, _) in world_manager.chunks.iter() {
         let dx = (chunk_pos.x - player_chunk_pos.x).abs();
-        let dy = (chunk_pos.y - player_chunk_pos.y).abs();
         let dz = (chunk_pos.z - player_chunk_pos.z).abs();
 
-        if dx > unload_distance || dz > unload_distance || dy > y_unload_dist || chunk_pos.y < 0 || chunk_pos.y >= crate::utils::math::WORLD_CHUNKS_Y {
+        if dx > unload_distance || dz > unload_distance { // 🚀 柱狀視距裁切：徹底無視垂直 Y 軸，保護地底深淵
             to_remove.push(chunk_pos);
+        }
+    }
 
+    for pos in to_remove {
+        if let Some(entry) = world_manager.chunks.remove(&pos) {
             if entry.is_modified {
                 if let Some(entity) = entry.entity {
                     if let Ok((_, chunk)) = q_chunks.get(entity) {
-                        crate::world::storage::save_chunk_to_disk(chunk_pos, ChunkData {
+                        crate::world::storage::save_chunk_to_disk(pos, ChunkData {
                             buffer: ChunkBuffer { blocks: chunk.buffer.blocks },
                         });
                     }
                 } else {
-                    crate::world::storage::save_chunk_to_disk(chunk_pos, ChunkData {
+                    crate::world::storage::save_chunk_to_disk(pos, ChunkData {
                         buffer: ChunkBuffer { blocks: entry.buffer.blocks },
                     });
                 }
@@ -300,12 +302,6 @@ pub fn update_chunks(
             if let Some(entity) = entry.entity {
                 commands.entity(entity).despawn_recursive();
             }
-        }
-    }
-
-    for pos in to_remove {
-        if world_manager.chunks.contains_key(&pos) {
-            world_manager.chunks.remove(&pos);
         }
         world_manager.vacuum_chunks.remove(&pos);
     }

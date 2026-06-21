@@ -5,10 +5,6 @@ use bevy::render::render_resource::{AsBindGroup, ShaderRef, ShaderType};
 #[allow(dead_code)]
 #[derive(Clone, Default, ShaderType, Debug)]
 pub struct EnvironmentUniform {
-    pub fog_color: LinearRgba,
-    pub camera_pos: Vec3,
-    pub fog_start: f32,
-    pub fog_end: f32,
     pub is_fluid: u32,
     pub fluid_scroll_speed: f32,
 }

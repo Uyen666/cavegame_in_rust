@@ -121,7 +121,16 @@ fn push_quad(
                         | (((sky_light as u32) & 0x0F) << 28);
                         
         bucket.0.push(packed);
-        bucket.2.push([0.0, 0.0]);
+        // 【角落展開方向】：讓 Shader 能沿切線/副切線方向外擴面片邊緣，堵死 T-Junction
+        // 頂點 0: 最小u最小v = (-1,-1), 1: 最大u最小v = (+1,-1)
+        // 頂點 2: 最大u最大v = (+1,+1), 3: 最小u最大v = (-1,+1)
+        let corner_sign: [f32; 2] = match i {
+            0 => [-1.0, -1.0],
+            1 => [ 1.0, -1.0],
+            2 => [ 1.0,  1.0],
+            _ => [-1.0,  1.0],
+        };
+        bucket.2.push(corner_sign);
     }
 
     // Triangle indices — CCW for rev=false, CW (reversed) for rev=true
@@ -143,6 +152,7 @@ pub struct ChunkMeshInputData {
     pub blocks: [Option<Box<crate::world::generator::ChunkBuffer>>; 27],
     pub fluids: [Option<Box<[u8; 32768]>>; 27],
     pub lights: [Option<Box<crate::world::chunk::ChunkLightBuffer>>; 27],
+    pub surface_heights: Option<Box<[i32; 1156]>>, // 34x34 cache for [-1..=32]
 }
 
 impl ChunkMeshInputData {
@@ -184,14 +194,28 @@ impl ChunkMeshInputData {
         let (cp, lp) = crate::world::WorldManager::global_to_chunk_pos(gp);
         let diff = cp - self.chunk_pos;
         if diff.x < -1 || diff.x > 1 || diff.y < -1 || diff.y > 1 || diff.z < -1 || diff.z > 1 {
-            return if gp.y >= 64 { 15 } else { 0 }; 
+            // 🚀 工業級 O(1) 查表：零代價完美預判邊界光照
+            let lx = (gp.x - (self.chunk_pos.x * 32)).clamp(-1, 32);
+            let lz = (gp.z - (self.chunk_pos.z * 32)).clamp(-1, 32);
+            let h_idx = ((lz + 1) * 34 + (lx + 1)) as usize;
+            let surface_y = self.surface_heights.as_ref().unwrap()[h_idx];
+            return if gp.y >= surface_y { 15 } else { 0 };
         }
         let idx = ((diff.x + 1) * 9 + (diff.y + 1) * 3 + (diff.z + 1)) as usize;
         if let Some(buf) = &self.lights[idx] {
             let i = crate::utils::math::voxel_pos_to_index(lp.x as usize, lp.y as usize, lp.z as usize);
             buf.get_sky_light(i)
         } else {
-            if gp.y >= 64 { 15 } else { 0 }
+            // 🚀 工業級 O(1) 查表：零代價完美預判邊界光照
+            let lx = (gp.x - (self.chunk_pos.x * 32)).clamp(-1, 32);
+            let lz = (gp.z - (self.chunk_pos.z * 32)).clamp(-1, 32);
+            let h_idx = ((lz + 1) * 34 + (lx + 1)) as usize;
+            let surface_y = self.surface_heights.as_ref().unwrap()[h_idx];
+            if gp.y >= surface_y {
+                15 // 高於數學地表，絕對是開闊天空，賞它滿格陽光！
+            } else {
+                0  // 低於數學地表，絕對埋在未來的山體內部，剛性鎖死全黑！
+            }
         }
     }
 }
@@ -275,6 +299,7 @@ pub fn mesh_dirty_chunks(
         if chunk.is_dirty {
             // 🚀 渲染前直接向資料層對齊真理之源
             if !world_manager.is_chunk_lighting_ready(chunk.position) {
+                world_manager.dirty_chunks_for_meshing.insert(chunk.position); // 🚀 被攔截區塊剛性重入佇列機制
                 continue; // 光照未完工，攔截施工
             }
 
@@ -284,6 +309,20 @@ pub fn mesh_dirty_chunks(
                 for dz in -1..=1 {
                     if dx == 0 && dz == 0 { continue; }
                     let n_pos = chunk.position + IVec3::new(dx, 0, dz);
+                    
+                    // 🚀 邊界視距與隱式優化雙重豁免
+                    if !world_manager.chunks.contains_key(&n_pos) {
+                        if !world_manager.loading_chunks.contains(&n_pos) {
+                            // 既不在 chunks 也不在 loading_chunks 中
+                            // 說明它要麼在視距外永遠不加載，要麼是已經處理完的隱式優化全空/全固體區塊
+                            continue; // 🚀 立刻解除死鎖，直接視為 ready 放行！
+                        } else {
+                            // 正處於非同步加載、雕刻或光照隊列的中間狀態，必須掛起等待！
+                            neighbors_ready = false;
+                            break;
+                        }
+                    }
+                    
                     if !world_manager.is_chunk_lighting_ready(n_pos) {
                         neighbors_ready = false;
                         break;
@@ -292,6 +331,7 @@ pub fn mesh_dirty_chunks(
                 if !neighbors_ready { break; }
             }
             if !neighbors_ready {
+                world_manager.dirty_chunks_for_meshing.insert(chunk.position); // 🚀 被攔截區塊剛性重入佇列機制
                 continue; // 鄰居未完工，暫緩施工以防破圖
             }
 
@@ -310,6 +350,7 @@ pub fn mesh_dirty_chunks(
             blocks: std::array::from_fn(|_| None),
             fluids: std::array::from_fn(|_| None),
             lights: std::array::from_fn(|_| None),
+            surface_heights: None,
         };
 
         let mut is_completely_empty = true;
@@ -349,11 +390,33 @@ pub fn mesh_dirty_chunks(
         }
 
         let is_smooth_lighting = config.smooth_lighting;
+        let seed = world_manager.seed;
         let task = thread_pool.spawn(async move {
+            let fbm = noise::Fbm::<noise::Perlin>::new(seed);
+            let generator = crate::world::generator::TerrainGenerator {
+                noise_provider: crate::world::TerrainNoise(fbm),
+            };
+            
+            // 🚀 構建棧快取：一次性填充 34x34 的 2D 扁平陣列
+            let mut surface_heights = Box::new([0i32; 1156]);
+            let base_x = chunk_pos.x * 32;
+            let base_z = chunk_pos.z * 32;
+            for lz in -1..=32 {
+                for lx in -1..=32 {
+                    let gx = base_x + lx;
+                    let gz = base_z + lz;
+                    let idx = ((lz + 1) * 34 + (lx + 1)) as usize;
+                    surface_heights[idx] = generator.get_max_surface_y(gx, gz);
+                }
+            }
+            
+            let mut input_with_cache = input_data;
+            input_with_cache.surface_heights = Some(surface_heights);
+
             let mut solid_data = empty_mesh();
             let mut fluid_data = empty_mesh();
-            generate_greedy_mesh(entity, chunk_pos, &input_data, false, &mut solid_data, is_smooth_lighting);
-            generate_greedy_mesh(entity, chunk_pos, &input_data, true, &mut fluid_data, is_smooth_lighting);
+            generate_greedy_mesh(entity, chunk_pos, &input_with_cache, false, &mut solid_data, is_smooth_lighting);
+            generate_greedy_mesh(entity, chunk_pos, &input_with_cache, true, &mut fluid_data, is_smooth_lighting);
             Some((solid_data, fluid_data))
         });
         

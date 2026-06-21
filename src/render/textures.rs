@@ -23,6 +23,7 @@ fn load_textures(
     mut gt: ResMut<GameTextures>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<VoxelMaterial>>,
+    config: Res<crate::config::EngineConfig>,
 ) {
     let zip_path = "assets/resource_pack.zip";
     
@@ -52,12 +53,8 @@ fn load_textures(
     let material_handle = materials.add(VoxelMaterial {
         texture_array: image_handle.clone(),
         env: crate::render::material::EnvironmentUniform {
-            fog_color: bevy::color::LinearRgba::rgb(0.5, 0.8, 1.0),
-            camera_pos: Vec3::ZERO,
-            fog_start: 0.0,
-            fog_end: 100.0,
             is_fluid: 0,
-            fluid_scroll_speed: 0.12,
+            fluid_scroll_speed: 0.0,
         },
         alpha_mode: AlphaMode::Opaque,
     });
@@ -65,14 +62,9 @@ fn load_textures(
     let fluid_material_handle = materials.add(VoxelMaterial {
         texture_array: image_handle.clone(),
         env: crate::render::material::EnvironmentUniform {
-            fog_color: bevy::color::LinearRgba::rgb(0.5, 0.8, 1.0),
-            camera_pos: Vec3::ZERO,
-            fog_start: 32.0,
-            fog_end: 128.0,
             is_fluid: 1,
-            fluid_scroll_speed: 0.12,
+            fluid_scroll_speed: config.fluid_scroll_speed,
         },
-        // 流體通道必須使用 AlphaMode::Blend
         alpha_mode: AlphaMode::Blend,
     });
 

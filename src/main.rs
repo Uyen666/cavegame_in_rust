@@ -37,6 +37,7 @@ fn main() {
             })
         )
         .init_state::<GameState>()
+        .insert_resource(Time::<Fixed>::from_hz(128.0))
         .insert_resource(config::EngineConfig::default())
         .add_plugins(ui::UiPlugin)
         .add_plugins(world::WorldPlugin)

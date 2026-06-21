@@ -4,6 +4,8 @@ use bevy::window::{CursorGrabMode, PrimaryWindow};
 use std::f32::consts::FRAC_PI_2;
 use crate::world::{WorldManager, BlockType};
 use crate::utils::math::Aabb;
+use bevy::pbr::{FogSettings, FogFalloff};
+use bevy::color::Mix;
 
 pub struct PlayerPlugin;
 
@@ -12,8 +14,12 @@ impl Plugin for PlayerPlugin {
         app.add_systems(Startup, setup_player)
            .add_systems(
                Update,
-               (player_look, player_move, toggle_grab_cursor, player_interaction)
+               (player_look, toggle_grab_cursor, player_interaction, update_fog_color)
                    .run_if(in_state(crate::GameState::InGame))
+           )
+           .add_systems(
+               FixedUpdate,
+               player_move.run_if(in_state(crate::GameState::InGame))
            );
     }
 }
@@ -26,6 +32,7 @@ pub struct Player {
     pub on_ground: bool,
     pub is_crouching: bool,
     pub is_spectator: bool,
+    pub is_colliding_horizontally: bool,
 }
 
 #[derive(Component)]
@@ -46,6 +53,7 @@ fn setup_player(mut commands: Commands, mut q_windows: Query<&mut Window, With<P
             on_ground: false,
             is_crouching: false,
             is_spectator: false,
+            is_colliding_horizontally: false,
         },
         Transform::from_xyz(16.0, 35.0, 16.0), // 為了適應山脈地形，將初始高度拉高，利用重力自然降落
         GlobalTransform::default(),
@@ -57,6 +65,14 @@ fn setup_player(mut commands: Commands, mut q_windows: Query<&mut Window, With<P
                 ..default()
             },
             PlayerCamera,
+            FogSettings {
+                color: Color::srgb(0.5, 0.8, 1.0),
+                falloff: FogFalloff::Linear {
+                    start: 32.0,
+                    end: 128.0,
+                },
+                ..default()
+            },
         ));
     });
 }
@@ -122,6 +138,7 @@ fn player_move(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     world: Res<WorldManager>,
+    config: Res<crate::config::EngineConfig>,
 ) {
     let (mut player, mut transform) = q_player.single_mut();
     let dt = time.delta_seconds();
@@ -183,8 +200,23 @@ fn player_move(
         cam.translation.y += (target_cam_y - cam.translation.y) * (1.0 - (-10.0_f32 * dt).exp());
     }
 
-    // --- Gravity (accumulate BEFORE movement) ---
-    player.velocity.y -= 25.0 * dt;
+    // --- Determine Fluid State ---
+    let b_pos = IVec3::new(transform.translation.x.floor() as i32, transform.translation.y.floor() as i32, transform.translation.z.floor() as i32);
+    let foot_in_fluid = world.get_fluid_global(b_pos) > 0;
+
+    let head_pos = IVec3::new(transform.translation.x.floor() as i32, (transform.translation.y + player_height).floor() as i32, transform.translation.z.floor() as i32);
+    let head_in_fluid = world.get_fluid_global(head_pos) > 0;
+    
+    let mut current_move_speed = move_speed;
+
+    // 🚀 陸地跳躍絕對優先權 (Ground Overrules Fluid)
+    let is_ground_jumping = player.on_ground && keys.just_pressed(KeyCode::Space);
+    
+    // 🚀 官方級【水平碰撞上岸特權 (Jump From Fluid)】
+    let is_fluid_climbing = foot_in_fluid && player.is_colliding_horizontally && keys.pressed(KeyCode::Space);
+    
+    // 🚀 官方級【水面起跳脫離衝量 (Surface Escape Impulse)】
+    let is_surface_escape = foot_in_fluid && !head_in_fluid && keys.pressed(KeyCode::Space);
 
     // --- Horizontal input ---
     let forward = Vec3::new(-player.yaw.sin(), 0.0, -player.yaw.cos());
@@ -196,13 +228,47 @@ fn player_move(
     if keys.pressed(KeyCode::KeyA) { input_dir -= right; }
     if input_dir.length_squared() > 0.0 { input_dir = input_dir.normalize(); }
 
-    // Instant horizontal speed (no lerp – avoids interaction with vertical)
-    player.velocity.x = input_dir.x * move_speed;
-    player.velocity.z = input_dir.z * move_speed;
+    if foot_in_fluid && !is_ground_jumping {
+        current_move_speed *= 0.4;
+        
+        // Fluid horizontal speed with acceleration
+        player.velocity.x += input_dir.x * current_move_speed * 10.0 * dt;
+        player.velocity.z += input_dir.z * current_move_speed * 10.0 * dt;
 
-    // --- Jump ---
-    if keys.just_pressed(KeyCode::Space) && player.on_ground {
-        player.velocity.y = 8.0;
+        if is_fluid_climbing || is_surface_escape {
+            // 大開綠燈，直接視為攀爬上岸 或 破浪而出！賦予完整的陸地跳躍衝量
+            player.velocity.y = config.physics.land_jump_impulse;
+        } else {
+            // 每一 Tick 的垂直動量工整結算
+            if keys.pressed(KeyCode::Space) {
+                player.velocity.y += config.physics.water_buoyancy * dt; 
+            }
+            if keys.pressed(KeyCode::ShiftLeft) {
+                player.velocity.y -= config.physics.water_buoyancy * dt;
+            }
+            // 扣除恆定的水中微弱重力（下沉）
+            player.velocity.y -= config.physics.gravity * config.physics.water_gravity_multiplier * dt; 
+        }
+        
+        // 套用高額的水體阻尼（固定乘法）
+        let damp = (1.0 - config.physics.water_damping * dt).max(0.0);
+        player.velocity.x *= damp;
+        player.velocity.z *= damp;
+        if !is_fluid_climbing && !is_surface_escape {
+            player.velocity.y *= damp;
+        }
+    } else {
+        // Instant horizontal speed on dry land (no lerp)
+        player.velocity.x = input_dir.x * current_move_speed;
+        player.velocity.z = input_dir.z * current_move_speed;
+        
+        // Dry land gravity
+        player.velocity.y -= config.physics.gravity * dt;
+    }
+
+    // --- Jump (Normal Land) ---
+    if (!foot_in_fluid || is_ground_jumping) && keys.just_pressed(KeyCode::Space) && player.on_ground {
+        player.velocity.y = config.physics.land_jump_impulse;
         player.on_ground = false;
     }
 
@@ -244,11 +310,15 @@ fn player_move(
         hits
     };
 
+    let mut is_colliding_horizontally = false;
+    let was_on_ground = player.on_ground;
+
     // X axis
     if player.velocity.x != 0.0 {
         pos.x += player.velocity.x * dt;
         let hits = get_intersecting_blocks(pos);
         if !hits.is_empty() {
+            is_colliding_horizontally = true;
             if player.velocity.x > 0.0 {
                 let wall_x = hits.iter().map(|b| b.min.x).fold(f32::INFINITY, f32::min);
                 pos.x = wall_x - player_radius - EPSILON;
@@ -257,6 +327,14 @@ fn player_move(
                 pos.x = wall_x + player_radius + EPSILON;
             }
             player.velocity.x = 0.0;
+        } else if player.is_crouching && was_on_ground {
+            // 🚀 潛行邊緣防跌落安全鎖 (Safewalk)
+            let mut fall_test = pos;
+            fall_test.y -= 0.05;
+            if get_intersecting_blocks(fall_test).is_empty() {
+                pos.x -= player.velocity.x * dt;
+                player.velocity.x = 0.0;
+            }
         }
     }
 
@@ -265,6 +343,7 @@ fn player_move(
         pos.z += player.velocity.z * dt;
         let hits = get_intersecting_blocks(pos);
         if !hits.is_empty() {
+            is_colliding_horizontally = true;
             if player.velocity.z > 0.0 {
                 let wall_z = hits.iter().map(|b| b.min.z).fold(f32::INFINITY, f32::min);
                 pos.z = wall_z - player_radius - EPSILON;
@@ -273,6 +352,14 @@ fn player_move(
                 pos.z = wall_z + player_radius + EPSILON;
             }
             player.velocity.z = 0.0;
+        } else if player.is_crouching && was_on_ground {
+            // 🚀 潛行邊緣防跌落安全鎖 (Safewalk)
+            let mut fall_test = pos;
+            fall_test.y -= 0.05;
+            if get_intersecting_blocks(fall_test).is_empty() {
+                pos.z -= player.velocity.z * dt;
+                player.velocity.z = 0.0;
+            }
         }
     }
 
@@ -294,6 +381,7 @@ fn player_move(
         }
     }
 
+    player.is_colliding_horizontally = is_colliding_horizontally;
     transform.translation = pos;
 }
 
@@ -394,6 +482,49 @@ fn player_interaction(
             }
             dist += step;
         }
+    }
+}
+
+// 🚀 動態環境迷霧 + 遠剪裁面剛性對齊系統（純粹眼部位置感知）
+fn update_fog_color(
+    world_manager: Res<crate::world::WorldManager>,
+    config: Res<crate::config::EngineConfig>,
+    mut clear_color: ResMut<ClearColor>,
+    mut q_fog: Query<&mut FogSettings, With<PlayerCamera>>,
+    mut q_proj: Query<&mut Projection, With<PlayerCamera>>,
+    q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
+) {
+    let Ok(cam_tf) = q_camera.get_single() else { return; };
+    let eye_pos = cam_tf.translation().as_ivec3();
+    let eye_light = world_manager.get_light_global(eye_pos);
+
+    // 線性映射：眼部光照 0−15 → 地底深灰 → 蔚藍天空
+    let t = (eye_light as f32) / 15.0;
+    let sky = bevy::color::LinearRgba::new(0.5, 0.8, 1.0, 1.0);
+    let dark_ambient_color = bevy::color::LinearRgba::gray(config.min_ambient_light);
+    let mixed = dark_ambient_color.mix(&sky, t);
+    let final_color = Color::from(mixed);
+
+    clear_color.0 = final_color;
+
+    // 防禦：render_distance 不得為 0
+    if config.render_distance == 0 { return; }
+    let max_distance = config.render_distance as f32 * 32.0; // 8 * 32 = 256.0
+
+    // 【遠平面剛性鎖死】：獨立 query 確保不因 FogSettings 缺失而連帶失敗
+    if let Ok(mut proj) = q_proj.get_single_mut() {
+        if let Projection::Perspective(ref mut persp) = *proj {
+            persp.far = max_distance + 64.0; // 256 + 64 = 320，給予充分幾何空間
+        }
+    }
+
+    // 【原生迷霧阻斷】：黃金比例覆蓋地圖加載邊界
+    if let Ok(mut fog) = q_fog.get_single_mut() {
+        fog.color = final_color;
+        fog.falloff = FogFalloff::Linear {
+            start: max_distance * 0.75, // 192 格柔和起霧
+            end:   max_distance - 8.0,  // 248 格完全消融遮擋地圖邊界
+        };
     }
 }
 
