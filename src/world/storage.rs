@@ -24,9 +24,12 @@ pub fn save_chunk_to_disk(pos: IVec3, data: ChunkData) {
     let path = format!("saves/chunk_{}_{}_{}.bin", pos.x, pos.y, pos.z);
 
     // 🚀 固體與流體雙重真空核對，缺一不可
-    let is_empty_chunk = data.buffer.is_pure_air() && data.is_fluid_pure_vacuum();
+    //let is_empty_chunk = data.buffer.is_pure_air() && data.is_fluid_pure_vacuum();
 
     IoTaskPool::get().spawn(async move {
+        // 🚀 固體與流體雙重真空核對，缺一不可
+        let is_empty_chunk = data.buffer.is_pure_air() && data.is_fluid_pure_vacuum();
+        
         if is_empty_chunk {
             // 🚀 純空氣區塊：拒絕寫入新存檔，並清理硬碟上的舊存檔（若存在）
             // 防止 Save Bloating，同時杜絕下次載入時「歷史幽靈復原」
