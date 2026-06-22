@@ -242,30 +242,38 @@ pub fn update_chunks(
                 },
             }
 
-            let (chunk_buffer, non_air_count) = if let Some(data) = crate::world::storage::load_chunk_from_disk(pos) {
+            let (chunk_buffer, non_air_count, fluid_buffer) = if let Some(data) = crate::world::storage::load_chunk_from_disk(pos) {
                 let count = data.buffer.blocks.iter().filter(|&&b| b != BlockType::Air).count() as u16;
-                (data.buffer, count)
+                let fb = data.fluid_buffer.map(|v| {
+                    let mut b = Box::new([0u8; 32768]);
+                    let len = v.len().min(32768);
+                    b[..len].copy_from_slice(&v[..len]);
+                    b
+                });
+                (data.buffer, count, fb)
             } else {
                 match world_type {
                     WorldType::Flat => {
                         let mut chunk = Chunk::new(pos);
                         crate::world::gen::flat::generate(&mut chunk);
-                        (chunk.buffer, chunk.non_air_count)
+                        (chunk.buffer, chunk.non_air_count, None)
                     },
                     WorldType::PerlinHills => {
                         let fbm = Fbm::<Perlin>::new(seed);
                         let noise = TerrainNoise(fbm);
                         let generator = TerrainGenerator { noise_provider: noise };
-                        generator.generate_chunk_data(pos)
+                        let (b, c) = generator.generate_chunk_data(pos);
+                        (b, c, None)
                     },
-                    WorldType::FloatingIslands => (ChunkBuffer::default(), 0),
+                    WorldType::FloatingIslands => (ChunkBuffer::default(), 0, None),
                 }
             };
             let mut light_buffer = ChunkLightBuffer::default();
             crate::world::lighting::init_sunlight(pos, &chunk_buffer, &mut light_buffer, &max_surface_y_map);
             crate::world::lighting::propagate_sky_light(&chunk_buffer, &mut light_buffer);
 
-            (pos, ChunkData { buffer: chunk_buffer }, light_buffer, non_air_count, Box::new(max_surface_y_map))
+            let chunk_data_fluid = fluid_buffer.as_ref().map(|b| b.to_vec());
+            (pos, ChunkData { buffer: chunk_buffer, fluid_buffer: chunk_data_fluid }, light_buffer, non_air_count, Box::new(max_surface_y_map))
         });
 
         commands.spawn(GeneratingChunk(task));
@@ -290,11 +298,13 @@ pub fn update_chunks(
                     if let Ok((_, chunk)) = q_chunks.get(entity) {
                         crate::world::storage::save_chunk_to_disk(pos, ChunkData {
                             buffer: ChunkBuffer { blocks: chunk.buffer.blocks },
+                            fluid_buffer: entry.fluid_buffer.as_ref().map(|b| b.to_vec()),
                         });
                     }
                 } else {
                     crate::world::storage::save_chunk_to_disk(pos, ChunkData {
                         buffer: ChunkBuffer { blocks: entry.buffer.blocks },
+                        fluid_buffer: entry.fluid_buffer.as_ref().map(|b| b.to_vec()),
                     });
                 }
             }
@@ -318,9 +328,9 @@ pub fn poll_loading_chunks(
             world_manager.loading_chunks.remove(&chunk_pos);
             world_manager.heightmap_cache.insert(IVec2::new(chunk_pos.x, chunk_pos.z), max_surface_y_map);
 
-            let is_pure_vacuum = chunk_data.buffer.is_pure_air();
+            let is_empty_chunk = chunk_data.buffer.is_pure_air() && chunk_data.is_fluid_pure_vacuum();
 
-            if is_pure_vacuum {
+            if is_empty_chunk {
                 world_manager.vacuum_chunks.insert(chunk_pos);
                 commands.entity(entity).despawn();
                 continue;
@@ -348,7 +358,12 @@ pub fn poll_loading_chunks(
                 let entry = ChunkEntry {
                     buffer:      ChunkBuffer { blocks: chunk_data.buffer.blocks },
                     light_buffer: light_buffer.clone(),
-                    fluid_buffer: None,
+                    fluid_buffer: chunk_data.fluid_buffer.as_ref().map(|v| {
+                        let mut b = Box::new([0u8; 32768]);
+                        let len = v.len().min(32768);
+                        b[..len].copy_from_slice(&v[..len]);
+                        b
+                    }),
                     entity:      Some(chunk_entity),
                     is_modified: false,
                     is_lighting_ready: false,

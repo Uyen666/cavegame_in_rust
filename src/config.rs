@@ -19,7 +19,7 @@ impl Default for PhysicsConfig {
             gravity: 25.0,
             land_jump_impulse: 8.5,
             water_gravity_multiplier: 0.25,
-            water_damping: 4.0,
+            water_damping: 6.0,
             water_buoyancy: 15.0,
         }
     }

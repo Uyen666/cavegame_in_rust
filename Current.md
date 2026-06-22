@@ -65,7 +65,9 @@ src/
 ## 3. 🧱 物理碰撞與玩家移動系統
 * **座標慣例**：嚴格維持 Bevy 預設的 Y-up 座標系（X, Z 為水平，Y 為高度）。
 * **離散軸向分離碰撞**：玩家速度向量在每影格拆解為嚴格獨立的三階段結算（X 軸位移 → Z 軸位移 → Y 軸位移）。撞擊方塊被水平彈回時，強迫維持 0.001 格安全距離外推，根除 False Grounding 浮點數微觀滲透 Bug。
+* **FixedUpdate 雙軌視角同步 (Jitter-Free Camera)**：將相機的旋轉視角 (`player_look`) 與物理底座的位移 (`player_move`) 剛性綁定於相同的 `FixedUpdate` 階段，徹底消除顯示卡變動幀率與固定物理時步之間的相位差抖動 (Jitter)，達成極致跟手的 3D 視角移動。
 * **玩家 AABB 尺寸與速度**：水平半徑 0.3。站立高度 1.8 格，蹲下（按住 左 Ctrl）動態縮小為 1.2 格。
+* **陸地連跳與輸入緩衝 (Bunny Hopping & Input Buffering)**：實裝了玩家動作鎖存器 (`wants_to_jump`)。在 `Update` 高頻捕獲瞬間按鍵，並在 `FixedUpdate` 與長按輸入做雙軌交集。完美還原了 Minecraft 經典的按住連續起跳 (Bunny Hopping) 以及落地前提前按鍵的無縫起跳 (Input Buffering) 體驗。
 * **流體物理交互與浮力系統 (Fluid Interaction & Buoyancy)**：
   * **雙層感知浮力大腦**：系統會分別針對玩家腳底 (`foot_in_fluid`) 與頭部 (`head_in_fluid`) 進行雙軌流體感知。當身處水中時，會自動套用黏滯阻力 (`vel.x * 0.8`) 減緩水平移動，並強制切換為流體浮力墜落曲線。
   * **海豚跳特權 (Dolphin Jump / Surface Escape)**：當玩家腳在水中但頭部已露出水面，按住空白鍵時將觸發「水面逃脫特權」，賦予強大的向上爆發力，完美還原如海豚般躍出水面登岸的極致流暢操作。
@@ -80,7 +82,8 @@ src/
 * **垂直 3D 動態加載 (3D Render Distance)**：每影格以玩家為中心，向外加載 5x5 的水平範圍，並且垂直覆蓋 8 層區塊（CY = 0 到 7，對應高度 0 到 256）。當超出卸載距離或垂直邊界時觸發 GPU 網格實體銷毀與內存回收。系統於 `get_block_global` 實作了跨區界全域極限防護，任何小於 0 或大於等於 `WORLD_MAX_Y` (256) 的空間探測皆強制安全降級回傳 `Air`，確保 `greedy.rs` 的邊界 Culling 極度穩定。
 * **非同步環形螺旋加載管線 (Async Ring-Sorted Loading Pipeline)**：放棄傳統同步巢狀迴圈，改採 3D 距離平方進行排序（`diff.x^2 + diff.y^2 + diff.z^2`），確保玩家腳下與視角前方的區塊享有最高加載權重。主執行緒透過 `.take(4)` 每影格限流派發最多 4 個任務，由背景的 `AsyncComputeTaskPool` 執行 Perlin Noise 或硬碟讀取，徹底杜絕 CPU 瞬間負載超載所引發的 Stuttering（掉幀）。
 * **資料與實體徹底解耦 (Data & Entity Decoupling)**：純空氣區塊僅作為包含資料 `ChunkBuffer` 的 `ChunkEntry` 留在 HashMap 中，**不佔用任何 Bevy ECS 實體**。當玩家在純空區塊放置第一顆實心方塊時，才會觸發**延遲生成 (Lazy Spawning)** 動態建立網格實體。並配合 **ECS Component Flash Sync** 於每次網格生成前深度同步，確保 `Chunk` 組件狀態與資料層真理之源 100% 一致。
-* **一維資料結構與 RLE 完美存檔防禦 (Save Bloating Defense)**：使用原生的一維扁平化陣列 `ChunkBuffer` `[BlockType; 32768]` 作為核心資料儲存，全面淘汰巢狀陣列。存檔時交由 IoTaskPool 異步寫入硬碟，並採用手寫的 **RLE (Run-Length Encoding) 遊程編碼** 將巨型連續空方塊極限壓縮。若透過 O(1) 的 `non_air_count` 或 `is_pure_air()` 判定該區塊已被挖空退化為「純空氣」，系統不僅拒絕產生新存檔，還會在背景無情刪除硬碟上的歷史舊檔，根除「高空卸載後復活幽靈方塊」的致命 Bug，徹底釋放硬碟空間。卸載輪詢具備**完美閉環**：只要超出渲染距離，無論區塊是否修改過，系統必定無條件執行 `despawn_recursive` 銷毀視覺實體並從 HashMap 移除，從根源杜絕存檔無限膨脹與記憶體釘子戶。
+* **一維資料結構與 RLE 完美存檔防禦 (Save Bloating Defense)**：使用原生的一維扁平化陣列 `ChunkBuffer` `[BlockType; 32768]` 作為核心資料儲存，全面淘汰巢狀陣列。存檔時交由 IoTaskPool 異步寫入硬碟，並採用手寫的 **RLE (Run-Length Encoding) 遊程編碼** 將巨型連續空方塊極限壓縮。
+* **雙軌真空剔除防線 (Dual-Vacuum Culling)**：在存檔判定上實施了極為嚴格的「固體與流體」雙重真空判定。只有當區塊內 100% 全是空氣，並且沒有一滴殘留流體時，才會無情刪除舊存檔以釋放空間。此防線確保了高空的懸浮水源與瀑布絕對不會在重啟後無端蒸發。卸載輪詢具備**完美閉環**：只要超出渲染距離，必定無條件執行 `despawn_recursive` 銷毀視覺實體並從 HashMap 移除，從根源杜絕存檔無限膨脹與記憶體釘子戶。
 
 ## 5. 🎛️ 遊戲狀態機與 UI/Debug 系統
 * **GameState 狀態控制**：切分 `MainMenu`、`InGame` 等狀態，退回選單時背景世界與物理會凍結。

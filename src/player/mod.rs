@@ -14,13 +14,24 @@ impl Plugin for PlayerPlugin {
         app.add_systems(Startup, setup_player)
            .add_systems(
                Update,
-               (player_look, toggle_grab_cursor, player_interaction, update_fog_color)
+               (toggle_grab_cursor, player_interaction, player_input_capture, update_fog_color)
                    .run_if(in_state(crate::GameState::InGame))
            )
            .add_systems(
                FixedUpdate,
-               player_move.run_if(in_state(crate::GameState::InGame))
+               (player_look, player_move).run_if(in_state(crate::GameState::InGame))
            );
+    }
+}
+
+fn player_input_capture(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut q_player: Query<&mut Player>,
+) {
+    if let Ok(mut player) = q_player.get_single_mut() {
+        if keys.just_pressed(KeyCode::Space) {
+            player.wants_to_jump = true; // 🚀 鎖存點擊意圖
+        }
     }
 }
 
@@ -33,6 +44,7 @@ pub struct Player {
     pub is_crouching: bool,
     pub is_spectator: bool,
     pub is_colliding_horizontally: bool,
+    pub wants_to_jump: bool, // 🚀 跳躍輸入鎖存器（輸入緩衝）
 }
 
 #[derive(Component)]
@@ -54,6 +66,7 @@ fn setup_player(mut commands: Commands, mut q_windows: Query<&mut Window, With<P
             is_crouching: false,
             is_spectator: false,
             is_colliding_horizontally: false,
+            wants_to_jump: false,
         },
         Transform::from_xyz(16.0, 35.0, 16.0), // 為了適應山脈地形，將初始高度拉高，利用重力自然降落
         GlobalTransform::default(),
@@ -209,14 +222,17 @@ fn player_move(
     
     let mut current_move_speed = move_speed;
 
+    // 🚀 雙軌起跳真理：不論是 Update 鎖存到了點擊，還是當前正按住不放，一律視為跳躍觸發！
+    let is_jumping_triggered = player.wants_to_jump || keys.pressed(KeyCode::Space);
+
     // 🚀 陸地跳躍絕對優先權 (Ground Overrules Fluid)
-    let is_ground_jumping = player.on_ground && keys.just_pressed(KeyCode::Space);
+    let is_ground_jumping = player.on_ground && is_jumping_triggered;
     
     // 🚀 官方級【水平碰撞上岸特權 (Jump From Fluid)】
-    let is_fluid_climbing = foot_in_fluid && player.is_colliding_horizontally && keys.pressed(KeyCode::Space);
+    let is_fluid_climbing = foot_in_fluid && player.is_colliding_horizontally && is_jumping_triggered;
     
     // 🚀 官方級【水面起跳脫離衝量 (Surface Escape Impulse)】
-    let is_surface_escape = foot_in_fluid && !head_in_fluid && keys.pressed(KeyCode::Space);
+    let is_surface_escape = foot_in_fluid && !head_in_fluid && is_jumping_triggered;
 
     // --- Horizontal input ---
     let forward = Vec3::new(-player.yaw.sin(), 0.0, -player.yaw.cos());
@@ -238,6 +254,7 @@ fn player_move(
         if is_fluid_climbing || is_surface_escape {
             // 大開綠燈，直接視為攀爬上岸 或 破浪而出！賦予完整的陸地跳躍衝量
             player.velocity.y = config.physics.land_jump_impulse;
+            player.wants_to_jump = false; // 🚀 成功消費，絕殺重複跳躍與吞鍵！
         } else {
             // 每一 Tick 的垂直動量工整結算
             if keys.pressed(KeyCode::Space) {
@@ -267,9 +284,10 @@ fn player_move(
     }
 
     // --- Jump (Normal Land) ---
-    if (!foot_in_fluid || is_ground_jumping) && keys.just_pressed(KeyCode::Space) && player.on_ground {
+    if (!foot_in_fluid || is_ground_jumping) && is_jumping_triggered && player.on_ground {
         player.velocity.y = config.physics.land_jump_impulse;
         player.on_ground = false;
+        player.wants_to_jump = false; // 🚀 成功消費，絕殺重複跳躍與吞鍵！
     }
 
     // -------------------------------------------------------
@@ -383,6 +401,11 @@ fn player_move(
 
     player.is_colliding_horizontally = is_colliding_horizontally;
     transform.translation = pos;
+
+    // 如果這一 Tick 結束了，玩家人在乾燥陸地的空中，且沒有按住 Space，直接洗淨點擊鎖存
+    if !player.on_ground && !foot_in_fluid && !keys.pressed(KeyCode::Space) {
+        player.wants_to_jump = false;
+    }
 }
 
 
@@ -495,7 +518,12 @@ fn update_fog_color(
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
 ) {
     let Ok(cam_tf) = q_camera.get_single() else { return; };
-    let eye_pos = cam_tf.translation().as_ivec3();
+    let translation = cam_tf.translation();
+    let eye_pos = IVec3::new(
+        translation.x.floor() as i32,
+        translation.y.floor() as i32,
+        translation.z.floor() as i32,
+    );
     let eye_light = world_manager.get_light_global(eye_pos);
 
     // 線性映射：眼部光照 0−15 → 地底深灰 → 蔚藍天空

@@ -31,6 +31,17 @@ impl ChunkLightBuffer {
 #[derive(Serialize, Deserialize)]
 pub struct ChunkData {
     pub buffer: ChunkBuffer,
+    pub fluid_buffer: Option<Vec<u8>>,
+}
+
+impl ChunkData {
+    pub fn is_fluid_pure_vacuum(&self) -> bool {
+        if let Some(fb) = &self.fluid_buffer {
+            fb.iter().all(|&v| v == 0)
+        } else {
+            true
+        }
+    }
 }
 
 #[derive(Component)]

@@ -23,11 +23,11 @@ pub fn load_chunk_from_disk(pos: IVec3) -> Option<ChunkData> {
 pub fn save_chunk_to_disk(pos: IVec3, data: ChunkData) {
     let path = format!("saves/chunk_{}_{}_{}.bin", pos.x, pos.y, pos.z);
 
-    // 純空氣判定：改用嚴格的 3D 體素遍歷檢查，確保被挖空的區塊也能被正確攔截
-    let is_pure_air = data.buffer.is_pure_air();
+    // 🚀 固體與流體雙重真空核對，缺一不可
+    let is_empty_chunk = data.buffer.is_pure_air() && data.is_fluid_pure_vacuum();
 
     IoTaskPool::get().spawn(async move {
-        if is_pure_air {
+        if is_empty_chunk {
             // 🚀 純空氣區塊：拒絕寫入新存檔，並清理硬碟上的舊存檔（若存在）
             // 防止 Save Bloating，同時杜絕下次載入時「歷史幽靈復原」
             let p = std::path::Path::new(&path);
