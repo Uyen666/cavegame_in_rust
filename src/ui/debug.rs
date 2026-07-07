@@ -121,7 +121,7 @@ fn update_debug_text(
     diagnostics: Res<DiagnosticsStore>,
     mut q_text: Query<&mut Text, With<DebugText>>,
     q_root: Query<&Visibility, With<DebugUiRoot>>,
-    q_player: Query<&Transform, With<Player>>,
+    q_player: Query<(&Transform, &Player)>,
     q_camera: Query<&GlobalTransform, With<crate::player::PlayerCamera>>,
     world_manager: Res<WorldManager>,
     mut timer: ResMut<DebugUpdateTimer>,
@@ -152,11 +152,11 @@ fn update_debug_text(
     }
 
     // Always compute player coordinates every frame so movement is smooth
-    let (x, y, z) = if let Ok(player_transform) = q_player.get_single() {
+    let (x, y, z, held_block) = if let Ok((player_transform, player)) = q_player.get_single() {
         let pos = player_transform.translation;
-        (pos.x, pos.y, pos.z)
+        (pos.x, pos.y, pos.z, format!("{:?}", player.hotbar[player.selected_slot]))
     } else {
-        (0.0, 0.0, 0.0)
+        (0.0, 0.0, 0.0, String::from("Unknown"))
     };
 
     let foot_pos = IVec3::new(x.floor() as i32, y.floor() as i32, z.floor() as i32);
@@ -215,6 +215,7 @@ fn update_debug_text(
          Client Light: Eye: {} (sky: {}, block: 0)\n\
                        Foot: {} (sky: {}, block: 0)\n\
          {}\n\
+         Holding: {}\n\
          Loaded Chunks: [E: {} / D: {}]",
         *fps_cache,
         x, y, z,
@@ -222,6 +223,7 @@ fn update_debug_text(
         eye_light, eye_light,
         foot_light, foot_light,
         targeted_text,
+        held_block,
         loaded_entity_chunks, loaded_data_chunks
     );
 

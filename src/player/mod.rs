@@ -26,11 +26,43 @@ impl Plugin for PlayerPlugin {
 
 fn player_input_capture(
     keys: Res<ButtonInput<KeyCode>>,
+    mut scroll_evr: EventReader<bevy::input::mouse::MouseWheel>,
     mut q_player: Query<&mut Player>,
 ) {
     if let Ok(mut player) = q_player.get_single_mut() {
         if keys.just_pressed(KeyCode::Space) {
             player.wants_to_jump = true; // 🚀 鎖存點擊意圖
+        }
+
+        // --- 數字鍵切換 ---
+        if keys.just_pressed(KeyCode::Digit1) { player.selected_slot = 0; }
+        if keys.just_pressed(KeyCode::Digit2) { player.selected_slot = 1; }
+        if keys.just_pressed(KeyCode::Digit3) { player.selected_slot = 2; }
+        if keys.just_pressed(KeyCode::Digit4) { player.selected_slot = 3; }
+        if keys.just_pressed(KeyCode::Digit5) { player.selected_slot = 4; }
+        if keys.just_pressed(KeyCode::Digit6) { player.selected_slot = 5; }
+        if keys.just_pressed(KeyCode::Digit7) { player.selected_slot = 6; }
+        if keys.just_pressed(KeyCode::Digit8) { player.selected_slot = 7; }
+        if keys.just_pressed(KeyCode::Digit9) { player.selected_slot = 8; }
+
+        // --- 滾輪切換 ---
+        let mut frame_scroll = 0.0;
+        for ev in scroll_evr.read() {
+            frame_scroll += ev.y;
+        }
+        player.scroll_accumulator += frame_scroll;
+        
+        let threshold = 0.7; // 靈敏度閥值
+        if player.scroll_accumulator.abs() >= threshold {
+            // 算出滾動方向：正值為 1 (向上滾), 負值為 -1 (向下滾)
+            let direction = if player.scroll_accumulator > 0.0 { 1 } else { -1 };
+
+            // 🚀 執行快捷列工整切換，注意加減方向可依據習慣對調
+            let new_slot = player.selected_slot as i32 - direction;
+            player.selected_slot = ((new_slot % 9 + 9) % 9) as usize;
+
+            // 消費掉這一次的整數能量，保留餘數給下一幀，達成極致絲滑的連續滾動
+            player.scroll_accumulator -= direction as f32 * threshold;
         }
     }
 }
@@ -45,6 +77,10 @@ pub struct Player {
     pub is_spectator: bool,
     pub is_colliding_horizontally: bool,
     pub wants_to_jump: bool, // 🚀 跳躍輸入鎖存器（輸入緩衝）
+    pub hotbar: [BlockType; 9],   // 9格快捷列陣列
+    pub selected_slot: usize,     // 當前選中的欄位索引 (0 ~ 8)
+    pub has_spawned: bool,        // 🚀 初次登入地表降落鎖
+    pub scroll_accumulator: f32,  // 🚀 滾輪能量累加器
 }
 
 #[derive(Component)]
@@ -67,8 +103,22 @@ fn setup_player(mut commands: Commands, mut q_windows: Query<&mut Window, With<P
             is_spectator: false,
             is_colliding_horizontally: false,
             wants_to_jump: false,
+            hotbar: [
+                BlockType::Stone,
+                BlockType::Dirt,
+                BlockType::Grass,
+                BlockType::Air,
+                BlockType::Air,
+                BlockType::Air,
+                BlockType::Air,
+                BlockType::Air,
+                BlockType::Air,
+            ],
+            selected_slot: 0,
+            has_spawned: false,
+            scroll_accumulator: 0.0,
         },
-        Transform::from_xyz(16.0, 35.0, 16.0), // 為了適應山脈地形，將初始高度拉高，利用重力自然降落
+        Transform::from_xyz(16.0, 250.0, 16.0), // 為了適應山脈地形，將初始高度拉到極限高空 (Y=250)，確保必定生於世界外表面，再利用重力自然降落
         GlobalTransform::default(),
         VisibilityBundle::default(),
     )).with_children(|parent| {
@@ -189,6 +239,45 @@ fn player_move(
         transform.translation += input_dir * spec_speed * dt;
 
         return; // 🚀 直接結束！短路下方的防虛空安全門、卡死救援與方塊碰撞！
+    }
+
+    // ── 初次出生點地面傳送 ──
+    if !player.has_spawned {
+        let cx = (transform.translation.x.floor() as i32) >> 5;
+        let cz = (transform.translation.z.floor() as i32) >> 5;
+        let mut top_loaded_cy = None;
+        for cy in (0..=7).rev() {
+            if world.get_chunk_ref(IVec3::new(cx, cy, cz)).is_some() {
+                top_loaded_cy = Some(cy);
+                break;
+            }
+        }
+        
+        if top_loaded_cy.is_some() {
+            let mut surface_found = false;
+            let mut surface_y = 250.0;
+            let px = transform.translation.x.floor() as i32;
+            let pz = transform.translation.z.floor() as i32;
+            for y in (0..=255).rev() {
+                let block = world.get_block_global(IVec3::new(px, y, pz));
+                if block.is_solid() {
+                    surface_y = (y + 1) as f32; // 站在固體頂部
+                    surface_found = true;
+                    break;
+                }
+            }
+            if surface_found {
+                transform.translation.y = surface_y;
+                player.has_spawned = true;
+                player.velocity = Vec3::ZERO;
+                println!("【系統通知】玩家已安全降落於地表: Y={}", surface_y);
+            }
+        }
+        
+        if !player.has_spawned {
+            // 如果還沒生成好，就讓他懸停在天上，凍結物理，直到 chunk 載入完畢！
+            return;
+        }
     }
 
     // 安全閘門已移除：現在 get_block_global 會自動對超出加載邊界的區塊進行高度自適應回傳，
@@ -476,7 +565,8 @@ fn player_interaction(
                             break;
                         }
 
-                        world.set_block_global(place_pos, BlockType::Stone, &mut commands);
+                        let current_block = player.hotbar[player.selected_slot];
+                        world.set_block_global(place_pos, current_block, &mut commands);
                         crate::world::fluid::wake_up_fluids_in_radius(&mut world, place_pos);
                     }
                 } else if key_f {
