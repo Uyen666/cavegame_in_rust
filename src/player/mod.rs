@@ -14,7 +14,7 @@ impl Plugin for PlayerPlugin {
         app.add_systems(Startup, setup_player)
            .add_systems(
                Update,
-               (toggle_grab_cursor, player_interaction, player_input_capture, update_fog_color)
+               (toggle_grab_cursor, player_interaction, player_input_capture, update_fog_color, draw_target_block_highlight)
                    .run_if(in_state(crate::GameState::InGame))
            )
            .add_systems(
@@ -646,3 +646,42 @@ fn update_fog_color(
     }
 }
 
+fn draw_target_block_highlight(
+    q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
+    world: Res<WorldManager>,
+    q_player: Query<&Player>,
+    mut gizmos: Gizmos,
+) {
+    let Ok(player) = q_player.get_single() else { return; };
+    if player.is_spectator { return; } // 旁觀者模式跳過
+    
+    let Ok(cam_transform) = q_camera.get_single() else { return; };
+    let start = cam_transform.translation();
+    let forward = cam_transform.forward();
+    let max_dist = 5.0;
+
+    // 🚀 執行 3D 體素射線步進 (Raycast)
+    let mut dist = 0.0;
+    let step = 0.05;
+    while dist < max_dist {
+        let pos = start + forward * dist;
+        let block_pos = IVec3::new(pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
+        
+        if world.get_block_global(block_pos).is_solid() {
+            // 💡 計算方塊幾何中心點 (Voxel Center)
+            let center = Vec3::new(
+                block_pos.x as f32 + 0.5,
+                block_pos.y as f32 + 0.5,
+                block_pos.z as f32 + 0.5,
+            );
+            
+            // 🚀 利用 Gizmos 繪製 1.002 倍微擴張立方體鋼絲邊框（防止 Z-fighting 深度貼面閃爍）
+            gizmos.cuboid(
+                Transform::from_translation(center).with_scale(Vec3::splat(1.002)),
+                Color::srgb(0.1, 0.1, 0.1), // 深灰/黑色線條
+            );
+            break; // 找到第一個固體方塊即可停手
+        }
+        dist += step;
+    }
+}
