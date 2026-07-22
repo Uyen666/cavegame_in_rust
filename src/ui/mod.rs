@@ -10,7 +10,7 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(debug::DebugUiPlugin)
-           .add_systems(Startup, hud::load_hotbar_textures)
+           .add_systems(Startup, hud::setup_ui_3d_preview)
            .add_systems(OnEnter(GameState::MainMenu), main_menu::setup_main_menu)
            .add_systems(OnExit(GameState::MainMenu), main_menu::cleanup_main_menu)
            

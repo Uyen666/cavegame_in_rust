@@ -1005,3 +1005,72 @@ fn generate_fluid_mesh(
         }
     }
 }
+
+pub fn build_single_voxel_mesh(block: BlockType) -> Mesh {
+    let mut bucket = empty_mesh();
+    if block == BlockType::Air {
+        return Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    }
+
+    for d in 0..3 {
+        for rev in [false, true] {
+            let normal_val = if rev { -1 } else { 1 };
+            let normal_vec = match d {
+                0 => [normal_val as f32, 0.0, 0.0],
+                1 => [0.0, normal_val as f32, 0.0],
+                2 => [0.0, 0.0, normal_val as f32],
+                _ => [0.0, 0.0, 0.0],
+            };
+            
+            let tex_layer = get_texture_layer(block, d, normal_val);
+            let sky_lights = [15, 15, 15, 15];
+            
+            let w = if rev { 0.0 } else { 1.0 };
+            
+            let (v1, v2, v3, v4) = match d {
+                0 => (
+                    [w, 0.0, 0.0],
+                    [w, 1.0, 0.0],
+                    [w, 1.0, 1.0],
+                    [w, 0.0, 1.0],
+                ),
+                1 => (
+                    [0.0, w, 0.0],
+                    [0.0, w, 1.0],
+                    [1.0, w, 1.0],
+                    [1.0, w, 0.0],
+                ),
+                2 => (
+                    [0.0, 0.0, w],
+                    [1.0, 0.0, w],
+                    [1.0, 1.0, w],
+                    [0.0, 1.0, w],
+                ),
+                _ => unreachable!(),
+            };
+
+            push_quad(
+                &mut bucket,
+                v1, v2, v3, v4,
+                normal_vec,
+                [1.0, 1.0, 1.0, 1.0],
+                tex_layer,
+                sky_lights,
+                0,
+                1, 1,
+                rev, d
+            );
+        }
+    }
+    
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mut positions = Vec::new();
+    for _ in 0..bucket.0.len() {
+        positions.push([0.0, 0.0, 0.0]); // dummy positions for AABB
+    }
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(ATTRIBUTE_PACKED_DATA, bucket.0);
+    mesh.insert_attribute(ATTRIBUTE_FLOW_VECTOR, bucket.2);
+    mesh.insert_indices(Indices::U32(bucket.1));
+    mesh
+}

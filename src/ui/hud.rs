@@ -103,18 +103,96 @@ pub fn update_crosshair(
     }
 }
 
-// 🚀 快捷列 UI 標記與材質資源
-#[derive(Resource)]
-pub struct HotbarTextures {
-    pub stone: Handle<Image>,
-    pub grass: Handle<Image>,
+#[derive(Component)]
+pub struct UiPreviewMesh {
+    pub slot_index: usize,
 }
 
-pub fn load_hotbar_textures(mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands.insert_resource(HotbarTextures {
-        stone: asset_server.load("textures/stone.png"),
-        grass: asset_server.load("textures/grass.png"),
-    });
+#[derive(Resource)]
+pub struct Ui3dPreviewImages(pub Vec<Handle<Image>>);
+
+pub fn setup_ui_3d_preview(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    textures: Res<crate::render::textures::GameTextures>,
+) {
+    use bevy::render::render_resource::{Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
+    use bevy::render::camera::RenderTarget;
+    use bevy::render::view::RenderLayers;
+
+    let layer = RenderLayers::layer(1);
+    let mut image_handles = Vec::new();
+
+    for i in 0..9 {
+        let size = Extent3d { width: 128, height: 128, depth_or_array_layers: 1 };
+        let mut image = Image {
+            texture_descriptor: TextureDescriptor {
+                label: Some("UI 3D Preview Render Target"),
+                size,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Bgra8UnormSrgb,
+                mip_level_count: 1,
+                sample_count: 1,
+                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            },
+            ..default()
+        };
+        image.resize(size);
+        let image_handle = images.add(image);
+        image_handles.push(image_handle.clone());
+
+        let offset_x = i as f32 * 10.0;
+
+        // 3D Camera for UI
+        commands.spawn((
+            Camera3dBundle {
+                camera: Camera {
+                    order: -1, // Render before UI
+                    target: RenderTarget::Image(image_handle),
+                    clear_color: ClearColorConfig::Custom(Color::NONE),
+                    ..default()
+                },
+                projection: Projection::Orthographic(OrthographicProjection {
+                    scale: 0.65,
+                    scaling_mode: bevy::render::camera::ScalingMode::FixedVertical(2.5),
+                    ..default()
+                }),
+                transform: Transform::from_xyz(1.8 + offset_x, 1.8, 1.8).looking_at(Vec3::new(0.5 + offset_x, 0.5, 0.5), Vec3::Y),
+                ..default()
+            },
+            layer.clone(),
+        ));
+
+        // Preview Mesh
+        commands.spawn((
+            MaterialMeshBundle {
+                mesh: meshes.add(crate::render::greedy::build_single_voxel_mesh(BlockType::Air)),
+                material: textures.material.clone(),
+                transform: Transform::from_xyz(offset_x, 0.0, 0.0),
+                ..default()
+            },
+            UiPreviewMesh { slot_index: i },
+            layer.clone(),
+        ));
+    }
+
+    // Directional Light
+    commands.spawn((
+        DirectionalLightBundle {
+            directional_light: DirectionalLight {
+                illuminance: 5000.0,
+                shadows_enabled: false,
+                ..default()
+            },
+            transform: Transform::from_xyz(-2.0, 4.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
+            ..default()
+        },
+        layer.clone(),
+    ));
+
+    commands.insert_resource(Ui3dPreviewImages(image_handles));
 }
 
 #[derive(Component)]
@@ -125,8 +203,7 @@ pub struct HotbarSlotUi {
     pub slot_index: usize,
 }
 
-#[derive(Component)]
-pub struct HotbarNameText;
+
 
 #[derive(Component)]
 pub struct HotbarPreviewNode;
@@ -189,12 +266,12 @@ pub fn setup_hotbar_ui(mut commands: Commands) {
                         ..default()
                     }));
 
-                    // 中央方塊代表色塊 / 圖示預覽 (改用 ImageBundle 支援貼圖)
+                    // 中央方塊圖示預覽 (綁定 RTT Image)
                     slot.spawn((
                         ImageBundle {
                             style: Style {
-                                width: Val::Px(24.0),
-                                height: Val::Px(24.0),
+                                width: Val::Px(40.0),
+                                height: Val::Px(40.0),
                                 position_type: PositionType::Absolute,
                                 ..default()
                             },
@@ -202,23 +279,6 @@ pub fn setup_hotbar_ui(mut commands: Commands) {
                             ..default()
                         },
                         HotbarPreviewNode,
-                    ));
-
-                    // 底部名稱文字
-                    slot.spawn((
-                        TextBundle::from_section(
-                            "",
-                            TextStyle {
-                                font_size: 12.0,
-                                color: Color::WHITE,
-                                ..default()
-                            }
-                        ).with_style(Style {
-                            position_type: PositionType::Absolute,
-                            bottom: Val::Px(2.0),
-                            ..default()
-                        }),
-                        HotbarNameText,
                     ));
                 });
             }
@@ -229,65 +289,47 @@ pub fn setup_hotbar_ui(mut commands: Commands) {
 pub fn update_hotbar_ui(
     q_player: Query<&Player, Changed<Player>>, // 僅在 Player 狀態改變時響應
     mut q_slots: Query<(&HotbarSlotUi, &mut BackgroundColor, &mut BorderColor, &mut Style, &Children)>,
-    mut q_text: Query<&mut Text, With<HotbarNameText>>,
     mut q_preview: Query<&mut UiImage, (With<HotbarPreviewNode>, Without<HotbarSlotUi>)>,
-    textures: Option<Res<HotbarTextures>>,
+    preview_imgs: Option<Res<Ui3dPreviewImages>>,
+    mut q_preview_mesh: Query<(&mut Handle<Mesh>, &mut Visibility, &UiPreviewMesh)>,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Ok(player) = q_player.get_single() else { return; };
+
+    // 🚀 動態更新 9 個攝影棚的方塊網格 (套用 VoxelMaterial 壓縮頂點與真實材質)
+    for (mut mesh_handle, mut vis, preview_mesh) in q_preview_mesh.iter_mut() {
+        let block = player.hotbar[preview_mesh.slot_index];
+        if block == BlockType::Air {
+            *vis = Visibility::Hidden; // 空氣直接隱藏網格
+        } else {
+            *vis = Visibility::Inherited;
+            *mesh_handle = meshes.add(crate::render::greedy::build_single_voxel_mesh(block));
+        }
+    }
 
     for (slot, mut bg_color, mut border_color, mut style, children) in q_slots.iter_mut() {
         let is_selected = slot.slot_index == player.selected_slot;
         let block_type = player.hotbar[slot.slot_index];
 
-        // 🚀 動態更新高亮邊框：選中的 Slot 加粗並亮黃色，未選中的保持暗灰色
+        // 🚀 UI 選中框風格修正（絕不重疊灰底）
+        *bg_color = BackgroundColor(Color::srgba(0.1, 0.1, 0.1, 0.5)); // 永遠保持原本的半透明灰
         if is_selected {
             style.border = UiRect::all(Val::Px(3.0));
-            *bg_color = BackgroundColor(Color::srgba(0.3, 0.3, 0.3, 0.8));
             *border_color = BorderColor(Color::srgb(1.0, 0.84, 0.0));
         } else {
             style.border = UiRect::all(Val::Px(1.0));
-            *bg_color = BackgroundColor(Color::srgba(0.1, 0.1, 0.1, 0.5));
             *border_color = BorderColor(Color::srgba(0.3, 0.3, 0.3, 0.5));
         }
 
         // 🚀 同步顯示當前格子的圖示與文字
         for &child in children.iter() {
-            if let Ok(mut text) = q_text.get_mut(child) {
-                if block_type == BlockType::Air {
-                    text.sections[0].value = "".to_string(); // 絕殺 Air 字樣
-                } else {
-                    text.sections[0].value = format!("{:?}", block_type);
-                }
-            }
             if let Ok(mut preview_image) = q_preview.get_mut(child) {
-                match block_type {
-                    BlockType::Air => {
-                        preview_image.texture = Handle::default();
-                        preview_image.color = Color::NONE; // 🚀 空氣完全透明
-                    }
-                    BlockType::Stone => {
-                        if let Some(tex) = &textures {
-                            preview_image.texture = tex.stone.clone();
-                            preview_image.color = Color::WHITE; // 取消色塊遮罩，顯示原圖
-                        } else {
-                            preview_image.texture = Handle::default();
-                            preview_image.color = Color::srgb(0.6, 0.6, 0.6); // 降級水泥灰
-                        }
-                    }
-                    BlockType::Grass => {
-                        if let Some(tex) = &textures {
-                            preview_image.texture = tex.grass.clone();
-                            preview_image.color = Color::WHITE;
-                        } else {
-                            preview_image.texture = Handle::default();
-                            preview_image.color = Color::srgb(0.2, 0.8, 0.2); // 降級鮮草綠
-                        }
-                    }
-                    BlockType::Dirt => {
-                        // Dirt 目前尚無貼圖檔案，維持向量色塊
-                        preview_image.texture = Handle::default();
-                        preview_image.color = Color::srgb(0.54, 0.27, 0.07); // 泥土棕
-                    }
+                if block_type == BlockType::Air {
+                    preview_image.texture = Handle::default();
+                    preview_image.color = Color::NONE; // 空氣完全透明
+                } else if let Some(imgs) = &preview_imgs {
+                    preview_image.texture = imgs.0[slot.slot_index].clone();
+                    preview_image.color = Color::WHITE;
                 }
             }
         }

@@ -6,6 +6,7 @@ use crate::world::{WorldManager, BlockType};
 use crate::utils::math::Aabb;
 use bevy::pbr::{FogSettings, FogFalloff};
 use bevy::color::Mix;
+use bevy::render::view::RenderLayers;
 
 pub struct PlayerPlugin;
 
@@ -127,6 +128,7 @@ fn setup_player(mut commands: Commands, mut q_windows: Query<&mut Window, With<P
                 transform: Transform::from_xyz(0.0, 1.6, 0.0),
                 ..default()
             },
+            RenderLayers::layer(0),
             PlayerCamera,
             FogSettings {
                 color: Color::srgb(0.5, 0.8, 1.0),
