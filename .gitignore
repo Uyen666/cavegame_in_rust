@@ -1,3 +1,5 @@
 /target
 /saves
-/.vscode 
+/.vscode
+*.log
+expanded.rs
