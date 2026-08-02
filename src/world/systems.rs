@@ -13,6 +13,24 @@ use crate::utils::math::CHUNK_SIZE;
 #[derive(Resource)]
 pub struct FluidTickTimer(pub Timer);
 
+pub fn update_day_night_cycle(
+    time: Res<Time>,
+    mut cycle: ResMut<crate::world::DayNightCycle>,
+    mut materials: ResMut<Assets<crate::render::material::VoxelMaterial>>,
+) {
+    cycle.time = (cycle.time + cycle.time_rate * time.delta_seconds()) % 24.0;
+    
+    // Mapping: 6am (0.0) -> 12pm (1.0) -> 18pm (0.0) -> night
+    let phase = (cycle.time - 6.0) / 24.0 * std::f32::consts::TAU;
+    let base_factor = phase.sin();
+    let sky_factor = base_factor.max(0.05); // Slight moonlight ambient
+    cycle.sky_factor = sky_factor;
+
+    for (_, mat) in materials.iter_mut() {
+        mat.env.sky_factor = sky_factor;
+    }
+}
+
 pub fn fluid_tick_system(
     time: Res<Time>,
     mut timer: ResMut<FluidTickTimer>,
@@ -412,8 +430,8 @@ pub fn poll_loading_chunks(
                                 let this_block = world_manager.get_block_global(global_pos);
                                 let n_block   = world_manager.get_block_global(n_global_pos);
 
-                                let light   = world_manager.get_light_global(global_pos);
-                                let n_light = world_manager.get_light_global(n_global_pos);
+                                let light   = world_manager.get_sky_light_global(global_pos);
+                                let n_light = world_manager.get_sky_light_global(n_global_pos);
 
                                 if light > 1 && n_light < light - 1 && n_block == BlockType::Air {
                                     lighting_queue.push_back(global_pos);

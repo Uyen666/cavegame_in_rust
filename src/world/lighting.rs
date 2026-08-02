@@ -14,16 +14,20 @@ pub fn init_sunlight(
             let col_idx = bx + bz * 32;
             let max_surface_y = max_surface_y_map[col_idx];
             
+            let mut is_blocked = false;
+
             for by in (0..32).rev() {
                 let gy = chunk_pos.y * 32 + by as i32;
                 let idx = bx + by * 32 + bz * 1024;
                 let block = blocks.blocks[idx];
 
-                if gy > max_surface_y {
+                if gy > max_surface_y && !is_blocked {
                     if block == BlockType::Air {
                         light_buffer.set_sky_light(idx, 15);
                     } else {
+                        // Encountered foliage or block above max_surface_y, block direct sunlight!
                         light_buffer.set_sky_light(idx, 0);
+                        is_blocked = true;
                     }
                 } else {
                     light_buffer.set_sky_light(idx, 0);
@@ -107,7 +111,7 @@ pub fn propagate_sky_light_global(
     mut queue: VecDeque<bevy::math::IVec3>,
 ) {
     while let Some(pos) = queue.pop_front() {
-        let light = world_manager.get_light_global(pos);
+        let light = world_manager.get_sky_light_global(pos);
         if light <= 1 {
             continue;
         }
@@ -141,9 +145,9 @@ pub fn propagate_sky_light_global(
                     light.saturating_sub(1)
                 };
 
-                let n_light = world_manager.get_light_global(npos);
+                let n_light = world_manager.get_sky_light_global(npos);
                 if n_light < next_light {
-                    world_manager.set_light_global(npos, next_light);
+                    world_manager.set_sky_light_global(npos, next_light);
                     queue.push_back(npos);
                 }
             }
@@ -176,7 +180,7 @@ pub fn remove_sky_light_global(
                 continue;
             }
 
-            let n_light = world_manager.get_light_global(npos);
+            let n_light = world_manager.get_sky_light_global(npos);
             if n_light != 0 {
                 let expected_light = if old_light == 15 && offset == bevy::math::IVec3::new(0, -1, 0) {
                     15
@@ -185,11 +189,85 @@ pub fn remove_sky_light_global(
                 };
 
                 if n_light == expected_light {
-                    world_manager.set_light_global(npos, 0);
+                    world_manager.set_sky_light_global(npos, 0);
                     remove_queue.push_back((npos, n_light));
                 } else if n_light >= expected_light {
                     propagate_queue.push_back(npos);
                 } else {
+                    propagate_queue.push_back(npos);
+                }
+            }
+        }
+    }
+}
+
+pub fn propagate_block_light_global(
+    world_manager: &mut crate::world::WorldManager,
+    mut queue: VecDeque<bevy::math::IVec3>,
+) {
+    while let Some(pos) = queue.pop_front() {
+        let light = world_manager.get_block_light_global(pos);
+        if light <= 1 {
+            continue;
+        }
+
+        let neighbors = [
+            pos + bevy::math::IVec3::X, pos - bevy::math::IVec3::X,
+            pos + bevy::math::IVec3::Y, pos - bevy::math::IVec3::Y,
+            pos + bevy::math::IVec3::Z, pos - bevy::math::IVec3::Z,
+        ];
+
+        for &npos in &neighbors {
+            if npos.y < 0 || npos.y >= crate::utils::math::WORLD_MAX_Y {
+                continue;
+            }
+
+            let n_block = world_manager.get_block_global(npos);
+            if n_block.is_opaque() {
+                continue;
+            }
+
+            let next_light = light.saturating_sub(1);
+            let n_light = world_manager.get_block_light_global(npos);
+            if n_light < next_light {
+                world_manager.set_block_light_global(npos, next_light);
+                queue.push_back(npos);
+            }
+        }
+    }
+}
+
+pub fn remove_block_light_global(
+    world_manager: &mut crate::world::WorldManager,
+    mut remove_queue: std::collections::VecDeque<(bevy::math::IVec3, u8)>,
+    propagate_queue: &mut std::collections::VecDeque<bevy::math::IVec3>,
+) {
+    while let Some((pos, old_light)) = remove_queue.pop_front() {
+        let neighbors = [
+            pos + bevy::math::IVec3::X, pos - bevy::math::IVec3::X,
+            pos + bevy::math::IVec3::Y, pos - bevy::math::IVec3::Y,
+            pos + bevy::math::IVec3::Z, pos - bevy::math::IVec3::Z,
+        ];
+
+        for &npos in &neighbors {
+            if npos.y < 0 || npos.y >= crate::utils::math::WORLD_MAX_Y {
+                continue;
+            }
+
+            let n_block = world_manager.get_block_global(npos);
+            if n_block.is_opaque() {
+                continue;
+            }
+
+            let n_light = world_manager.get_block_light_global(npos);
+            if n_light != 0 {
+                let expected_light = old_light.saturating_sub(1);
+                let emitted = n_block.emitted_light();
+
+                if n_light == expected_light && emitted == 0 {
+                    world_manager.set_block_light_global(npos, 0);
+                    remove_queue.push_back((npos, n_light));
+                } else if n_light >= expected_light {
                     propagate_queue.push_back(npos);
                 }
             }

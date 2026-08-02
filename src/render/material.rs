@@ -7,6 +7,7 @@ use bevy::render::render_resource::{AsBindGroup, ShaderRef, ShaderType};
 pub struct EnvironmentUniform {
     pub is_fluid: u32,
     pub fluid_scroll_speed: f32,
+    pub sky_factor: f32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]

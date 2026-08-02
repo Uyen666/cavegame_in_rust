@@ -55,8 +55,9 @@ fn load_textures(
         env: crate::render::material::EnvironmentUniform {
             is_fluid: 0,
             fluid_scroll_speed: 0.0,
+            sky_factor: 1.0,
         },
-        alpha_mode: AlphaMode::Opaque,
+        alpha_mode: AlphaMode::Mask(0.5),
     });
 
     let fluid_material_handle = materials.add(VoxelMaterial {
@@ -64,6 +65,7 @@ fn load_textures(
         env: crate::render::material::EnvironmentUniform {
             is_fluid: 1,
             fluid_scroll_speed: config.fluid_scroll_speed,
+            sky_factor: 1.0,
         },
         alpha_mode: AlphaMode::Blend,
     });

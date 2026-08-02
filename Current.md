@@ -58,7 +58,7 @@ src/
   * **動態破壞/放置**：系統依賴絕對座標全域查詢 `world.get_block_global`，當玩家在區塊交界處放置或破壞方塊時，透過 6 向邊界偵測自動將相鄰區塊標記為 Dirty，確保跨區塊接縫的 Face Culling 即時無縫重算。
   * **加載期連動 (Race Condition 修正)**：當全新的區塊完成非同步生成並插入 `WorldManager` 的瞬間，主執行緒會立即主動探測 6 個相鄰軸向的舊區塊。若存在則強制將其標記為 `is_dirty = true`，強迫舊區塊重新網格化並剔除過期的邊界殘留牆，達成無瑕疵的地形接縫。
   * **放塊時序跨幀補償 (Spawn Latency Compensation)**：透過 `respawn_later` 剛性回寫機制，完美閃避 Bevy `commands.spawn` 的一幀延遲，達成玩家放置空區塊方塊瞬間 100% 同步烘焙的零延遲體驗。
-* **頂點位元壓縮 (Vertex Bit Packing)**：全面淘汰傳統浮點數頂點屬性，將 `x(6)`、`y(6)`、`z(6)`、`face_id(3)` 與 `tex_layer(11)` 完美壓縮進單一 32-bit 的 `u32` 屬性 `ATTRIBUTE_PACKED_DATA` 中。徹底清除了 Position 與 Color 的內存佔用。
+* **頂點位元極限壓縮 (16-bit XYZ & Dual Light Packing)**：全面淘汰傳統浮點數頂點屬性，將 `xyz` 降維轉換為一維索引 (`x + y*33 + z*1089`) 塞入 16-bit (0~35936)，剩餘位元完美分配給 `face_id(3)`、`tex_layer(4)`、`block_light(4)` 與 `sky_light(4)`。單一 32-bit 的 `u32` 屬性 `ATTRIBUTE_PACKED_DATA` 完美容納幾何、材質與雙軌光照，徹底清除了 Position 與 Color 的內存佔用。
 * **物理與圖形嚴格解耦 (Solid vs Opaque Separation)**：
   * **`is_solid()`** 專司物理碰撞，決定 AABB 幾何障礙物。
   * **`is_opaque()`** 專司貪婪網格 Face Culling。相鄰方塊必須為實心且「完全不透明」（如石頭/泥土），才能剔除當前面。此防線確保了玻璃 (`Glass`) 與樹葉 (`OakLeaves`) 交界處不會產生錯誤的透明破洞。
@@ -112,13 +112,16 @@ src/
 * **O(1) 高度圖快取 (Heightmap Cache)**：為了在未生成的區塊與天空邊界判定陽光遮蔽，系統將 `get_max_surface_y` 的高昂地形噪聲計算全面移交給背景 `AsyncComputeTaskPool` 處理。生成的 2D 高度圖 `max_surface_y_map` 會被 `WorldManager` 進行快取，主執行緒的 `get_light_global` 僅需執行極速的 O(1) 陣列查表。
 * **純空氣區塊光照駐留 (Pure-Air Chunk Light Retention)**：`ChunkLightBuffer` 嚴格綁定於資料層的 `ChunkEntry`，而非 ECS 實體。這意味著就算是一個不包含任何固體的 100% 空氣區塊，依然能夠承載真實的光照漸層衰減（例如陽光從 15 衰減至 12）。此架構完美消滅了邊界交接處的死黑斷層。
 * **渲染管線資料解耦 (Data-Layer Decoupling)**：貪婪網格化 `greedy.rs` 在抓取相鄰區塊的光照資訊時，直接與 `WorldManager` 溝通取得資料層的數據，徹底跳脫對 `Query<&mut Chunk>` 的依賴，大幅提升多執行緒安全度與程式碼的執行效能。
-* **太陽直射不減光鐵律 (Direct Sunlight Vertical Propagation)**：優化了 BFS 光照傳播演算法與動態方塊破壞的初始賦值邏輯。現在光線向正下方（-Y）傳播時若為最高亮度（15），將無條件直接繼承 15；玩家破壞地表方塊時若上方為 15，新空氣格也將立即獲得 15。完美還原了陽光筆直穿透深洞的物理現象。
-
+* **太陽直射阻斷與植被陰影 (Direct Sunlight Blocking & Shadow Casting)**：優化了區塊初始化光照的垂直掃描邏輯。天空光線向正下方（-Y）傳播時，若遭遇樹葉 (`OakLeaves`) 等動態生成的實體方塊，即使高度大於地形基準線 (`max_surface_y`)，也會剛性觸發 `is_blocked` 阻斷。這使得樹冠正下方的空氣格失去 15 級特權，並無縫交由 BFS 演算法從周遭側面吸取光線（如 14、13 級），完美實現 Minecraft 的自然樹影衰減。
+* **動態晝夜交替與雙軌光照連動 (Day-Night Cycle & Dual Lighting)**：實作了全域 `DayNightCycle` 資源，系統會根據 24 小時時鐘動態計算出 0.05~1.0 的 `sky_factor` 並推播至 GPU (`EnvironmentUniform`)。在片元著色器 (Fragment Shader) 中，GPU 即時計算 `max(sky_light * sky_factor, block_light)`，達成晝夜交替時【網格完全不需重新烘焙】，且夜間火把方塊光 100% 恆定高亮！
+* **動態 UI 高亮與非滿版特殊幾何 (UI Rendering & Special Geometries)**：貪婪網格生成解耦了 `is_solid` 與面剔除的依賴，並修復了牆面火把誤判導致的周圍黑框 Bug。為非實心發光體追加了獨立幾何管線，如 `BlockType::Torch` 採用了 GPU 頂點程序化變形 (GPU Morphing)。透過推送方塊基礎整數座標，並由 Shader 中的 `@builtin(vertex_index)` 與 `face_id` 即時解算出 6x6x10 的非滿版長條比例，完美避開浮點數壓縮導致塌陷成細線的問題。同時針對原版 `16x16` 火把貼圖精準映射 UV (U: 0.4375~0.5625, V: 0.375~1.0)，並利用 `flow_vector` 將牆面火把即時傾斜貼壁。火把三角形繞行統一為 CCW 以避免背面剔除，Raycast 判定擴展至 `is_torch()` 以支援準星瞄準與挖除互動。
+* **平滑光照連續性校驗 (Smooth Lighting Gradient Merging)**：在貪婪網格的 `can_merge` 邏輯中，針對發光體注入了針對 `block_lights` 的四角平滑連貫性與雙維度梯度校驗，杜絕了在夜間因天空光無梯度而導致不同火把光強的網格遭粗暴合併的現象，讓火把光能在周圍地形上呈現極致順滑的光照漸層 (Smooth Lighting)。此外，在 UI 物品欄的 `build_single_voxel_mesh` 生成時，強制預先注入滿載的 `block_light(15)` 與基礎原點座標，使得 UI 在夜間不會跟隨環境光降級，並自動套用等比例縮小的特殊幾何，保證絕佳的沉浸式背包介面體驗。
+* **光照即時廣播 (Runtime Lighting Remesh Broadcast)**：`set_block_global` 在執行完 BFS 光照泛洪後，會對所有被波及而標記為 dirty 的區塊統一設置 `is_lighting_ready = true`，確保 `mesh_dirty_chunks` 系統的 3x3 鄰居光照完工鎖不會阻塞這些區塊的即時重烘焙，實現放置/破壞火把時光照零延遲亮起。
 ## 8. 🌫️ 動態環境霧化與視覺包覆 (Dynamic Environment & Fog Alignment)
-* **視線亮度感知與背景同步 (Eye-Light Background Sync)**：遊戲實作了 `update_dynamic_environment` 系統，每幀根據玩家眼部的天空光數據（`eye_light`），動態插值（Lerp）出合適的環境色，並套用於視窗的 `ClearColor`。確保玩家從地表潛入洞穴時，背景顏色能從明亮的天藍色滑順地過渡至帶有微弱環境光 (`min_ambient_light`) 的深灰色，徹底消除畫面突變的生硬感，同時維持洞穴底部的基礎幾何辨識度。
+* **視線亮度感知與晝夜雙層背景同步 (Eye-Light & Day-Night Sky Sync)**：遊戲實作了 `update_dynamic_environment` 系統。白天天空呈現蔚藍色，天黑時則平滑過渡至**深邃夜空藍 (Midnight Blue)**。同時每幀根據玩家眼部的光照數據（`eye_light`），動態插值（Lerp）出合適的環境色，確保玩家從地表潛入洞穴時，背景顏色能從星空或藍天滑順地過渡至帶有微弱環境光的深灰色，徹底消除畫面突變的生硬感。
 * **相機遠剪裁面動態對齊與原生迷霧阻斷 (Far Clip Alignment & Fog Falloff)**：將相機的 `far` 剪裁面與渲染視距 (`render_distance`) 動態剛性鎖死為 `max_distance + 64.0`，賦予幾何體充裕的深層演算空間。同時結合 Bevy 原生的 `FogSettings` 實施黃金比例漸變：在 `max_distance * 0.75` 處柔和起霧，並在 `max_distance - 8.0` 處完全阻斷。這將地圖加載邊界完美遮蔽，達成了無瑕疵的超遠景深包覆。
 * **著色器端貪婪矩形幾何微外推 (Quad Edge Padding in Shader)**：廢棄了傳統消耗龐大算力的 CPU 端「頂點焊接」與錯誤的「法線外推」機制。在 GPU 的 `voxel.wgsl` 頂點著色器中，利用 `@builtin(vertex_index)` 計算出該頂點於 Greedy Quad 中的 2D 角落象限（如 BL, BR, TR, TL），並根據其所屬面 (`face_id`) 的切線 (Tangent) 與副切線 (Bitangent) 軸向，將網格邊緣向平面外側精準擴張 `0.0005` 格。此舉在物理底層促使相鄰的面片產生微觀交織重疊，以零效能折損的代價徹底絕殺了 T-Junction 所引發的靜態藍點縫隙與漏光破綻。
-* **自定義屬性佈局與不透明防線 (Strict Attribute Layout & Alpha Lock)**：採用客製化 VoxelMaterial 管線，將頂點屬性極限壓縮至 `@location(0) packed_data` 與 `@location(1) flow_vector` 雙插槽，徹底剔除了非法 Built-in 對屬性佈局的記憶體錯位污染。同時於 Fragment Shader 中將固體方塊的 Alpha 通道剛性鎖死為 `1.0`，斷絕圖集透明像素引發的地形透明化災難，確保世界實心無破綻。
+* **自定義屬性佈局與智能透明裁切 (Strict Attribute Layout & Alpha Masking)**：採用客製化 VoxelMaterial 管線，將頂點屬性極限壓縮至 `@location(0) packed_data` 與 `@location(1) flow_vector` 雙插槽。固體方塊的渲染模式啟用了 `AlphaMode::Mask(0.5)`，這不僅維持了貪婪網格的高效深度剔除，還允許玻璃 (`Glass`) 等自帶透明孔洞的方塊展現出完美的穿透感。並且在 Shader 中對特定紋理（如 Grass、OakLeaves）即時施加物理的自然綠色渲染 (Foliage Tint)，並對玻璃施加微量淡藍高光，極大豐富了生態與建材視覺。
 
 ## 9. 🌊 動態流體物理與渲染系統 (Dynamic Fluid Physics & Rendering)
 * **雙軌道貪婪網格化 (Dual-Pass Meshing)**：徹底重構了 `generate_greedy_mesh`，現在它會同步輸出固體網格與流體網格（`solid_vertices`, `fluid_vertices`）。流體網格完全繞過傳統的貪婪合併，改為**逐體素生成 (Per-Voxel Generation)**，賦予每一個水面獨立的頂點控制權。

@@ -26,11 +26,30 @@ impl generator::NoiseModule for TerrainNoise {
         self.0.get([x, y, z]) as f32
     }
 }
+
+#[derive(Resource)]
+pub struct DayNightCycle {
+    pub time: f32, // 0.0 to 24.0
+    pub time_rate: f32, // hours per real second
+    pub sky_factor: f32,
+}
+
+impl Default for DayNightCycle {
+    fn default() -> Self {
+        Self {
+            time: 12.0, // Start at noon
+            time_rate: 0.1, // 0.1 in-game hour per real second
+            sky_factor: 1.0,
+        }
+    }
+}
+
 pub struct WorldPlugin;
 
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WorldManager>()
+            .init_resource::<DayNightCycle>()
             .insert_resource(systems::FluidTickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
             .add_systems(Startup, systems::setup_world)
             .add_systems(
@@ -39,6 +58,7 @@ impl Plugin for WorldPlugin {
                     systems::update_chunks,
                     systems::poll_loading_chunks,
                     systems::fluid_tick_system,
+                    systems::update_day_night_cycle,
                 ).run_if(in_state(crate::GameState::InGame))
             );
     }
@@ -194,7 +214,7 @@ impl WorldManager {
         self.get_block_global(pos)
     }
 
-    pub fn get_light_global(&self, pos: IVec3) -> u8 {
+    pub fn get_sky_light_global(&self, pos: IVec3) -> u8 {
         if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y {
             return 15; // Above world = full sky
         }
@@ -219,12 +239,50 @@ impl WorldManager {
         0
     }
 
-    pub fn set_light_global(&mut self, pos: IVec3, light: u8) {
+    pub fn get_block_light_global(&self, pos: IVec3) -> u8 {
+        if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y { return 0; }
+        let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
+        if let Some(entry) = self.chunks.get(&chunk_pos) {
+            let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
+            return entry.light_buffer.get_block_light(idx);
+        }
+        0
+    }
+
+    pub fn set_sky_light_global(&mut self, pos: IVec3, light: u8) {
         if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y { return; }
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
         if let Some(entry) = self.chunks.get_mut(&chunk_pos) {
             let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
             entry.light_buffer.set_sky_light(idx, light);
+            self.dirty_chunks_for_meshing.insert(chunk_pos);
+        }
+
+        let boundary_neighbors: &[(i32, IVec3)] = &[
+            (local.x,          IVec3::new(-1,  0,  0)),
+            (crate::utils::math::CHUNK_SIZE - 1 - local.x, IVec3::new( 1,  0,  0)),
+            (local.y,          IVec3::new( 0, -1,  0)),
+            (crate::utils::math::CHUNK_SIZE - 1 - local.y, IVec3::new( 0,  1,  0)),
+            (local.z,          IVec3::new( 0,  0, -1)),
+            (crate::utils::math::CHUNK_SIZE - 1 - local.z, IVec3::new( 0,  0,  1)),
+        ];
+
+        for &(dist_to_edge, offset) in boundary_neighbors {
+            if dist_to_edge == 0 {
+                let neighbor_chunk_pos = chunk_pos + offset;
+                if self.chunks.contains_key(&neighbor_chunk_pos) {
+                    self.dirty_chunks_for_meshing.insert(neighbor_chunk_pos);
+                }
+            }
+        }
+    }
+
+    pub fn set_block_light_global(&mut self, pos: IVec3, light: u8) {
+        if pos.y < 0 || pos.y >= crate::utils::math::WORLD_MAX_Y { return; }
+        let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
+        if let Some(entry) = self.chunks.get_mut(&chunk_pos) {
+            let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
+            entry.light_buffer.set_block_light(idx, light);
             self.dirty_chunks_for_meshing.insert(chunk_pos);
         }
 
@@ -343,65 +401,92 @@ impl WorldManager {
 
         // 5. Light update hook (Runtime block destruction)
         if block == BlockType::Air {
-            let max_surface_y = match self.world_type {
-                WorldType::Flat => 4,
-                WorldType::PerlinHills => {
-                    let fbm = Fbm::<Perlin>::new(self.seed);
-                    let noise = TerrainNoise(fbm);
-                    let generator = generator::TerrainGenerator { noise_provider: noise };
-                    generator.get_max_surface_y(pos.x, pos.z)
-                },
-                WorldType::FloatingIslands => -1,
-            };
-
-            let mut start_light = 0;
-            if pos.y > max_surface_y {
-                start_light = 15;
+            let top_light = self.get_sky_light_global(pos + IVec3::Y);
+            if top_light == 15 {
+                self.set_sky_light_global(pos, 15);
+                self.dirty_chunks_for_meshing.insert(chunk_pos);
+                
+                let mut sky_prop_queue = std::collections::VecDeque::new();
+                sky_prop_queue.push_back(pos);
+                crate::world::lighting::propagate_sky_light_global(self, sky_prop_queue);
             } else {
-                let top_light = self.get_light_global(pos + IVec3::Y);
-                if top_light == 15 {
-                    start_light = 15;
-                } else {
-                    let neighbors = [
-                        pos + IVec3::X, pos - IVec3::X,
-                        pos + IVec3::Y, pos - IVec3::Y,
-                        pos + IVec3::Z, pos - IVec3::Z,
-                    ];
-                    let mut max_adj = 0;
-                    for &npos in &neighbors {
-                        let l = self.get_light_global(npos);
-                        if l > max_adj { max_adj = l; }
+                let mut sky_prop_queue = std::collections::VecDeque::new();
+                let neighbors = [
+                    pos + IVec3::X, pos - IVec3::X,
+                    pos + IVec3::Y, pos - IVec3::Y,
+                    pos + IVec3::Z, pos - IVec3::Z,
+                ];
+                let mut max_neighbor_light = 0;
+                for &npos in &neighbors {
+                    let l = self.get_sky_light_global(npos);
+                    if l > max_neighbor_light {
+                        max_neighbor_light = l;
                     }
-                    if max_adj > 0 {
-                        start_light = max_adj - 1;
-                    }
+                }
+                if max_neighbor_light > 1 {
+                    self.set_sky_light_global(pos, max_neighbor_light - 1);
+                    sky_prop_queue.push_back(pos);
+                    crate::world::lighting::propagate_sky_light_global(self, sky_prop_queue);
                 }
             }
 
-            self.set_light_global(pos, start_light);
-            let mut queue = std::collections::VecDeque::new();
-            queue.push_back(pos);
-            crate::world::lighting::propagate_sky_light_global(self, queue);
+            // 方塊光蔓延
+            let mut block_prop_queue = std::collections::VecDeque::new();
+            let neighbors = [
+                pos + IVec3::X, pos - IVec3::X,
+                pos + IVec3::Y, pos - IVec3::Y,
+                pos + IVec3::Z, pos - IVec3::Z,
+            ];
+            let mut max_neighbor_block_light = 0;
+            for &npos in &neighbors {
+                let l = self.get_block_light_global(npos);
+                if l > max_neighbor_block_light {
+                    max_neighbor_block_light = l;
+                }
+            }
+            if max_neighbor_block_light > 1 {
+                self.set_block_light_global(pos, max_neighbor_block_light - 1);
+                block_prop_queue.push_back(pos);
+                crate::world::lighting::propagate_block_light_global(self, block_prop_queue);
+            }
         } else {
             // 🚀 正統光照阻斷泛洪更新 (Light Removal BFS)
-            let old_light = self.get_light_global(pos);
-            if old_light > 0 {
-                self.set_light_global(pos, 0);
-                let mut remove_queue = std::collections::VecDeque::new();
-                remove_queue.push_back((pos, old_light));
-                let mut propagate_queue = std::collections::VecDeque::new();
-                
-                // 1. 消除被阻斷的光源
-                crate::world::lighting::remove_sky_light_global(self, remove_queue, &mut propagate_queue);
-                
-                // 2. 從周圍未受影響的亮處重新蔓延光照
-                crate::world::lighting::propagate_sky_light_global(self, propagate_queue);
+            let old_sky_light = self.get_sky_light_global(pos);
+            if old_sky_light > 0 {
+                self.set_sky_light_global(pos, 0);
+                let mut sky_remove_queue = std::collections::VecDeque::new();
+                let mut sky_prop_queue = std::collections::VecDeque::new();
+                sky_remove_queue.push_back((pos, old_sky_light));
+                crate::world::lighting::remove_sky_light_global(self, sky_remove_queue, &mut sky_prop_queue);
+                crate::world::lighting::propagate_sky_light_global(self, sky_prop_queue);
+            }
+
+            let old_block_light = self.get_block_light_global(pos);
+            if old_block_light > 0 {
+                self.set_block_light_global(pos, 0);
+                let mut block_remove_queue = std::collections::VecDeque::new();
+                let mut block_prop_queue = std::collections::VecDeque::new();
+                block_remove_queue.push_back((pos, old_block_light));
+                crate::world::lighting::remove_block_light_global(self, block_remove_queue, &mut block_prop_queue);
+                crate::world::lighting::propagate_block_light_global(self, block_prop_queue);
+            }
+
+            // 如果新放的是發光方塊 (例如 Torch)
+            let emitted = block.emitted_light();
+            if emitted > 0 {
+                self.set_block_light_global(pos, emitted);
+                let mut block_prop_queue = std::collections::VecDeque::new();
+                block_prop_queue.push_back(pos);
+                crate::world::lighting::propagate_block_light_global(self, block_prop_queue);
             }
         }
 
-        // 🚀 資料層鐵血解鎖：動態放置/破壞方塊後，無條件解鎖光照狀態
-        if let Some(entry) = self.chunks.get_mut(&chunk_pos) {
-            entry.is_lighting_ready = true;
+        // 🚀 資料層鐵血解鎖：所有受光照影響的區塊，無條件解鎖光照狀態
+        let dirty_snapshot: Vec<IVec3> = self.dirty_chunks_for_meshing.iter().copied().collect();
+        for &dirty_cp in &dirty_snapshot {
+            if let Some(entry) = self.chunks.get_mut(&dirty_cp) {
+                entry.is_lighting_ready = true;
+            }
         }
     }
 

@@ -20,6 +20,7 @@ pub const TEXTURES: &[&str] = &[
     "coal_ore",          // 10
     "iron_ore",          // 11
     "glass",             // 12
+    "torch",             // 13
 ];
 
 

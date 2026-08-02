@@ -124,6 +124,7 @@ fn update_debug_text(
     q_player: Query<(&Transform, &Player)>,
     q_camera: Query<&GlobalTransform, With<crate::player::PlayerCamera>>,
     world_manager: Res<WorldManager>,
+    cycle: Res<crate::world::DayNightCycle>,
     mut timer: ResMut<DebugUpdateTimer>,
     time: Res<Time>,
     mut fps_cache: Local<String>,
@@ -162,8 +163,14 @@ fn update_debug_text(
     let foot_pos = IVec3::new(x.floor() as i32, y.floor() as i32, z.floor() as i32);
     let eye_pos = foot_pos + IVec3::Y;
 
-    let foot_light = world_manager.get_light_global(foot_pos);
-    let eye_light = world_manager.get_light_global(eye_pos);
+    let foot_sky = world_manager.get_sky_light_global(foot_pos);
+    let foot_block = world_manager.get_block_light_global(foot_pos);
+    let eye_sky = world_manager.get_sky_light_global(eye_pos);
+    let eye_block = world_manager.get_block_light_global(eye_pos);
+
+    // Dynamic sky factor
+    let foot_eff = (foot_sky as f32 * cycle.sky_factor).max(foot_block as f32);
+    let eye_eff = (eye_sky as f32 * cycle.sky_factor).max(eye_block as f32);
 
     let pos_ivec = foot_pos;
     let (chunk_pos, local_pos) = WorldManager::global_to_chunk_pos(pos_ivec);
@@ -189,15 +196,17 @@ fn update_debug_text(
                 let block = world_manager.get_block_global(current_ivec);
                 if block != crate::world::BlockType::Air {
                     // 撞擊到固體！
-                    let target_light = world_manager.get_light_global(prev_ivec);
+                    let target_sky = world_manager.get_sky_light_global(prev_ivec);
+                    let target_block = world_manager.get_block_light_global(prev_ivec);
+                    let target_eff = (target_sky as f32 * cycle.sky_factor).max(target_block as f32);
                     let raw_target_fluid = world_manager.get_fluid_global(prev_ivec);
                     let target_fluid_level = raw_target_fluid & 0x0F;
                     targeted_text = format!(
                         "Targeted Block: {}, {}, {}\n\
-                         Targeted Light: {} (sky: {}, block: 0)\n\
+                         Targeted Light: {:.1} (sky: {}, block: {})\n\
                          Targeted Fluid Level: {}",
                         current_ivec.x, current_ivec.y, current_ivec.z,
-                        target_light, target_light,
+                        target_eff, target_sky, target_block,
                         target_fluid_level
                     );
                     break;
@@ -212,16 +221,16 @@ fn update_debug_text(
          {}\n\
          Pos: X: {:.2}, Y: {:.2}, Z: {:.2}\n\
          Chunk: CX: {}, CY: {}, CZ: {} [bx: {}, by: {}, bz: {}]\n\
-         Client Light: Eye: {} (sky: {}, block: 0)\n\
-                       Foot: {} (sky: {}, block: 0)\n\
+         Client Light: Eye: {:.1} (sky: {}, block: {})\n\
+                       Foot: {:.1} (sky: {}, block: {})\n\
          {}\n\
          Holding: {}\n\
          Loaded Chunks: [E: {} / D: {}]",
         *fps_cache,
         x, y, z,
         chunk_pos.x, chunk_pos.y, chunk_pos.z, local_pos.x, local_pos.y, local_pos.z,
-        eye_light, eye_light,
-        foot_light, foot_light,
+        eye_eff, eye_sky, eye_block,
+        foot_eff, foot_sky, foot_block,
         targeted_text,
         held_block,
         loaded_entity_chunks, loaded_data_chunks

@@ -41,6 +41,7 @@ fn get_texture_layer(block: BlockType, d: usize, normal: i32) -> u32 {
         BlockType::CoalOre   => 10,
         BlockType::IronOre   => 11,
         BlockType::Glass     => 12,
+        BlockType::Torch | BlockType::TorchWallN | BlockType::TorchWallS | BlockType::TorchWallE | BlockType::TorchWallW => 13,
         _ => 0,
     }
 }
@@ -58,6 +59,7 @@ struct FaceInfo {
     normal:    i32,
     tex_layer: u32,
     sky_lights: [u8; 4],
+    block_lights: [u8; 4],
     y_offset_down: u8,
 }
 
@@ -105,7 +107,8 @@ fn push_quad(
     _color:     [f32; 4],
     tex_layer:  u32,
     sky_lights: [u8; 4],
-    y_offset_down: u8,
+    block_lights:[u8; 4],
+    _y_offset_down: u8,
     _quad_w:    i32,
     _quad_h:    i32,
     rev:        bool,
@@ -122,13 +125,11 @@ fn push_quad(
         let z = v[2] as u32;
         let sky_light = sky_lights[i];
 
-        let packed: u32 = (x & 0x3F) 
-                        | ((y & 0x3F) << 6) 
-                        | ((z & 0x3F) << 12) 
-                        | ((face_id as u32 & 0x07) << 18) 
-                        | ((tex_layer & 0x0F) << 21) 
-                        | (((y_offset_down as u32) & 0x07) << 25)
-                        | (((sky_light as u32) & 0x0F) << 28);
+        let packed: u32 = ((x & 0x3F) + (y & 0x3F) * 33 + (z & 0x3F) * 1089)
+                        | ((face_id as u32 & 0x07) << 16)
+                        | ((tex_layer & 0x0F) << 19)
+                        | ((block_lights[i] as u32 & 0x0F) << 24)
+                        | ((sky_light as u32 & 0x0F) << 28);
                         
         bucket.0.push(packed);
         // 【角落展開方向】：讓 Shader 能沿切線/副切線方向外擴面片邊緣，堵死 T-Junction
@@ -196,9 +197,9 @@ impl ChunkMeshInputData {
         }
     }
 
-    pub fn get_light_global(&self, gp: IVec3) -> u8 {
+    pub fn get_light_global(&self, gp: IVec3) -> (u8, u8) {
         if self.get_block_global(gp) != crate::world::voxel::BlockType::Air {
-            return 0; // 🚀 固體方塊光照剛性歸零律
+            return (0, 0); // 🚀 固體方塊光照剛性歸零律
         }
 
         let (cp, lp) = crate::world::WorldManager::global_to_chunk_pos(gp);
@@ -209,12 +210,12 @@ impl ChunkMeshInputData {
             let lz = (gp.z - (self.chunk_pos.z * 32)).clamp(-1, 32);
             let h_idx = ((lz + 1) * 34 + (lx + 1)) as usize;
             let surface_y = self.surface_heights.as_ref().unwrap()[h_idx];
-            return if gp.y >= surface_y { 15 } else { 0 };
+            return if gp.y >= surface_y { (15, 0) } else { (0, 0) };
         }
         let idx = ((diff.x + 1) * 9 + (diff.y + 1) * 3 + (diff.z + 1)) as usize;
         if let Some(buf) = &self.lights[idx] {
             let i = crate::utils::math::voxel_pos_to_index(lp.x as usize, lp.y as usize, lp.z as usize);
-            buf.get_sky_light(i)
+            (buf.get_sky_light(i), buf.get_block_light(i))
         } else {
             // 🚀 工業級 O(1) 查表：零代價完美預判邊界光照
             let lx = (gp.x - (self.chunk_pos.x * 32)).clamp(-1, 32);
@@ -222,9 +223,9 @@ impl ChunkMeshInputData {
             let h_idx = ((lz + 1) * 34 + (lx + 1)) as usize;
             let surface_y = self.surface_heights.as_ref().unwrap()[h_idx];
             if gp.y >= surface_y {
-                15 // 高於數學地表，絕對是開闊天空，賞它滿格陽光！
+                (15, 0) // 高於數學地表，絕對是開闊天空，賞它滿格陽光！
             } else {
-                0  // 低於數學地表，絕對埋在未來的山體內部，剛性鎖死全黑！
+                (0, 0)  // 低於數學地表，絕對埋在未來的山體內部，剛性鎖死全黑！
             }
         }
     }
@@ -574,10 +575,8 @@ fn generate_greedy_mesh(
                     let b1 = world.get_block_global(gp1);
 
                     let (gp_air, block, normal) = {
-                        // 當前格是否渲染面，取決於自己是實心，且鄰居方塊為非實心或【非不透明】（比如玻璃、樹葉）
-                        // 且避免玻璃與玻璃自己內部畫牆壁
-                        let b0_draws_towards_b1 = b0.is_solid() && (!b1.is_solid() || !b1.is_opaque()) && !(b0 == b1 && !b0.is_opaque());
-                        let b1_draws_towards_b0 = b1.is_solid() && (!b0.is_solid() || !b0.is_opaque()) && !(b0 == b1 && !b0.is_opaque());
+                        let b0_draws_towards_b1 = (b0 != BlockType::Air && !b0.is_torch()) && (b1 == BlockType::Air || b1.is_torch() || !b1.is_opaque()) && !(b0 == b1 && !b0.is_opaque());
+                        let b1_draws_towards_b0 = (b1 != BlockType::Air && !b1.is_torch()) && (b0 == BlockType::Air || b0.is_torch() || !b0.is_opaque()) && !(b0 == b1 && !b0.is_opaque());
 
                         if b0_draws_towards_b1 && slice >= 0 {
                             (gp1, b0, 1)
@@ -590,29 +589,34 @@ fn generate_greedy_mesh(
 
                     if block != BlockType::Air {
                         let tex_layer = get_texture_layer(block, d, normal);
-                        let sky_lights = if is_smooth_lighting {
-                            let get_smooth_light = |cu: i32, cv: i32| -> u8 {
-                                let mut sum = 0;
+                        let (sky_lights, block_lights) = if is_smooth_lighting {
+                            let get_smooth_light = |cu: i32, cv: i32| -> (u8, u8) {
+                                let mut s_sum = 0;
+                                let mut b_sum = 0;
                                 for du in (cu - 1)..=cu {
                                     for dv in (cv - 1)..=cv {
                                         let mut offset = [0i32; 3];
                                         offset[u] = du;
                                         offset[v] = dv;
                                         let sample_p = gp_air + IVec3::new(offset[0], offset[1], offset[2]);
-                                        sum += world.get_light_global(sample_p) as u32;
+                                        let (sl, bl) = world.get_light_global(sample_p);
+                                        s_sum += sl as u32;
+                                        b_sum += bl as u32;
                                     }
                                 }
-                                (sum / 4) as u8
+                                ((s_sum / 4) as u8, (b_sum / 4) as u8)
                             };
-                            [
-                                get_smooth_light(0, 0),
-                                get_smooth_light(1, 0),
-                                get_smooth_light(1, 1),
-                                get_smooth_light(0, 1),
-                            ]
+                            let l00 = get_smooth_light(0, 0);
+                            let l10 = get_smooth_light(1, 0);
+                            let l11 = get_smooth_light(1, 1);
+                            let l01 = get_smooth_light(0, 1);
+                            (
+                                [l00.0, l10.0, l11.0, l01.0],
+                                [l00.1, l10.1, l11.1, l01.1]
+                            )
                         } else {
                             let l = world.get_light_global(gp_air);
-                            [l, l, l, l]
+                            ([l.0, l.0, l.0, l.0], [l.1, l.1, l.1, l.1])
                         };
 
                         mask[n] = Some(FaceInfo {
@@ -620,6 +624,7 @@ fn generate_greedy_mesh(
                             normal,
                             tex_layer,
                             sky_lights,
+                            block_lights,
                             y_offset_down: 0,
                         });
                     } else {
@@ -638,15 +643,20 @@ fn generate_greedy_mesh(
                         let mut w = 1i32;
                         let dt_u = face.sky_lights[1] as i32 - face.sky_lights[0] as i32;
                         let db_u = face.sky_lights[2] as i32 - face.sky_lights[3] as i32;
+                        let dt_u_b = face.block_lights[1] as i32 - face.block_lights[0] as i32;
+                        let db_u_b = face.block_lights[2] as i32 - face.block_lights[3] as i32;
 
                         while i + w < CHUNK_SIZE {
                             if let Some(next) = mask[n + w as usize] {
                                 let can_merge = if is_smooth_lighting {
                                     let basic = next.block == face.block && next.normal == face.normal && next.tex_layer == face.tex_layer;
                                     let prev = mask[n + (w - 1) as usize].unwrap();
-                                    let conn = next.sky_lights[0] == prev.sky_lights[1] && next.sky_lights[3] == prev.sky_lights[2];
+                                    let conn = next.sky_lights[0] == prev.sky_lights[1] && next.sky_lights[3] == prev.sky_lights[2] &&
+                                               next.block_lights[0] == prev.block_lights[1] && next.block_lights[3] == prev.block_lights[2];
                                     let grad = (next.sky_lights[1] as i32 - next.sky_lights[0] as i32) == dt_u &&
-                                               (next.sky_lights[2] as i32 - next.sky_lights[3] as i32) == db_u;
+                                               (next.sky_lights[2] as i32 - next.sky_lights[3] as i32) == db_u &&
+                                               (next.block_lights[1] as i32 - next.block_lights[0] as i32) == dt_u_b &&
+                                               (next.block_lights[2] as i32 - next.block_lights[3] as i32) == db_u_b;
                                     basic && conn && grad
                                 } else {
                                     next == face
@@ -718,6 +728,17 @@ fn generate_greedy_mesh(
                         } else {
                             face.sky_lights
                         };
+                        
+                        let merged_block_lights = if is_smooth_lighting {
+                            [
+                                mask[n].unwrap().block_lights[0],
+                                mask[n + (w - 1) as usize].unwrap().block_lights[1],
+                                mask[n + ((h - 1) * CHUNK_SIZE + w - 1) as usize].unwrap().block_lights[2],
+                                mask[n + ((h - 1) * CHUNK_SIZE) as usize].unwrap().block_lights[3],
+                            ]
+                        } else {
+                            face.block_lights
+                        };
 
                         push_quad(
                             out,
@@ -726,6 +747,7 @@ fn generate_greedy_mesh(
                             [1.0, 1.0, 1.0, 1.0],
                             face.tex_layer,
                             merged_sky_lights,
+                            merged_block_lights,
                             face.y_offset_down,
                             w, h,
                             rev,
@@ -744,6 +766,19 @@ fn generate_greedy_mesh(
                         i += 1;
                         n += 1;
                     }
+                }
+            }
+        }
+    }
+
+    // 🚀 生成火把的獨立幾何體 (Slim Torch Model)
+    for z in 0..32 {
+        for y in 0..32 {
+            for x in 0..32 {
+                let gp = chunk_pos * 32 + IVec3::new(x, y, z);
+                let block = world.get_block_global(gp);
+                if block.is_torch() {
+                    push_torch_quads(out, world, gp, x, y, z, block);
                 }
             }
         }
@@ -796,7 +831,7 @@ fn push_fluid_quad(
             for dy in dy_min..=dy_max {
                 for dz in dz_min..=dz_max {
                     let sample_gp = base_gp + IVec3::new(vx + dx, vy + dy, vz + dz);
-                    light_sum += world.get_light_global(sample_gp) as u32;
+                    light_sum += world.get_light_global(sample_gp).0 as u32;
                 }
             }
         }
@@ -1031,6 +1066,11 @@ pub fn build_single_voxel_mesh(block: BlockType) -> Mesh {
         return Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     }
 
+    let is_torch = block.is_torch();
+    let (min_x, max_x) = (0.0, 1.0);
+    let (min_y, max_y) = (0.0, 1.0);
+    let (min_z, max_z) = (0.0, 1.0);
+
     for d in 0..3 {
         for rev in [false, true] {
             let normal_val = if rev { -1 } else { 1 };
@@ -1043,42 +1083,42 @@ pub fn build_single_voxel_mesh(block: BlockType) -> Mesh {
             
             let tex_layer = get_texture_layer(block, d, normal_val);
             let sky_lights = [15, 15, 15, 15];
+            let block_lights = [15, 15, 15, 15]; // UI full bright
             
-            let w = if rev { 0.0 } else { 1.0 };
-            
-            let (v1, v2, v3, v4) = match d {
-                0 => (
-                    [w, 0.0, 0.0],
-                    [w, 1.0, 0.0],
-                    [w, 1.0, 1.0],
-                    [w, 0.0, 1.0],
-                ),
-                1 => (
-                    [0.0, w, 0.0],
-                    [0.0, w, 1.0],
-                    [1.0, w, 1.0],
-                    [1.0, w, 0.0],
-                ),
-                2 => (
-                    [0.0, 0.0, w],
-                    [1.0, 0.0, w],
-                    [1.0, 1.0, w],
-                    [0.0, 1.0, w],
-                ),
+            let (v1, v2, v3, v4) = match (d, rev) {
+                (0, false) => ([max_x, min_y, max_z], [max_x, max_y, max_z], [max_x, max_y, min_z], [max_x, min_y, min_z]),
+                (0, true)  => ([min_x, min_y, min_z], [min_x, max_y, min_z], [min_x, max_y, max_z], [min_x, min_y, max_z]),
+                (1, false) => ([min_x, max_y, min_z], [min_x, max_y, max_z], [max_x, max_y, max_z], [max_x, max_y, min_z]),
+                (1, true)  => ([min_x, min_y, max_z], [min_x, min_y, min_z], [max_x, min_y, min_z], [max_x, min_y, max_z]),
+                (2, false) => ([min_x, min_y, max_z], [max_x, min_y, max_z], [max_x, max_y, max_z], [min_x, max_y, max_z]),
+                (2, true)  => ([max_x, min_y, min_z], [min_x, min_y, min_z], [min_x, max_y, min_z], [max_x, max_y, min_z]),
                 _ => unreachable!(),
             };
 
+            let start_len = bucket.2.len();
+            let (fv1, fv2, fv3, fv4, f_rev) = if is_torch {
+                let base = [0.0f32, 0.0, 0.0];
+                (base, base, base, base, false)
+            } else {
+                (v1, v2, v3, v4, rev)
+            };
             push_quad(
                 &mut bucket,
-                v1, v2, v3, v4,
+                fv1, fv2, fv3, fv4,
                 normal_vec,
                 [1.0, 1.0, 1.0, 1.0],
                 tex_layer,
                 sky_lights,
+                block_lights,
                 0,
                 1, 1,
-                rev, d
+                f_rev, d
             );
+            if is_torch {
+                for i in start_len..bucket.2.len() {
+                    bucket.2[i] = [0.0, 0.0];
+                }
+            }
         }
     }
     
@@ -1087,9 +1127,74 @@ pub fn build_single_voxel_mesh(block: BlockType) -> Mesh {
     for _ in 0..bucket.0.len() {
         positions.push([0.0, 0.0, 0.0]); // dummy positions for AABB
     }
+
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(ATTRIBUTE_PACKED_DATA, bucket.0);
     mesh.insert_attribute(ATTRIBUTE_FLOW_VECTOR, bucket.2);
     mesh.insert_indices(Indices::U32(bucket.1));
     mesh
+}
+
+pub fn push_torch_quads(
+    out: &mut MeshData,
+    world: &ChunkMeshInputData,
+    gp: IVec3,
+    x: i32,
+    y: i32,
+    z: i32,
+    torch_type: BlockType,
+) {
+    let block = BlockType::Torch; // always use Torch texture
+    
+    let b_lights = world.get_light_global(gp);
+    let sl = b_lights.0;
+    let bl = b_lights.1;
+    let sky_lights = [sl, sl, sl, sl];
+    let block_lights = [bl, bl, bl, bl];
+
+    let w0 = 0.0;
+    let w1 = 1.0;
+    let h0 = 0.0;
+    let h1 = 1.0;
+
+    let faces = [
+        (0, false, [w1, h0, w1], [w1, h1, w1], [w1, h1, w0], [w1, h0, w0], [1.0, 0.0, 0.0]),
+        (0, true,  [w0, h0, w0], [w0, h1, w0], [w0, h1, w1], [w0, h0, w1], [-1.0, 0.0, 0.0]),
+        (1, false, [w0, h1, w0], [w0, h1, w1], [w1, h1, w1], [w1, h1, w0], [0.0, 1.0, 0.0]),
+        (1, true,  [w0, h0, w1], [w0, h0, w0], [w1, h0, w0], [w1, h0, w1], [0.0, -1.0, 0.0]),
+        (2, false, [w0, h0, w1], [w1, h0, w1], [w1, h1, w1], [w0, h1, w1], [0.0, 0.0, 1.0]),
+        (2, true,  [w1, h0, w0], [w0, h0, w0], [w0, h1, w0], [w1, h1, w0], [0.0, 0.0, -1.0]),
+    ];
+
+    let flow = match torch_type {
+        BlockType::TorchWallN => [0.0, -1.0], // attached to North wall, torch sticks out South? Let's use flow as the direction of the wall.
+        BlockType::TorchWallS => [0.0, 1.0],
+        BlockType::TorchWallE => [1.0, 0.0],
+        BlockType::TorchWallW => [-1.0, 0.0],
+        _ => [0.0, 0.0],
+    };
+
+    for (d, rev, _v1, _v2, _v3, _v4, n_vec) in faces {
+        let normal_val = if rev { -1 } else { 1 };
+        let tex_layer = get_texture_layer(block, d as usize, normal_val);
+        
+        let v_base = [x as f32, y as f32, z as f32];
+
+        let start_len = out.2.len();
+        push_quad(
+            out,
+            v_base, v_base, v_base, v_base,
+            n_vec,
+            [1.0, 1.0, 1.0, 1.0],
+            tex_layer,
+            sky_lights,
+            block_lights,
+            0,
+            1, 1,
+            false, d as usize
+        );
+        for i in start_len..out.2.len() {
+            out.2[i] = flow;
+        }
+    }
 }

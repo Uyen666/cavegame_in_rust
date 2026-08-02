@@ -113,7 +113,7 @@ fn setup_player(mut commands: Commands, mut q_windows: Query<&mut Window, With<P
                 BlockType::Sand,
                 BlockType::Glass,
                 BlockType::IronOre,
-                BlockType::CoalOre,
+                BlockType::Torch,
             ],
             selected_slot: 0,
             has_spawned: false,
@@ -542,7 +542,7 @@ fn player_interaction(
             let block_pos = IVec3::new(pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
 
             let block = world.get_block_global(block_pos);
-            if block.is_solid() {
+            if block.is_solid() || block.is_torch() {
                 if left {
                     world.set_block_global(block_pos, BlockType::Air, &mut commands);
                     
@@ -567,7 +567,25 @@ fn player_interaction(
                             break;
                         }
 
-                        let current_block = player.hotbar[player.selected_slot];
+                        let mut current_block = player.hotbar[player.selected_slot];
+                        
+                        if current_block == BlockType::Torch {
+                            let diff = place_pos - block_pos;
+                            if diff == IVec3::Y {
+                                current_block = BlockType::Torch;
+                            } else if diff == IVec3::X {
+                                current_block = BlockType::TorchWallW;
+                            } else if diff == IVec3::NEG_X {
+                                current_block = BlockType::TorchWallE;
+                            } else if diff == IVec3::Z {
+                                current_block = BlockType::TorchWallN;
+                            } else if diff == IVec3::NEG_Z {
+                                current_block = BlockType::TorchWallS;
+                            } else if diff == IVec3::NEG_Y {
+                                break; // cannot place torch on ceiling
+                            }
+                        }
+
                         world.set_block_global(place_pos, current_block, &mut commands);
                         crate::world::fluid::wake_up_fluids_in_radius(&mut world, place_pos);
                     }
@@ -603,6 +621,7 @@ fn player_interaction(
 // 🚀 動態環境迷霧 + 遠剪裁面剛性對齊系統（純粹眼部位置感知）
 fn update_fog_color(
     world_manager: Res<crate::world::WorldManager>,
+    cycle: Res<crate::world::DayNightCycle>,
     config: Res<crate::config::EngineConfig>,
     mut clear_color: ResMut<ClearColor>,
     mut q_fog: Query<&mut FogSettings, With<PlayerCamera>>,
@@ -616,13 +635,18 @@ fn update_fog_color(
         translation.y.floor() as i32,
         translation.z.floor() as i32,
     );
-    let eye_light = world_manager.get_light_global(eye_pos);
+    let sky_light = world_manager.get_sky_light_global(eye_pos) as f32;
+    let block_light = world_manager.get_block_light_global(eye_pos) as f32;
+    let eye_light = (sky_light * cycle.sky_factor).max(block_light);
 
-    // 線性映射：眼部光照 0−15 → 地底深灰 → 蔚藍天空
-    let t = (eye_light as f32) / 15.0;
-    let sky = bevy::color::LinearRgba::new(0.5, 0.8, 1.0, 1.0);
+    // 線性映射：眼部光照 0−15 → 地底深灰 → 蔚藍/暗夜天空
+    let t = eye_light / 15.0;
+    let day_sky = bevy::color::LinearRgba::new(0.5, 0.8, 1.0, 1.0);
+    let night_sky = bevy::color::LinearRgba::new(0.01, 0.02, 0.08, 1.0);
+    let current_sky = night_sky.mix(&day_sky, cycle.sky_factor);
+    
     let dark_ambient_color = bevy::color::LinearRgba::gray(config.min_ambient_light);
-    let mixed = dark_ambient_color.mix(&sky, t);
+    let mixed = dark_ambient_color.mix(&current_sky, t);
     let final_color = Color::from(mixed);
 
     clear_color.0 = final_color;
@@ -669,7 +693,8 @@ fn draw_target_block_highlight(
         let pos = start + forward * dist;
         let block_pos = IVec3::new(pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
         
-        if world.get_block_global(block_pos).is_solid() {
+        let target_block = world.get_block_global(block_pos);
+        if target_block.is_solid() || target_block.is_torch() {
             // 💡 計算方塊幾何中心點 (Voxel Center)
             let center = Vec3::new(
                 block_pos.x as f32 + 0.5,

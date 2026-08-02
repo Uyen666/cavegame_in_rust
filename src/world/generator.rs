@@ -248,8 +248,6 @@ impl<N: NoiseModule> TerrainGenerator<N> {
         }
 
         let mut chunk_buffer = ChunkBuffer::default();
-        let mut local_non_air = 0u16;
-
         for bz in 0..32 {
             for bx in 0..32 {
                 let col_offset = bx * 36 + bz * 36 * 32;
@@ -260,9 +258,6 @@ impl<N: NoiseModule> TerrainGenerator<N> {
                     let gy = chunk_pos.y * 32 + by as i32;
                     let density = y_densities[by];
                     let block_type = self.resolve_block_type(gy, density, base_h, by, y_densities);
-                    if block_type != BlockType::Air {
-                        local_non_air += 1;
-                    }
                     chunk_buffer.blocks[bx + by * 32 + bz * 1024] = block_type;
                 }
             }
@@ -285,7 +280,7 @@ impl<N: NoiseModule> TerrainGenerator<N> {
                     // 確保樹木只長在地表 (高度大於 64，且地表為 Grass)
                     if gy > 64 {
                         let (den, bh) = self.calculate_global_density(gx, gy, gz);
-                        let top_block = self.resolve_block_type(gy, den, bh, 0, &[den, -1.0]); 
+                        let _top_block = self.resolve_block_type(gy, den, bh, 0, &[den, -1.0]); 
                         
                         // 簡單驗證地表是否為草地 (這是一個簡化的判斷，直接假設高於 64 且露天多半是草地)
                         // 若為真，則植樹
@@ -336,7 +331,7 @@ impl<N: NoiseModule> TerrainGenerator<N> {
         }
 
         // 重新計算 local_non_air (因為樹木可能跨區界寫入)
-        local_non_air = chunk_buffer.blocks.iter().filter(|&&b| b != BlockType::Air).count() as u16;
+        let local_non_air = chunk_buffer.blocks.iter().filter(|&&b| b != BlockType::Air).count() as u16;
 
         (chunk_buffer, local_non_air)
     }

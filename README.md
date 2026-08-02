@@ -27,9 +27,11 @@
 ### 🎨 1. 現代極致圖形渲染管線 (Modern Voxel Graphics Engine)
 - **單一區塊單一 Draw Call (1 Draw Call per Chunk)**：所有方塊材質在區塊網格化時融合為單一 Mesh。
 - **AO 輔助型梯度貪婪網格化 (AO-Aware Gradient Greedy Meshing)**：自動合併相同屬性與平滑雙線型光照梯度的相鄰多邊形，頂點數暴減 **80% ~ 99%**。
+- **雙軌光照引擎 (Dual Lighting & Shadow Casting)**：實作分離的 Block Light 與 Sky Light 引擎，支援真實的植被陰影遮擋與晝夜交替，GPU 即時解算最終亮度。
 - **32-Bit 頂點位元壓縮 (Vertex Bit Packing)**：將 `x, y, z, face_id, tex_layer` 完美壓縮進單一 `u32` 插槽，降低內存與顯存頻寬消耗。
-- **程序化 WGSL 著色器與 Quad Edge Padding**：在 GPU 頂點著色器實施 `0.0005` 格邊緣微外推，徹底絕殺 T-Junction 引發的邊界縫隙與閃光漏光。
-- **3D 離屏渲染快捷列 UI**：使用 9 組獨立 3D 相機與 `VoxelMaterial` 渲染正宗 Minecraft 風格的多重貼圖 3D 立體方塊（草方塊具備頂面、側面、底面不同貼圖）。
+- **程序化 WGSL 著色器與幾何變形 (GPU Morphing & Edge Padding)**：在 GPU 頂點著色器實施 `0.0005` 格邊緣微外推，徹底絕殺 T-Junction 縫隙。同時針對火把 (`Torch`) 等發光體推入基礎方塊座標，透過 `@builtin(vertex_index)` 與 `face_id` 由 GPU 即時解算出 6x6x10 像素之實體 3D 比例與《Minecraft》原版 16x16 貼圖之精準 UV 映射。`flow_vector` 驅動牆面火把即時傾斜貼壁，三角形繞行統一 CCW 確保六面完整可見。
+- **智慧透明度與動態環境 (Alpha Masking & Dynamic Sky)**：玻璃 (`Glass`) 與植被渲染支援精準的 Alpha 裁切與物理 Tint。背景迷霧 (`FogSettings`) 與視窗背景更會根據玩家所處的晝夜狀態（如深邃夜空藍）與眼部地底光照，無縫內插過渡，消除突兀斷層。
+- **3D 離屏渲染快捷列 UI 與即時光照廣播**：使用 9 組獨立 3D 相機渲染正宗 Minecraft 風格的多重貼圖方塊，火把在 UI 中以基礎原點座標精準重建。放置/破壞火把時，BFS 光照泛洪波及的所有區塊即時解鎖 `is_lighting_ready`，實現零延遲的光照重烘焙。Raycast 判定支援 `is_torch()` 以允許準星瞄準與挖除互動。
 
 ### 🧱 2. 高精度 Swept AABB 物理與運動學 (Continuous Collision & Physics)
 - ** Swept AABB 掃掠碰撞 (CCD)**：預先投射速度向量計算碰撞確切時間點 (Time of Impact)，徹底解決高速運動下的穿模（Tunneling）問題。
@@ -147,8 +149,8 @@ CaveGame 目前已完成核心引擎底層（渲染、物理、存檔、流體�
 - [ ] **多元生態系 (Biomes)**：擴充沙漠、雪原、深海、叢林與地下巨型溶洞特化生態系。
 
 ### 💡 2. 動態光源與晝夜交替系統 (Dynamic Lighting & Day/Night Cycle)
-- [ ] **動態方塊光源**：實裝火把 (Torch)、岩漿 (Lava) 與螢光石，支援動態 0~15 級方塊光 BFS 蔓延與即時網格重烘焙。
-- [ ] **晝夜交替與太陽月亮**：天空盒與太陽/月亮軌道旋轉，天空光強 (0~15) 隨時間動態漸變與平滑環境色過渡。
+- [x] **動態方塊光源**：實裝火把 (Torch)、岩漿 (Lava) 與螢光石，支援動態 0~15 級方塊光 BFS 蔓延與即時網格重烘焙。
+- [x] **晝夜交替與太陽月亮**：天空光強隨時間動態漸變，與 Block Light 在 GPU Shader 即時混合，達成恆定發光物體 (火把) 與環境光完美疊加。
 - [ ] **動態陰影 (Cascaded Shadow Maps)**：研究整合 `wgpu` 陰影貼圖與體素光照交織。
 
 ### 🛠️ 3. 道具背包、合成與裝備系統 (Inventory & Crafting)

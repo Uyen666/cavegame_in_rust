@@ -26,6 +26,14 @@ impl ChunkLightBuffer {
     pub fn set_sky_light(&mut self, idx: usize, value: u8) {
         self.light_data[idx] = (self.light_data[idx] & 0x0F) | ((value & 0x0F) << 4);
     }
+
+    pub fn get_block_light(&self, idx: usize) -> u8 {
+        self.light_data[idx] & 0x0F
+    }
+
+    pub fn set_block_light(&mut self, idx: usize, value: u8) {
+        self.light_data[idx] = (self.light_data[idx] & 0xF0) | (value & 0x0F);
+    }
 }
 
 #[derive(Serialize, Deserialize)]
