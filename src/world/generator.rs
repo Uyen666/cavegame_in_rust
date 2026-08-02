@@ -72,6 +72,13 @@ impl<'de> Deserialize<'de> for ChunkBuffer {
                 1 => BlockType::Grass,
                 2 => BlockType::Stone,
                 3 => BlockType::Dirt,
+                4 => BlockType::OakLog,
+                5 => BlockType::OakLeaves,
+                6 => BlockType::Sand,
+                7 => BlockType::Gravel,
+                8 => BlockType::CoalOre,
+                9 => BlockType::IronOre,
+                10 => BlockType::Glass,
                 _ => BlockType::Air,
             };
             let run_len = run as usize;
@@ -179,6 +186,13 @@ impl<N: NoiseModule> TerrainGenerator<N> {
         if is_surface {
             // 🚀 只要高度高於溶洞帶 (>= 115)，或者在常規地表基準面附近，皆為合法露天地表！
             if gy >= 115 || ((gy as f32) - base_h).abs() <= 12.0 {
+                // 水岸邊界過渡為沙灘/礫石 (水位預設在 62 左右)
+                if gy <= 64 && gy >= 59 {
+                    if (gy + (base_h as i32)) % 3 == 0 {
+                        return BlockType::Gravel;
+                    }
+                    return BlockType::Sand;
+                }
                 return BlockType::Grass;
             } else {
                 return BlockType::Stone; // 高山或深淵直接裸露岩石
@@ -195,6 +209,17 @@ impl<N: NoiseModule> TerrainGenerator<N> {
                         return BlockType::Dirt;
                     }
                 }
+            }
+        }
+
+        // 地底礦脈分佈
+        if gy < 80 {
+            // 利用一些位置做簡單的雜湊礦脈判定
+            let hash = (gy as u32).wrapping_mul(73856093) ^ (density.to_bits());
+            if hash % 100 < 2 {
+                return BlockType::IronOre;
+            } else if hash % 100 < 5 {
+                return BlockType::CoalOre;
             }
         }
 
@@ -242,6 +267,76 @@ impl<N: NoiseModule> TerrainGenerator<N> {
                 }
             }
         }
+
+        // 【跨區塊樹木生成防線】
+        // 搜尋範圍 [-2..34] 涵蓋周圍相鄰區塊邊界的樹木種子，確保樹冠能無縫跨越 Chunk。
+        for bz in -2i32..34 {
+            for bx in -2i32..34 {
+                let gx = chunk_pos.x * 32 + bx;
+                let gz = chunk_pos.z * 32 + bz;
+                
+                // 決定性雜湊函數，判定是否長樹 (約 1.5% 機率)
+                let mut h = (gx as u32).wrapping_mul(374761393).wrapping_add((gz as u32).wrapping_mul(668265263));
+                h = (h ^ (h >> 13)).wrapping_mul(1274126177);
+                h ^= h >> 16;
+                
+                if h % 1000 < 15 {
+                    let gy = self.get_max_surface_y(gx, gz);
+                    // 確保樹木只長在地表 (高度大於 64，且地表為 Grass)
+                    if gy > 64 {
+                        let (den, bh) = self.calculate_global_density(gx, gy, gz);
+                        let top_block = self.resolve_block_type(gy, den, bh, 0, &[den, -1.0]); 
+                        
+                        // 簡單驗證地表是否為草地 (這是一個簡化的判斷，直接假設高於 64 且露天多半是草地)
+                        // 若為真，則植樹
+                        let tree_height = 4 + (h % 3) as i32;
+                        
+                        // 1. 生成樹幹 (OakLog)
+                        for ty in 1..=tree_height {
+                            let world_y = gy + ty;
+                            let local_y = world_y - chunk_pos.y * 32;
+                            if bx >= 0 && bx < 32 && bz >= 0 && bz < 32 && local_y >= 0 && local_y < 32 {
+                                let idx = (bx as usize) + (local_y as usize) * 32 + (bz as usize) * 1024;
+                                chunk_buffer.blocks[idx] = BlockType::OakLog;
+                            }
+                        }
+                        
+                        // 2. 生成樹冠 (OakLeaves) - 3x3x3 的球形或立體矩陣
+                        for ly in (tree_height - 1)..=(tree_height + 1) {
+                            for lx in -2i32..=2 {
+                                for lz in -2i32..=2 {
+                                    // 削去角落
+                                    if lx.abs() == 2 && lz.abs() == 2 && ly == tree_height + 1 {
+                                        continue; 
+                                    }
+                                    if lx == 0 && lz == 0 && ly <= tree_height {
+                                        continue; // 樹幹位置
+                                    }
+                                    
+                                    let world_x = gx + lx;
+                                    let world_z = gz + lz;
+                                    let world_y = gy + ly;
+                                    
+                                    let local_x = world_x - chunk_pos.x * 32;
+                                    let local_y = world_y - chunk_pos.y * 32;
+                                    let local_z = world_z - chunk_pos.z * 32;
+                                    
+                                    if local_x >= 0 && local_x < 32 && local_y >= 0 && local_y < 32 && local_z >= 0 && local_z < 32 {
+                                        let idx = (local_x as usize) + (local_y as usize) * 32 + (local_z as usize) * 1024;
+                                        if chunk_buffer.blocks[idx] == BlockType::Air {
+                                            chunk_buffer.blocks[idx] = BlockType::OakLeaves;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 重新計算 local_non_air (因為樹木可能跨區界寫入)
+        local_non_air = chunk_buffer.blocks.iter().filter(|&&b| b != BlockType::Air).count() as u16;
 
         (chunk_buffer, local_non_air)
     }

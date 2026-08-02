@@ -37,7 +37,7 @@ src/
     ├── generator.rs(工業級無狀態二階段地形管線：地形雕刻與 Fbm 噪音)
     ├── lighting.rs (光照子系統：天空光泛洪、方塊光與阻斷 BFS 重算)
     ├── storage.rs  (手寫 RLE 壓縮與非同步硬碟讀寫，持久化存檔)
-    ├── voxel.rs    (體素基本定義與方塊類型列舉 BlockType)
+    ├── voxel.rs    (體素定義與 BlockType 列舉，包含 is_solid 與 is_opaque 雙軌防線)
     └── gen/        (地形生成演算法特定實作)
         ├── mod.rs
         └── flat.rs (超平坦地形生成器實作)
@@ -59,6 +59,9 @@ src/
   * **加載期連動 (Race Condition 修正)**：當全新的區塊完成非同步生成並插入 `WorldManager` 的瞬間，主執行緒會立即主動探測 6 個相鄰軸向的舊區塊。若存在則強制將其標記為 `is_dirty = true`，強迫舊區塊重新網格化並剔除過期的邊界殘留牆，達成無瑕疵的地形接縫。
   * **放塊時序跨幀補償 (Spawn Latency Compensation)**：透過 `respawn_later` 剛性回寫機制，完美閃避 Bevy `commands.spawn` 的一幀延遲，達成玩家放置空區塊方塊瞬間 100% 同步烘焙的零延遲體驗。
 * **頂點位元壓縮 (Vertex Bit Packing)**：全面淘汰傳統浮點數頂點屬性，將 `x(6)`、`y(6)`、`z(6)`、`face_id(3)` 與 `tex_layer(11)` 完美壓縮進單一 32-bit 的 `u32` 屬性 `ATTRIBUTE_PACKED_DATA` 中。徹底清除了 Position 與 Color 的內存佔用。
+* **物理與圖形嚴格解耦 (Solid vs Opaque Separation)**：
+  * **`is_solid()`** 專司物理碰撞，決定 AABB 幾何障礙物。
+  * **`is_opaque()`** 專司貪婪網格 Face Culling。相鄰方塊必須為實心且「完全不透明」（如石頭/泥土），才能剔除當前面。此防線確保了玻璃 (`Glass`) 與樹葉 (`OakLeaves`) 交界處不會產生錯誤的透明破洞。
 * **2D 紋理陣列與程序化 WGSL 著色器**：採用 `D2Array` 管理材質層級，配合手寫 `voxel.wgsl` 在 Vertex Shader 即時解包出局部座標與法線朝向，並透過 `face_id` 與 `(z, -y)` 等動態投射算法程序化生成透視插值的平鋪 UV。手動在 `commands.spawn` 掛載 Aabb 保證 Frustum Culling 在移除 Position 屬性後依然精準運作。
 * **幾何繞向完美對齊**：6 個面的頂點嚴格遵循 CCW 繞向，所有軸向遵循 `rev = normal < 0` 統一規則。
 
@@ -99,6 +102,11 @@ src/
 * **脊狀分形噪聲混合 (Ridged Noise Blending)**：引入幾何對折公式將 Fbm 的波峰翻轉為刀鋒峭壁。根據 `mountain_weight` 動態融合圓潤的 Fbm 與尖銳的脊狀噪聲，確保平原柔和、高山崢嶸。
 * **天坑與溶洞生態系統**：透過獨立的 3D 溶洞噪音結合距離地平線 `Y=64` 的二次函數衰減塑造龐大的地下通道；並引入特權的 `entrance_gate` 2D 破口閘門，一旦觸發，溶洞可無視高空衰減限制，暴力切開地表，形成壯觀的天然天坑。
 * **草地與生態高空雙軌制**：實施「高空無條件解鎖 ＋ 地表誤差防禦」。只要高度超過溶洞帶 (Y >= 115) 或是處於地平線 ±12 格以內的區域，即可合法披上草皮與泥土。完美解決巨山山頂光禿無草的 Bug，並保留深淵的岩石裸露感。
+* **動態地質與沙灘生成**：水岸高度 (Y=59~64) 之間，根據座標雜湊生成沙子 (`Sand`) 與礫石 (`Gravel`) 緩衝帶。
+* **地底礦脈嵌入**：Y<80 地層利用 deterministic hash 點狀分佈鐵礦 (`IronOre`) 與煤礦 (`CoalOre`)。
+* **跨區塊無縫樹木生成 (Cross-Chunk Trees)**：
+  * 在判定樹木生成時，將掃描範圍跨界外擴至 `[-2..34]`，精準抓取周圍鄰接區塊邊界的樹木種子。
+  * 若鄰接邊界長樹，其 `OakLog` 與 `OakLeaves` 枝葉若溢出至當前 `[0..32]` 區塊，將被直接寫入當前 `ChunkBuffer`。徹底絕殺了過去地形生成中常見的「邊界半棵樹被切斷」致命破綻。
 
 ## 7. 💡 全域光照引擎與極限效能優化 (Global Lighting Engine & Extreme Performance)
 * **O(1) 高度圖快取 (Heightmap Cache)**：為了在未生成的區塊與天空邊界判定陽光遮蔽，系統將 `get_max_surface_y` 的高昂地形噪聲計算全面移交給背景 `AsyncComputeTaskPool` 處理。生成的 2D 高度圖 `max_surface_y_map` 會被 `WorldManager` 進行快取，主執行緒的 `get_light_global` 僅需執行極速的 O(1) 陣列查表。

@@ -24,13 +24,23 @@ pub const ATTRIBUTE_FLOW_VECTOR: MeshVertexAttribute =
 
 fn get_texture_layer(block: BlockType, d: usize, normal: i32) -> u32 {
     match block {
-        BlockType::Stone => 0,
-        BlockType::Dirt  => 1,
-        BlockType::Grass => match (d, normal) {
+        BlockType::Stone   => 0,
+        BlockType::Dirt    => 1,
+        BlockType::Grass   => match (d, normal) {
             (1,  1) => 2, // Y+ → top    (grass_block_top)
             (1, -1) => 1, // Y- → bottom (dirt)
             _       => 3, // X±/Z± → side (grass_block_side)
         },
+        BlockType::OakLog  => match (d, normal) {
+            (1,  1) | (1, -1) => 6, // Y± → top/bottom (oak_log_top)
+            _                 => 5, // X±/Z± → side (oak_log)
+        },
+        BlockType::OakLeaves => 7,
+        BlockType::Sand      => 8,
+        BlockType::Gravel    => 9,
+        BlockType::CoalOre   => 10,
+        BlockType::IronOre   => 11,
+        BlockType::Glass     => 12,
         _ => 0,
     }
 }
@@ -563,10 +573,19 @@ fn generate_greedy_mesh(
                     let b0 = world.get_block_global(gp0);
                     let b1 = world.get_block_global(gp1);
 
-                    let (gp_air, block, normal) = match (b0.is_solid(), b1.is_solid()) {
-                        (true, false) if slice >= 0 => (gp1, b0, 1),
-                        (false, true) if slice < chunk_size_i - 1 => (gp0, b1, -1),
-                        _ => (IVec3::ZERO, BlockType::Air, 0),
+                    let (gp_air, block, normal) = {
+                        // 當前格是否渲染面，取決於自己是實心，且鄰居方塊為非實心或【非不透明】（比如玻璃、樹葉）
+                        // 且避免玻璃與玻璃自己內部畫牆壁
+                        let b0_draws_towards_b1 = b0.is_solid() && (!b1.is_solid() || !b1.is_opaque()) && !(b0 == b1 && !b0.is_opaque());
+                        let b1_draws_towards_b0 = b1.is_solid() && (!b0.is_solid() || !b0.is_opaque()) && !(b0 == b1 && !b0.is_opaque());
+
+                        if b0_draws_towards_b1 && slice >= 0 {
+                            (gp1, b0, 1)
+                        } else if b1_draws_towards_b0 && slice < chunk_size_i - 1 {
+                            (gp0, b1, -1)
+                        } else {
+                            (IVec3::ZERO, BlockType::Air, 0)
+                        }
                     };
 
                     if block != BlockType::Air {

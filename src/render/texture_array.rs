@@ -12,6 +12,14 @@ pub const TEXTURES: &[&str] = &[
     "grass_block_top",   // 2
     "grass_block_side",  // 3
     "water_still",       // 4
+    "oak_log",           // 5
+    "oak_log_top",       // 6
+    "oak_leaves",        // 7
+    "sand",              // 8
+    "gravel",            // 9
+    "coal_ore",          // 10
+    "iron_ore",          // 11
+    "glass",             // 12
 ];
 
 
