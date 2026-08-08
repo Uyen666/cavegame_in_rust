@@ -541,8 +541,22 @@ fn player_interaction(
             // 修正：3D 體素座標定位必須使用 floor()，與 AABB 的標準對齊
             let block_pos = IVec3::new(pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
 
+            let mut hit_aabb = false;
             let block = world.get_block_global(block_pos);
             if block.is_solid() || block.is_torch() {
+                let (aabb_min, aabb_max) = block.get_aabb_offsets();
+                let origin = Vec3::new(block_pos.x as f32, block_pos.y as f32, block_pos.z as f32);
+                let box_min = origin + Vec3::from_array(aabb_min);
+                let box_max = origin + Vec3::from_array(aabb_max);
+                
+                if pos.x >= box_min.x && pos.x <= box_max.x &&
+                   pos.y >= box_min.y && pos.y <= box_max.y &&
+                   pos.z >= box_min.z && pos.z <= box_max.z {
+                    hit_aabb = true;
+                }
+            }
+
+            if hit_aabb {
                 if left {
                     world.set_block_global(block_pos, BlockType::Air, &mut commands);
                     
@@ -693,21 +707,33 @@ fn draw_target_block_highlight(
         let pos = start + forward * dist;
         let block_pos = IVec3::new(pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
         
+        let mut hit_aabb = false;
+        let mut box_min = Vec3::ZERO;
+        let mut box_max = Vec3::ZERO;
+        
         let target_block = world.get_block_global(block_pos);
         if target_block.is_solid() || target_block.is_torch() {
-            // 💡 計算方塊幾何中心點 (Voxel Center)
-            let center = Vec3::new(
-                block_pos.x as f32 + 0.5,
-                block_pos.y as f32 + 0.5,
-                block_pos.z as f32 + 0.5,
-            );
+            let (aabb_min, aabb_max) = target_block.get_aabb_offsets();
+            let origin = Vec3::new(block_pos.x as f32, block_pos.y as f32, block_pos.z as f32);
+            box_min = origin + Vec3::from_array(aabb_min);
+            box_max = origin + Vec3::from_array(aabb_max);
             
-            // 🚀 利用 Gizmos 繪製 1.002 倍微擴張立方體鋼絲邊框（防止 Z-fighting 深度貼面閃爍）
+            if pos.x >= box_min.x && pos.x <= box_max.x &&
+               pos.y >= box_min.y && pos.y <= box_max.y &&
+               pos.z >= box_min.z && pos.z <= box_max.z {
+                hit_aabb = true;
+            }
+        }
+
+        if hit_aabb {
+            let center = (box_min + box_max) * 0.5;
+            let size = (box_max - box_min) * 1.002;
+            
             gizmos.cuboid(
-                Transform::from_translation(center).with_scale(Vec3::splat(1.002)),
-                Color::srgb(0.1, 0.1, 0.1), // 深灰/黑色線條
+                Transform::from_translation(center).with_scale(size),
+                Color::srgb(0.1, 0.1, 0.1),
             );
-            break; // 找到第一個固體方塊即可停手
+            break; // 找到第一個固體方塊且擊中 AABB 即可停手
         }
         dist += step;
     }

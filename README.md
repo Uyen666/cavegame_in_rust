@@ -29,7 +29,8 @@
 - **AO 輔助型梯度貪婪網格化 (AO-Aware Gradient Greedy Meshing)**：自動合併相同屬性與平滑雙線型光照梯度的相鄰多邊形，頂點數暴減 **80% ~ 99%**。
 - **雙軌光照引擎 (Dual Lighting & Shadow Casting)**：實作分離的 Block Light 與 Sky Light 引擎，支援真實的植被陰影遮擋與晝夜交替，GPU 即時解算最終亮度。
 - **32-Bit 頂點位元壓縮 (Vertex Bit Packing)**：將 `x, y, z, face_id, tex_layer` 完美壓縮進單一 `u32` 插槽，降低內存與顯存頻寬消耗。
-- **程序化 WGSL 著色器與幾何變形 (GPU Morphing & Edge Padding)**：在 GPU 頂點著色器實施 `0.0005` 格邊緣微外推，徹底絕殺 T-Junction 縫隙。同時針對火把 (`Torch`) 等發光體推入基礎方塊座標，透過 `@builtin(vertex_index)` 與 `face_id` 由 GPU 即時解算出 6x6x10 像素之實體 3D 比例與《Minecraft》原版 16x16 貼圖之精準 UV 映射。`flow_vector` 驅動牆面火把即時傾斜貼壁，三角形繞行統一 CCW 確保六面完整可見。
+- **程序化 WGSL 著色器與幾何變形 (GPU Morphing & Edge Padding)**：在 GPU 頂點著色器實施 `0.0005` 格邊緣微外推，徹底絕殺 T-Junction 縫隙。同時針對火把 (`Torch`) 等發光體推入基礎方塊座標，透過 `@builtin(vertex_index)` 與 `face_id` 由 GPU 即時解算出 6x6x10 像素之實體 3D 比例與《Minecraft》原版 16x16 貼圖之精準 UV 映射。`flow_vector` 驅動牆面火把即時抬高貼壁並呈現 15 度自然傾角，並將底座向內嵌入 0.08 單位達成完美嵌合。
+- **火把特化物件與射線檢測系統 (Specialized Raycast & Object)**：`BlockType::get_aabb_offsets()` 提供具備**朝向感知 (Direction-Aware)** 的自訂斜向包圍盒，鋼絲選中邊框動態精準貼合牆面傾斜火把。玩家的射線步進實作了 **AABB 二次交點檢測 (Sub-Block Raycast)**，允許射線穿透火把周遭的空氣，實現極致精準的挖除互動。火把頂點 Fullbright 滿亮，並透過嚴格判斷 `is_opaque()` 禁用了火把對鄰居的 AO 陰影投射，完美融入平滑光照 (Smooth Lighting)。
 - **智慧透明度與動態環境 (Alpha Masking & Dynamic Sky)**：玻璃 (`Glass`) 與植被渲染支援精準的 Alpha 裁切與物理 Tint。背景迷霧 (`FogSettings`) 與視窗背景更會根據玩家所處的晝夜狀態（如深邃夜空藍）與眼部地底光照，無縫內插過渡，消除突兀斷層。
 - **3D 離屏渲染快捷列 UI 與即時光照廣播**：使用 9 組獨立 3D 相機渲染正宗 Minecraft 風格的多重貼圖方塊，火把在 UI 中以基礎原點座標精準重建。放置/破壞火把時，BFS 光照泛洪波及的所有區塊即時解鎖 `is_lighting_ready`，實現零延遲的光照重烘焙。Raycast 判定支援 `is_torch()` 以允許準星瞄準與挖除互動。
 

@@ -198,8 +198,9 @@ impl ChunkMeshInputData {
     }
 
     pub fn get_light_global(&self, gp: IVec3) -> (u8, u8) {
-        if self.get_block_global(gp) != crate::world::voxel::BlockType::Air {
-            return (0, 0); // 🚀 固體方塊光照剛性歸零律
+        let block = self.get_block_global(gp);
+        if block.is_opaque() {
+            return (0, 0); // 🚀 不透明方塊光照剛性歸零律 (產生 AO 陰影)
         }
 
         let (cp, lp) = crate::world::WorldManager::global_to_chunk_pos(gp);
@@ -1148,9 +1149,9 @@ pub fn push_torch_quads(
     
     let b_lights = world.get_light_global(gp);
     let sl = b_lights.0;
-    let bl = b_lights.1;
     let sky_lights = [sl, sl, sl, sl];
-    let block_lights = [bl, bl, bl, bl];
+    // 🔥 火把本體 Fullbright：頂點光照鎖定 15 級滿亮，永不受環境衰減
+    let block_lights: [u8; 4] = [15, 15, 15, 15];
 
     let w0 = 0.0;
     let w1 = 1.0;
@@ -1180,6 +1181,7 @@ pub fn push_torch_quads(
         
         let v_base = [x as f32, y as f32, z as f32];
 
+        // 正面 (Front face - 正常繞行)
         let start_len = out.2.len();
         push_quad(
             out,
@@ -1194,6 +1196,24 @@ pub fn push_torch_quads(
             false, d as usize
         );
         for i in start_len..out.2.len() {
+            out.2[i] = flow;
+        }
+
+        // 背面 (Back face - 翻轉繞行，使雙面皆可見)
+        let start_len2 = out.2.len();
+        push_quad(
+            out,
+            v_base, v_base, v_base, v_base,
+            n_vec,
+            [1.0, 1.0, 1.0, 1.0],
+            tex_layer,
+            sky_lights,
+            block_lights,
+            0,
+            1, 1,
+            true, d as usize
+        );
+        for i in start_len2..out.2.len() {
             out.2[i] = flow;
         }
     }

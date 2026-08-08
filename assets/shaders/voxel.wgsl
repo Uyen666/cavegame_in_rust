@@ -136,12 +136,14 @@ fn vertex(
             
             let flow = input.flow_vector;
             if flow.x != 0.0 || flow.y != 0.0 {
-                // Wall torch: shift base toward wall, tilt top away
-                dx += flow.x * 0.35;
-                dz += flow.y * 0.35;
-                if dy > 0.4 {
-                    dx -= flow.x * 0.15;
-                    dz -= flow.y * 0.15;
+                // 牆面火把：底座抬高至 0.2，向牆面靠攏，頭部向外傾斜
+                dy += 0.2;
+                // 推送 0.45 以將底部強制推入牆體 0.1 單位 (0.5 + 0.45 + 0.125 = 1.075)
+                dx += flow.x * 0.45;
+                dz += flow.y * 0.45;
+                if dy > 0.5 { // 如果是頂部頂點 (0.625 + 0.2 = 0.825)
+                    dx -= flow.x * 0.25; // 遠離牆面 (向外傾斜)
+                    dz -= flow.y * 0.25;
                 }
             }
             final_pos = vec3<f32>(x + dx, y + dy, z + dz);

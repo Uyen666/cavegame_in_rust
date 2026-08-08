@@ -451,14 +451,17 @@ impl WorldManager {
             }
         } else {
             // 🚀 正統光照阻斷泛洪更新 (Light Removal BFS)
-            let old_sky_light = self.get_sky_light_global(pos);
-            if old_sky_light > 0 {
-                self.set_sky_light_global(pos, 0);
-                let mut sky_remove_queue = std::collections::VecDeque::new();
-                let mut sky_prop_queue = std::collections::VecDeque::new();
-                sky_remove_queue.push_back((pos, old_sky_light));
-                crate::world::lighting::remove_sky_light_global(self, sky_remove_queue, &mut sky_prop_queue);
-                crate::world::lighting::propagate_sky_light_global(self, sky_prop_queue);
+            // 只有不透明方塊才需要移除天空光，火把等透明方塊保留天空光穿透
+            if block.is_opaque() {
+                let old_sky_light = self.get_sky_light_global(pos);
+                if old_sky_light > 0 {
+                    self.set_sky_light_global(pos, 0);
+                    let mut sky_remove_queue = std::collections::VecDeque::new();
+                    let mut sky_prop_queue = std::collections::VecDeque::new();
+                    sky_remove_queue.push_back((pos, old_sky_light));
+                    crate::world::lighting::remove_sky_light_global(self, sky_remove_queue, &mut sky_prop_queue);
+                    crate::world::lighting::propagate_sky_light_global(self, sky_prop_queue);
+                }
             }
 
             let old_block_light = self.get_block_light_global(pos);
