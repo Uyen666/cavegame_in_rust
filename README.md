@@ -65,8 +65,8 @@ CaveGame/
 └── src/
     ├── config.rs       # 全域遊戲常數與渲染視距配置
     ├── main.rs         # Bevy App 進入點、狀態機與 Plugin 註冊
-    ├── item/           # 物品與工具註冊表模組
-    │   └── mod.rs      # ItemType, ItemKind, ItemDefinition 與 ItemRegistry
+    ├── item/           # 物品與通用背包模組
+    │   └── mod.rs      # ItemType, ItemKind, ItemDefinition, ItemRegistry, ItemStack 與 Inventory 組件
     ├── phys/           # 物理碰撞模組
     │   └── swept.rs    # Swept AABB 連續碰撞與離散軸向位移消解
     ├── player/         # 玩家控制器
@@ -159,9 +159,11 @@ CaveGame 目前已完成核心引擎底層（渲染、物理、存檔、流體�
 - [ ] **動態陰影 (Cascaded Shadow Maps)**：研究整合 `wgpu` 陰影貼圖與體素光照交織。
 
 ### 🛠️ 3. 道具背包、合成與裝備系統 (Inventory & Crafting)
-- [ ] **E 鍵玩家背包介面**：實作 27 格儲物背包 UI，支援物品拖曳與數量堆疊。
+- [x] **通用 Inventory & ItemStack 堆疊模型**：實作可擴充槽位 Component、物品數量堆疊、零數量剛性清空與破壞方塊直接自動入包機制。
+- [x] **工具耐久度與碎裂系統**：支援鐵鎬等工具耐久度扣減與歸零碎裂清空。
+- [x] **雙軌 3D/2D 快捷列 UI 介面**：3D 方塊網格預覽 + 2D 程序化像素 Icon、數量數字標籤與綠/黃/紅動態耐久度血條。
+- [ ] **E 鍵背包與物品拖曳介面**：實作 27 格主背包 UI 與滑鼠物品拖抓。
 - [ ] **工作台與合成九宮格 (Crafting System)**：經典 2x2 與 3x3 物品配方解算與工具製作。
-- [ ] **方塊採掘等級與工具耐久度**：不同方塊需使用對應工具（鎬、斧、鏟）與採掘破壞動畫。
 
 ### 👾 4. 實體與 AI 生物系統 (Entities & Mob AI)
 - [ ] **通用 Entity 物理框架**：將 Swept AABB 碰撞擴展支援至所有非玩家實體 (Dropped Items, Mobs)。
@@ -189,7 +191,9 @@ CaveGame 目前已完成核心引擎底層（渲染、物理、存檔、流體�
 
 本專案採用 **MIT License** 開源許可。詳情請參閱 `LICENSE` 檔案。
 
-## 最新進度
+## 最新進度 (2026/08/08)
+- **核心 ItemStack 與通用 Inventory 背包模型**: 完成物品堆疊與耐久度模型，徹底重構玩家 Hotbar 為 36 格 ECS Component `Inventory`，實作零數量與碎裂剛性清空。
+- **無狀態雙軌 3D/2D Hotbar UI**: 實作 3D 方塊網格預覽、2D 程序化像素 Icon (鐵鎬/煤炭/鐵錠/木棒)、數量數字與動態耐久度血條。
+- **直接自動入包 (Direct Auto-Pickup)**: 破壞方塊直接將掉落物放入背包，無縫扣減工具耐久度。
 - **通用 Entity 物理組件化**: 封裝 Bevy ECS 物理元件 (RigidBody, AabbCollider, Velocity)，分離碰撞消解邏輯，為未來掉落物與生物系統鋪路。
-
 - **水體網格與浮力熱修復**: 修正 Shader 與 CPU 端的 Packed Data 序列化錯位（根絕頂點尖刺），完善 Chunk 邊界流體更新的聯動，並改進流體感測器的包圍盒掃描範圍。

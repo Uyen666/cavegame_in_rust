@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use crate::GameState;
-use crate::player::Player;
 use crate::world::WorldManager;
 
 pub struct DebugUiPlugin;
@@ -121,7 +120,7 @@ fn update_debug_text(
     diagnostics: Res<DiagnosticsStore>,
     mut q_text: Query<&mut Text, With<DebugText>>,
     q_root: Query<&Visibility, With<DebugUiRoot>>,
-    q_player: Query<(&Transform, &Player)>,
+    q_player: Query<(&Transform, &crate::item::Inventory)>,
     q_camera: Query<&GlobalTransform, With<crate::player::PlayerCamera>>,
     world_manager: Res<WorldManager>,
     cycle: Res<crate::world::DayNightCycle>,
@@ -153,9 +152,18 @@ fn update_debug_text(
     }
 
     // Always compute player coordinates every frame so movement is smooth
-    let (x, y, z, held_block) = if let Ok((player_transform, player)) = q_player.get_single() {
+    let (x, y, z, held_block) = if let Ok((player_transform, inventory)) = q_player.get_single() {
         let pos = player_transform.translation;
-        (pos.x, pos.y, pos.z, format!("{:?}", player.hotbar[player.selected_slot]))
+        let item_str = if let Some(stack) = inventory.selected_item() {
+            if let Some(dur) = stack.durability {
+                format!("{:?} x{} (Dur: {})", stack.item_type, stack.count, dur)
+            } else {
+                format!("{:?} x{}", stack.item_type, stack.count)
+            }
+        } else {
+            "Empty".to_string()
+        };
+        (pos.x, pos.y, pos.z, item_str)
     } else {
         (0.0, 0.0, 0.0, String::from("Unknown"))
     };

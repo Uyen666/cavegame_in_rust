@@ -7,6 +7,7 @@ use crate::utils::math::Aabb;
 use bevy::pbr::{FogSettings, FogFalloff};
 use bevy::color::Mix;
 use bevy::render::view::RenderLayers;
+use crate::item::{Inventory, ItemStack, ItemType, ItemKind, ItemRegistry, get_block_drop};
 
 pub struct PlayerPlugin;
 
@@ -24,23 +25,23 @@ impl Plugin for PlayerPlugin {
 fn player_input_capture(
     keys: Res<ButtonInput<KeyCode>>,
     mut scroll_evr: EventReader<bevy::input::mouse::MouseWheel>,
-    mut q_player: Query<&mut Player>,
+    mut q_player: Query<(&mut Player, &mut Inventory)>,
 ) {
-    if let Ok(mut player) = q_player.get_single_mut() {
+    if let Ok((mut player, mut inventory)) = q_player.get_single_mut() {
         if keys.just_pressed(KeyCode::Space) {
             player.wants_to_jump = true; // 🚀 鎖存點擊意圖
         }
 
         // --- 數字鍵切換 ---
-        if keys.just_pressed(KeyCode::Digit1) { player.selected_slot = 0; }
-        if keys.just_pressed(KeyCode::Digit2) { player.selected_slot = 1; }
-        if keys.just_pressed(KeyCode::Digit3) { player.selected_slot = 2; }
-        if keys.just_pressed(KeyCode::Digit4) { player.selected_slot = 3; }
-        if keys.just_pressed(KeyCode::Digit5) { player.selected_slot = 4; }
-        if keys.just_pressed(KeyCode::Digit6) { player.selected_slot = 5; }
-        if keys.just_pressed(KeyCode::Digit7) { player.selected_slot = 6; }
-        if keys.just_pressed(KeyCode::Digit8) { player.selected_slot = 7; }
-        if keys.just_pressed(KeyCode::Digit9) { player.selected_slot = 8; }
+        if keys.just_pressed(KeyCode::Digit1) { inventory.selected_slot = 0; }
+        if keys.just_pressed(KeyCode::Digit2) { inventory.selected_slot = 1; }
+        if keys.just_pressed(KeyCode::Digit3) { inventory.selected_slot = 2; }
+        if keys.just_pressed(KeyCode::Digit4) { inventory.selected_slot = 3; }
+        if keys.just_pressed(KeyCode::Digit5) { inventory.selected_slot = 4; }
+        if keys.just_pressed(KeyCode::Digit6) { inventory.selected_slot = 5; }
+        if keys.just_pressed(KeyCode::Digit7) { inventory.selected_slot = 6; }
+        if keys.just_pressed(KeyCode::Digit8) { inventory.selected_slot = 7; }
+        if keys.just_pressed(KeyCode::Digit9) { inventory.selected_slot = 8; }
 
         // --- 滾輪切換 ---
         let mut frame_scroll = 0.0;
@@ -55,8 +56,8 @@ fn player_input_capture(
             let direction = if player.scroll_accumulator > 0.0 { 1 } else { -1 };
 
             // 🚀 執行快捷列工整切換，注意加減方向可依據習慣對調
-            let new_slot = player.selected_slot as i32 - direction;
-            player.selected_slot = ((new_slot % 9 + 9) % 9) as usize;
+            let new_slot = inventory.selected_slot as i32 - direction;
+            inventory.selected_slot = ((new_slot % 9 + 9) % 9) as usize;
 
             // 消費掉這一次的整數能量，保留餘數給下一幀，達成極致絲滑的連續滾動
             player.scroll_accumulator -= direction as f32 * threshold;
@@ -71,8 +72,6 @@ pub struct Player {
     pub is_crouching: bool,
     pub is_spectator: bool,
     pub wants_to_jump: bool, // 🚀 跳躍輸入鎖存器（輸入緩衝）
-    pub hotbar: [BlockType; 9],   // 9格快捷列陣列
-    pub selected_slot: usize,     // 當前選中的欄位索引 (0 ~ 8)
     pub has_spawned: bool,        // 🚀 初次登入地表降落鎖
     pub scroll_accumulator: f32,  // 🚀 滾輪能量累加器
 }
@@ -80,12 +79,27 @@ pub struct Player {
 #[derive(Component)]
 pub struct PlayerCamera;
 
-fn setup_player(mut commands: Commands, mut q_windows: Query<&mut Window, With<PrimaryWindow>>) {
+fn setup_player(
+    mut commands: Commands,
+    mut q_windows: Query<&mut Window, With<PrimaryWindow>>,
+    registry: Res<ItemRegistry>,
+) {
     // Grab cursor
     if let Ok(mut window) = q_windows.get_single_mut() {
         window.cursor.grab_mode = CursorGrabMode::Locked;
         window.cursor.visible = false;
     }
+
+    let mut inventory = Inventory::new(36);
+    inventory.set_slot(0, Some(ItemStack::new(ItemType::Stone, 64, &registry)));
+    inventory.set_slot(1, Some(ItemStack::new(ItemType::Dirt, 64, &registry)));
+    inventory.set_slot(2, Some(ItemStack::new(ItemType::Grass, 64, &registry)));
+    inventory.set_slot(3, Some(ItemStack::new(ItemType::OakLog, 64, &registry)));
+    inventory.set_slot(4, Some(ItemStack::new(ItemType::OakLeaves, 64, &registry)));
+    inventory.set_slot(5, Some(ItemStack::new(ItemType::Sand, 64, &registry)));
+    inventory.set_slot(6, Some(ItemStack::new(ItemType::Glass, 64, &registry)));
+    inventory.set_slot(7, Some(ItemStack::new(ItemType::Torch, 64, &registry)));
+    inventory.set_slot(8, Some(ItemStack::new(ItemType::IronPickaxe, 1, &registry)));
 
     commands.spawn((
         Player {
@@ -94,21 +108,10 @@ fn setup_player(mut commands: Commands, mut q_windows: Query<&mut Window, With<P
             is_crouching: false,
             is_spectator: false,
             wants_to_jump: false,
-            hotbar: [
-                BlockType::Stone,
-                BlockType::Dirt,
-                BlockType::Grass,
-                BlockType::OakLog,
-                BlockType::OakLeaves,
-                BlockType::Sand,
-                BlockType::Glass,
-                BlockType::IronOre,
-                BlockType::Torch,
-            ],
-            selected_slot: 0,
             has_spawned: false,
             scroll_accumulator: 0.0,
         },
+        inventory,
         crate::phys::components::RigidBody {
             gravity_scale: 1.0,
             safewalk: false,
@@ -368,9 +371,10 @@ fn player_interaction(
     mouse_keys: Res<ButtonInput<MouseButton>>,
     kbd_keys: Res<ButtonInput<KeyCode>>,
     mut world: ResMut<WorldManager>,
+    registry: Res<ItemRegistry>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
-    q_player: Query<(&Transform, &Player)>,
+    mut q_player: Query<(&Transform, &Player, &mut Inventory)>,
 ) {
     let left = mouse_keys.just_pressed(MouseButton::Left);
     let right = mouse_keys.just_pressed(MouseButton::Right);
@@ -383,7 +387,7 @@ fn player_interaction(
     let Ok(window) = q_windows.get_single() else { return; };
     if window.cursor.grab_mode != CursorGrabMode::Locked { return; }
     
-    let Ok((player_transform, player)) = q_player.get_single() else { return; };
+    let Ok((player_transform, player, mut inventory)) = q_player.get_single_mut() else { return; };
 
     // 🚀 旁觀者權限閹割：禁止修改世界幾何
     if player.is_spectator {
@@ -421,12 +425,19 @@ fn player_interaction(
 
             if hit_aabb {
                 if left {
+                    let old_block = world.get_block_global(block_pos);
                     world.set_block_global(block_pos, BlockType::Air, &mut commands);
                     
                     // 【流體聯鎖喚醒機制】(Fluid Block Update Hook)
-                    // 當方塊被挖除時，主動探測半徑 4 格範圍內的流體
-                    // 若有流體，將其重新壓入 BFS 佇列，觸發路徑重算與蔓延！
                     crate::world::fluid::wake_up_fluids_in_radius(&mut world, block_pos);
+
+                    // 🚀 直接自動入包 (Direct Auto-Pickup)
+                    if let Some(drop_item) = get_block_drop(old_block) {
+                        inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
+                    }
+
+                    // 🚀 若手持工具，扣減耐久度 1 (耐久歸零時自動碎裂清空為 None)
+                    inventory.damage_selected_tool(1);
                 } else if right {
                     if let Some(place_pos) = last_air_pos {
                         let block_aabb = Aabb::new(
@@ -444,27 +455,37 @@ fn player_interaction(
                             break;
                         }
 
-                        let mut current_block = player.hotbar[player.selected_slot];
-                        
-                        if current_block == BlockType::Torch {
-                            let diff = place_pos - block_pos;
-                            if diff == IVec3::Y {
-                                current_block = BlockType::Torch;
-                            } else if diff == IVec3::X {
-                                current_block = BlockType::TorchWallW;
-                            } else if diff == IVec3::NEG_X {
-                                current_block = BlockType::TorchWallE;
-                            } else if diff == IVec3::Z {
-                                current_block = BlockType::TorchWallN;
-                            } else if diff == IVec3::NEG_Z {
-                                current_block = BlockType::TorchWallS;
-                            } else if diff == IVec3::NEG_Y {
-                                break; // cannot place torch on ceiling
+                        if let Some(selected_item) = inventory.selected_item().cloned() {
+                            if let Some(def) = registry.get(selected_item.item_type) {
+                                if let ItemKind::Block(base_block) = def.kind {
+                                    if selected_item.count > 0 {
+                                        let mut current_block = base_block;
+                                        if base_block == BlockType::Torch {
+                                            let diff = place_pos - block_pos;
+                                            if diff == IVec3::Y {
+                                                current_block = BlockType::Torch;
+                                            } else if diff == IVec3::X {
+                                                current_block = BlockType::TorchWallW;
+                                            } else if diff == IVec3::NEG_X {
+                                                current_block = BlockType::TorchWallE;
+                                            } else if diff == IVec3::Z {
+                                                current_block = BlockType::TorchWallN;
+                                            } else if diff == IVec3::NEG_Z {
+                                                current_block = BlockType::TorchWallS;
+                                            } else if diff == IVec3::NEG_Y {
+                                                break; // cannot place torch on ceiling
+                                            }
+                                        }
+
+                                        world.set_block_global(place_pos, current_block, &mut commands);
+                                        crate::world::fluid::wake_up_fluids_in_radius(&mut world, place_pos);
+
+                                        // 🚀 扣減 1 個物品 (數量降為 0 時自動置為 None)
+                                        inventory.consume_selected(1);
+                                    }
+                                }
                             }
                         }
-
-                        world.set_block_global(place_pos, current_block, &mut commands);
-                        crate::world::fluid::wake_up_fluids_in_radius(&mut world, place_pos);
                     }
                 } else if key_f {
                     println!("🚀 [Fluid Debug] F Key Pressed! Detecting raycast...");

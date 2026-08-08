@@ -9,8 +9,8 @@
 src/
 ├── config.rs       (全域參數配置與設定檔，包含遊戲與渲染各項常數)
 ├── main.rs         (狀態機初始化與全域 Plugin 註冊，程式進入點)
-├── item/           (一級物品模組，專職處理物品與工具註冊表)
-│   └── mod.rs      (ItemType, ItemKind, ItemDefinition 與 ItemRegistry 資源)
+├── item/           (一級物品與背包模組，專職處理物品、工具註冊表與 ItemStack/Inventory 背包模型)
+│   └── mod.rs      (ItemType, ItemKind, ItemDefinition, ItemRegistry, ItemStack, Inventory Component 與掉落函數)
 ├── phys/           (一級物理模組，專職處理碰撞與幾何)
 │   ├── mod.rs      (模組導出)
 │   └── swept.rs    (處理 AABB 空間幾何與 Swept AABB 連續碰撞消解)
@@ -93,10 +93,14 @@ src/
 
 ## 5. 🎛️ 遊戲狀態機與 UI/Debug 系統
 * **GameState 狀態控制**：切分 `MainMenu`、`InGame` 等狀態，退回選單時背景世界與物理會凍結。
-* **快捷列與手持切換系統 (Hotbar & Selection)**：玩家擁有 9 格 `hotbar`，前 3 格預設為 Stone, Dirt, Grass，其餘為 Air (空手)。可透過數字鍵 `1-9` 瞬間指定，或利用 `滑鼠滾輪` 動態輪詢切換（內建能量累加器與剛性邊界防護），徹底消除連續相同方塊導致的「卡頓錯覺」。右鍵建築時動態讀取選中方塊，大幅提升建造流暢度。
-* **快捷列 UI 介面 (Hotbar HUD)**：在 `hud.rs` 中實作了完整的 UI 疊加層。於底部中央繪製 9 個方格，內部左上角配有 1~9 的微型數字索引（徹底移除了底部佔位的方塊名稱，讓出全額視覺空間）。我們為 1~9 格全數建立了 3D 離屏渲染攝影棚 (透過 9 組 `Camera3dBundle` 與 `RenderTarget` 空間隔離至 `RenderLayers::layer(1)`)，將 3D 相機大幅拉近 (`scale: 0.65`) 並擴充 UI 節點至 `40x40`，常態性 100% 滿版顯示正宗 Minecraft 風格的 3D 立體方塊。網格捨棄了單張圖的標準材質，改為手動建構 32-bit `ATTRIBUTE_PACKED_DATA` 並掛載 `VoxelMaterial`，確保草方塊等複雜方塊能精準還原「頂面、側面、底面」的真實多重材質貼圖。選中框維持半透明灰底，僅邊框高亮黃色。空氣方塊 (`Air`) 則直接套用 `Visibility::Hidden` 確保極度乾淨。
+* **通用背包與物品堆疊模型 (Inventory & ItemStack Model)**：全面淘汰傳統固定的 `[BlockType; 9]` 陣列，導入抽象的 `ItemStack` (封裝 `item_type`, `count`, `durability`) 與通用 ECS Component `Inventory`（可擴充槽位，支援玩家 36 格背包、寶箱或工作台）。玩家快捷列可透過數字鍵 `1-9` 瞬間切換，或利用 `滑鼠滾輪` 動態輪詢切換（內建能量累加器與剛性邊界防護）。
+* **剛性清空與自動入包 (Zero-Count Cleanup & Direct Auto-Pickup)**：實裝剛性防線，當物品數量 `count` 或工具耐久度 `durability` 扣減至 0 時，槽位剛性置為 `None`。左鍵破壞方塊時自動根據 `get_block_drop` 計算掉落物並直接加入 `Inventory`，同時扣減工具耐久度 1，杜絕 3D 浮空掉落物 Entity 開銷。
+* **快捷列 UI 雙軌 3D/2D 渲染介面 (Dual 3D/2D Hotbar HUD)**：在 `hud.rs` 中實作了完整的無狀態 UI 疊加層。於底部中央繪製 9 個方格，內部左上角配有 1~9 的微型數字索引。為 1~9 格全數建立了 3D 離屏渲染攝影棚 (9 組 `Camera3dBundle` 與 `RenderTarget` 隔離至 `RenderLayers::layer(1)`) 與 2D Icon 節點。
+  * **`ItemKind::Block`**：顯示 3D 立體方塊網格預覽，隱藏 2D Icon。`count > 1` 時於右下角繪製數量數字。
+  * **`ItemKind::Tool` / `Material`**：隱藏 3D 網格，顯示 2D 物品 Icon (由 `setup_item_icons` 於 Startup 程序化生成 16x16 像素 Icon)。工具受損時於槽位底部繪製動態長度與綠/黃/紅比例之耐久度條。
+  * **`None` 空槽位**：3D 網格、2D Icon、數量數字與耐久度條一律設定為 `Visibility::Hidden`。選中框高亮黃色。
 * **目標方塊鋼絲邊框 (Target Wireframe)**：實作了 3D 體素射線步進 (Raycast) 系統，每影格精準捕捉距離玩家視線 5.0 公尺內的第一個固體方塊。並利用 `Gizmos` 在方塊外部繪製 1.002 倍微擴張的黑色立方體邊框，徹底解決深度貼面造成的 Z-fighting 閃爍，提供極致的視覺對齊反饋（旁觀者模式自動隱藏）。
-* **F3 Debug HUD 異步更新分流**：使用 `Timer::from_seconds(0.5)` 控制 F3 疊加層上的 FPS 與 Frame Time 刷新頻率，解決文字因幀率震盪而閃爍看不清的問題；而玩家座標等空間數據則無延遲即時更新。同時追加顯示目前快捷列手持之方塊 (`Holding`)。
+* **F3 Debug HUD 異步更新分流**：使用 `Timer::from_seconds(0.5)` 控制 F3 疊加層上的 FPS 與 Frame Time 刷新頻率，解決文字因幀率震盪而閃爍看不清的問題；而玩家座標與手持物品數據 (`inventory.selected_item()`) 則無延遲即時更新，完整顯示物品名稱、數量與耐久度。
 * **F3 + C 區塊邊界檢視 (Chunk Borders)**：實作了致敬 Minecraft 的除錯快捷鍵。在 F3 開啟狀態下按下 C 鍵，可透過獨立且零干擾的 `Bevy Gizmos` 系統，精準繪製出對齊世界座標的 32x32x32 黑色區塊邊界，大幅協助空間除錯。
 
 ## 6. ⛰️ 全域無狀態地形生成器 (1D Stateless Terrain Generator)
