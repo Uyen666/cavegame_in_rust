@@ -7,6 +7,7 @@ mod utils;
 mod phys;
 mod ui;
 mod config;
+mod item;
 
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 pub enum GameState {
@@ -44,6 +45,7 @@ fn main() {
         .add_plugins(render::RenderPlugin)
         .add_plugins(player::PlayerPlugin)
         .add_plugins(phys::PhysicsPlugin)
+        .add_plugins(item::ItemPlugin)
         .add_systems(
             FixedUpdate,
             (

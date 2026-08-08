@@ -22,28 +22,9 @@ pub const ATTRIBUTE_FLOW_VECTOR: MeshVertexAttribute =
 //   Layer 2: grass_block_top
 //   Layer 3: grass_block_side
 
+#[inline(always)]
 fn get_texture_layer(block: BlockType, d: usize, normal: i32) -> u32 {
-    match block {
-        BlockType::Stone   => 0,
-        BlockType::Dirt    => 1,
-        BlockType::Grass   => match (d, normal) {
-            (1,  1) => 2, // Y+ → top    (grass_block_top)
-            (1, -1) => 1, // Y- → bottom (dirt)
-            _       => 3, // X±/Z± → side (grass_block_side)
-        },
-        BlockType::OakLog  => match (d, normal) {
-            (1,  1) | (1, -1) => 6, // Y± → top/bottom (oak_log_top)
-            _                 => 5, // X±/Z± → side (oak_log)
-        },
-        BlockType::OakLeaves => 7,
-        BlockType::Sand      => 8,
-        BlockType::Gravel    => 9,
-        BlockType::CoalOre   => 10,
-        BlockType::IronOre   => 11,
-        BlockType::Glass     => 12,
-        BlockType::Torch | BlockType::TorchWallN | BlockType::TorchWallS | BlockType::TorchWallE | BlockType::TorchWallW => 13,
-        _ => 0,
-    }
+    block.texture_mapping().get_layer(d, normal)
 }
 
 // ── Face mask ────────────────────────────────────────────────────────────────

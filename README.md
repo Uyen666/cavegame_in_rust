@@ -31,6 +31,7 @@
 - **32-Bit 頂點位元壓縮 (Vertex Bit Packing)**：將 `x, y, z, face_id, tex_layer` 完美壓縮進單一 `u32` 插槽，降低內存與顯存頻寬消耗。
 - **程序化 WGSL 著色器與幾何變形 (GPU Morphing & Edge Padding)**：在 GPU 頂點著色器實施 `0.0005` 格邊緣微外推，徹底絕殺 T-Junction 縫隙。同時針對火把 (`Torch`) 等發光體推入基礎方塊座標，透過 `@builtin(vertex_index)` 與 `face_id` 由 GPU 即時解算出 6x6x10 像素之實體 3D 比例與《Minecraft》原版 16x16 貼圖之精準 UV 映射。`flow_vector` 驅動牆面火把即時抬高貼壁並呈現 15 度自然傾角，並將底座向內嵌入 0.08 單位達成完美嵌合。
 - **火把特化物件與射線檢測系統 (Specialized Raycast & Object)**：`BlockType::get_aabb_offsets()` 提供具備**朝向感知 (Direction-Aware)** 的自訂斜向包圍盒，鋼絲選中邊框動態精準貼合牆面傾斜火把。玩家的射線步進實作了 **AABB 二次交點檢測 (Sub-Block Raycast)**，允許射線穿透火把周遭的空氣，實現極致精準的挖除互動。火把頂點 Fullbright 滿亮，並透過嚴格判斷 `is_opaque()` 禁用了火把對鄰居的 AO 陰影投射，完美融入平滑光照 (Smooth Lighting)。
+- **數據驅動 Block & Item 註冊表 (Data-Driven Block & Item Registry)**：徹底解耦 `BlockType` 硬編碼分支，採用全域 Static `BLOCK_DEFINITIONS` 實現 0 鎖定開銷與 $O(1)$ 常數直尋。為方塊補全硬度 (`Hardness`)、工具層級 (`Tool Tier`)、最適工具 (`Tool Type`)、掉落物 (`Drop Table`)、音效類別 (`Sound Category`) 與 `SixFaces` 貼圖映射變體，並引進完整 `ItemRegistry` 物品系統。
 - **智慧透明度與動態環境 (Alpha Masking & Dynamic Sky)**：玻璃 (`Glass`) 與植被渲染支援精準的 Alpha 裁切與物理 Tint。背景迷霧 (`FogSettings`) 與視窗背景更會根據玩家所處的晝夜狀態（如深邃夜空藍）與眼部地底光照，無縫內插過渡，消除突兀斷層。
 - **3D 離屏渲染快捷列 UI 與即時光照廣播**：使用 9 組獨立 3D 相機渲染正宗 Minecraft 風格的多重貼圖方塊，火把在 UI 中以基礎原點座標精準重建。放置/破壞火把時，BFS 光照泛洪波及的所有區塊即時解鎖 `is_lighting_ready`，實現零延遲的光照重烘焙。Raycast 判定支援 `is_torch()` 以允許準星瞄準與挖除互動。
 
@@ -64,6 +65,8 @@ CaveGame/
 └── src/
     ├── config.rs       # 全域遊戲常數與渲染視距配置
     ├── main.rs         # Bevy App 進入點、狀態機與 Plugin 註冊
+    ├── item/           # 物品與工具註冊表模組
+    │   └── mod.rs      # ItemType, ItemKind, ItemDefinition 與 ItemRegistry
     ├── phys/           # 物理碰撞模組
     │   └── swept.rs    # Swept AABB 連續碰撞與離散軸向位移消解
     ├── player/         # 玩家控制器
@@ -84,8 +87,9 @@ CaveGame/
         ├── fluid.rs    # BFS 心跳流體擴散與動態平衡
         ├── generator.rs# 二階段無狀態地形生成器 (Fbm + Ridged Noise)
         ├── lighting.rs # 天空光與方塊光雙層 BFS 阻斷與蔓延
+        ├── registry.rs # 數據驅動註冊表 (BlockDefinition, BLOCK_DEFINITIONS 靜態無鎖表)
         ├── storage.rs  # RLE 存檔壓縮與異步硬碟持久化
-        └── voxel.rs    # 方塊類型 BlockType 定義
+        └── voxel.rs    # 方塊 BlockType 定義與 O(1) 無鎖常數直尋委派
 ```
 
 ---

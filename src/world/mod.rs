@@ -6,6 +6,7 @@ pub mod generator;
 pub mod lighting;
 pub mod fluid;
 pub mod systems;
+pub mod registry;
 use bevy::prelude::*;
 use bevy::utils::{HashMap, HashSet};
 use bevy::tasks::Task;
@@ -13,6 +14,7 @@ use bevy::render::primitives::Aabb;
 
 pub use chunk::{Chunk, ChunkData, ChunkLightBuffer};
 pub use voxel::BlockType;
+pub use registry::BlockRegistry;
 use crate::utils::math::CHUNK_SIZE;
 use noise::{NoiseFn, Perlin, Fbm};
 
@@ -49,6 +51,7 @@ pub struct WorldPlugin;
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WorldManager>()
+            .init_resource::<BlockRegistry>()
             .init_resource::<DayNightCycle>()
             .insert_resource(systems::FluidTickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
             .add_systems(Startup, systems::setup_world)

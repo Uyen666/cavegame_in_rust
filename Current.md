@@ -9,6 +9,8 @@
 src/
 ├── config.rs       (全域參數配置與設定檔，包含遊戲與渲染各項常數)
 ├── main.rs         (狀態機初始化與全域 Plugin 註冊，程式進入點)
+├── item/           (一級物品模組，專職處理物品與工具註冊表)
+│   └── mod.rs      (ItemType, ItemKind, ItemDefinition 與 ItemRegistry 資源)
 ├── phys/           (一級物理模組，專職處理碰撞與幾何)
 │   ├── mod.rs      (模組導出)
 │   └── swept.rs    (處理 AABB 空間幾何與 Swept AABB 連續碰撞消解)
@@ -36,8 +38,9 @@ src/
     ├── fluid.rs    (流體動態系統：BFS 蔓延、水流等級下降與更新隊列)
     ├── generator.rs(工業級無狀態二階段地形管線：地形雕刻與 Fbm 噪音)
     ├── lighting.rs (光照子系統：天空光泛洪、方塊光與阻斷 BFS 重算)
+    ├── registry.rs (數據驅動註冊表：BlockDefinition, BlockRegistry, BLOCK_DEFINITIONS 靜態無鎖表與 SixFaces 貼圖映射)
     ├── storage.rs  (手寫 RLE 壓縮與非同步硬碟讀寫，持久化存檔)
-    ├── voxel.rs    (體素定義與 BlockType 列舉，包含 is_solid 與 is_opaque 雙軌防線)
+    ├── voxel.rs    (體素 BlockType 列舉，固有方法委派全域 static 表 0 鎖定開銷 O(1) 常數直尋)
     └── gen/        (地形生成演算法特定實作)
         ├── mod.rs
         └── flat.rs (超平坦地形生成器實作)
