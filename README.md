@@ -184,3 +184,8 @@ CaveGame 目前已完成核心引擎底層（渲染、物理、存檔、流體�
 ## 📜 許可證 (License)
 
 本專案採用 **MIT License** 開源許可。詳情請參閱 `LICENSE` 檔案。
+
+## 最新進度
+- **通用 Entity 物理組件化**: 封裝 Bevy ECS 物理元件 (RigidBody, AabbCollider, Velocity)，分離碰撞消解邏輯，為未來掉落物與生物系統鋪路。
+
+- **水體網格與浮力熱修復**: 修正 Shader 與 CPU 端的 Packed Data 序列化錯位（根絕頂點尖刺），完善 Chunk 邊界流體更新的聯動，並改進流體感測器的包圍盒掃描範圍。

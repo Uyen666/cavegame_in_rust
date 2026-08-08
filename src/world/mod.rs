@@ -205,6 +205,19 @@ impl WorldManager {
             fluid_buf[idx] = val;
             entry.is_modified = true;
             self.dirty_chunks_for_meshing.insert(chunk_pos);
+            
+            // 🚀 正確觸發周遭 Chunk 重新烘焙
+            for &(axis, loc_val) in [(0usize, local.x), (1usize, local.y), (2usize, local.z)].iter() {
+                if loc_val == 0 {
+                    let mut dir = IVec3::ZERO;
+                    dir[axis] = -1;
+                    self.dirty_chunks_for_meshing.insert(chunk_pos + dir);
+                } else if loc_val == crate::utils::math::CHUNK_SIZE - 1 {
+                    let mut dir = IVec3::ZERO;
+                    dir[axis] = 1;
+                    self.dirty_chunks_for_meshing.insert(chunk_pos + dir);
+                }
+            }
         }
     }
 

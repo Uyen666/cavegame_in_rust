@@ -807,7 +807,7 @@ fn push_fluid_quad(
         _ => unreachable!(),
     };
 
-    let tex_layer = 4u32; // water_still
+    // let tex_layer = 4u32; // water_still (現在由 Shader 內部寫死以騰出 bit 給 y_offset_down)
     let base = out.0.len() as u32;
 
     for (i, v) in [v1, v2, v3, v4].iter().enumerate() {
@@ -838,12 +838,10 @@ fn push_fluid_quad(
         }
         let smooth_light = (light_sum / 4) as u8;
 
-        let packed: u32 = ((vx as u32) & 0x3F) 
-                        | (((vy as u32) & 0x3F) << 6) 
-                        | (((vz as u32) & 0x3F) << 12) 
-                        | ((face_id as u32 & 0x07) << 18) 
-                        | ((tex_layer & 0x0F) << 21) 
-                        | ((y_offset_down & 0x07) << 25)
+        let packed: u32 = (((vx as u32) & 0x3F) + ((vy as u32) & 0x3F) * 33 + ((vz as u32) & 0x3F) * 1089)
+                        | ((face_id as u32 & 0x07) << 16)
+                        | ((y_offset_down & 0x07) << 19)
+                        | (((smooth_light as u32) & 0x0F) << 24)
                         | (((smooth_light as u32) & 0x0F) << 28);
                         
         out.0.push(packed);
@@ -946,7 +944,7 @@ fn generate_fluid_mesh(
                         let off = 8.0 - corner_height;
                         off.clamp(0.0, 7.0) as u8
                     } else {
-                        8 // valid_water_count == 0.0，corner_height = 0.0，offset = 8 (雖受限 clamp 不會用到，但邏輯上正確)
+                        7 // valid_water_count == 0.0，強制限制在 7 防止 3-bit 溢位 (8 & 0x07 == 0 導致尖刺爆炸)
                     }
                 };
 

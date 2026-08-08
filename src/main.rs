@@ -43,6 +43,17 @@ fn main() {
         .add_plugins(world::WorldPlugin)
         .add_plugins(render::RenderPlugin)
         .add_plugins(player::PlayerPlugin)
+        .add_plugins(phys::PhysicsPlugin)
+        .add_systems(
+            FixedUpdate,
+            (
+                player::player_look,
+                player::player_move,
+                phys::systems::update_fluid_sensors,
+                phys::systems::apply_kinematics,
+                phys::systems::resolve_collisions,
+            ).chain().run_if(in_state(GameState::InGame))
+        )
         .insert_resource(ClearColor(Color::srgb(0.5, 0.8, 1.0)))
         .run();
 }

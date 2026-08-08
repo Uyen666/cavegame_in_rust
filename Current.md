@@ -169,3 +169,7 @@ src/
 
 ## 14. 🛠️ 開發環境與工作流 (Development Workflow)
 * **VS Code 終端環境自適應 (.vscode)**：為避免系統環境變數遺失引發的終端機報錯，專案於根目錄掛載了專屬的 `.vscode/settings.json`，強制將 Cargo 路徑注入整合終端機。同時配備 `.vscode/tasks.json`，讓開發者只需按下 `Ctrl+Shift+B` 便能一鍵無縫 `cargo run`，維持最高的開發效率。
+## 最近更新紀錄
+- **8/8 通用 Entity 物理組件化**: 將原先綁定於 Player 的運動學、流體感測與 Swept AABB 碰撞消解解耦，封裝為獨立的 PhysicsPlugin。透過 RigidBody、AabbCollider、Velocity 等元件，實現支援多軸同步消解、Safewalk 防跌落與旁觀者模式切換之通用 ECS 物理架構。
+
+- **8/8 重大 Bug 熱修復**: 修正了 greedy.rs 流體網格打包資料（Packed Data）的 Bit Shifts 偏差與溢位，徹底消滅了水體渲染產生的 GPU 頂點爆炸尖刺；並重構了 WorldManager::set_fluid_global 的 Chunk 邊界連動髒污標記機制，確保流體動態即時烘焙；同時擴增了 FluidSensor 的全範圍 AABB 掃描，還原了精確的流體浮力互動。

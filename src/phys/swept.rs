@@ -3,7 +3,7 @@ use crate::utils::math::Aabb;
 
 #[allow(dead_code)]
 pub fn swept_aabb(
-    player_aabb: &Aabb,
+    entity_aabb: &Aabb,
     velocity: Vec3,
     block_aabb: &Aabb,
 ) -> (f32, Vec3) {
@@ -15,11 +15,11 @@ pub fn swept_aabb(
 
     for i in 0..3 {
         if velocity[i] > 0.0 {
-            inv_entry[i] = block_aabb.min[i] - player_aabb.max[i];
-            inv_exit[i] = block_aabb.max[i] - player_aabb.min[i];
+            inv_entry[i] = block_aabb.min[i] - entity_aabb.max[i];
+            inv_exit[i] = block_aabb.max[i] - entity_aabb.min[i];
         } else {
-            inv_entry[i] = block_aabb.max[i] - player_aabb.min[i];
-            inv_exit[i] = block_aabb.min[i] - player_aabb.max[i];
+            inv_entry[i] = block_aabb.max[i] - entity_aabb.min[i];
+            inv_exit[i] = block_aabb.min[i] - entity_aabb.max[i];
         }
     }
 
@@ -29,7 +29,7 @@ pub fn swept_aabb(
     for i in 0..3 {
         // 修正：浮點數判定歸零時，使用小於微小值判定，比 == 0.0 更安全
         if velocity[i].abs() < MC_EPSILON {
-            if player_aabb.max[i] <= block_aabb.min[i] || player_aabb.min[i] >= block_aabb.max[i] {
+            if entity_aabb.max[i] <= block_aabb.min[i] || entity_aabb.min[i] >= block_aabb.max[i] {
                 entry[i] = f32::INFINITY;
                 exit[i] = f32::NEG_INFINITY;
             } else {
