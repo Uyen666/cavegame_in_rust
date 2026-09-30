@@ -266,11 +266,16 @@ pub fn toggle_inventory_screen(
         window.cursor.visible = true;
         *root_vis = Visibility::Inherited;
     } else {
-        // 關閉背包：鎖定滑鼠游標並精確置中，自動歸還游標手持物品
+        // 關閉背包：若視窗處於聚焦狀態則置中鎖定滑鼠游標，未聚焦則絕不鎖定，並自動歸還游標手持物品
         let center = Vec2::new(window.width() / 2.0, window.height() / 2.0);
         window.set_cursor_position(Some(center));
-        window.cursor.grab_mode = CursorGrabMode::Locked;
-        window.cursor.visible = false;
+        if window.focused {
+            window.cursor.grab_mode = CursorGrabMode::Locked;
+            window.cursor.visible = false;
+        } else {
+            window.cursor.grab_mode = CursorGrabMode::None;
+            window.cursor.visible = true;
+        }
         *root_vis = Visibility::Hidden;
         inventory.return_carried_item(&registry);
     }

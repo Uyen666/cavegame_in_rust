@@ -183,10 +183,10 @@ src/
 ## 14. 🛠️ 開發環境與工作流 (Development Workflow)
 * **VS Code 終端環境自適應 (.vscode)**：為避免系統環境變數遺失引發的終端機報錯，專案於根目錄掛載了專屬的 `.vscode/settings.json`，強制將 Cargo 路徑注入整合終端機。同時配備 `.vscode/tasks.json`，讓開發者只需按下 `Ctrl+Shift+B` 便能一鍵無縫 `cargo run`，維持最高的開發效率。
 ## 最近更新紀錄
-- **9/30 視窗啟動游標剛性置中鎖定、ESC 脫離滑鼠與點擊防誤觸重鎖機制**:
-  - 在 `WindowPlugin` PrimaryWindow 描述器中直接預設 `Cursor { grab_mode: Locked, visible: false }`，且在視窗尺寸就緒時立即調用 `window.set_cursor_position(Some(center))` 精準定位至視窗正中央 `(width/2, height/2)`，徹底解決進入遊戲後游標在視窗外被定住的頑疾；
-  - 修復 `toggle_inventory_screen` 在背包關閉時誤攔截 ESC 鍵並強行重鎖游標的 Bug；若背包未開啟，ESC 鍵直接由 `toggle_grab_cursor` 釋放游標 (`CursorGrabMode::None`, `visible = true`)，達成正統的 ESC 游標脫離遊戲功能；
-  - 實裝 `CursorJustLocked` 資源，游標解鎖狀態下點擊視窗僅會置中並重鎖游標，同幀自動阻斷方塊採掘與放置事件，杜絕重獲焦點時的誤觸破壞。
+- **9/30 焦點驅動游標鎖定架構 (Focus-Driven Cursor Locking Architecture)**:
+  - 視窗未獲焦點時絕對不鎖鼠標：移除 `WindowPlugin` 與 `setup_player` 中的過早鎖定，視窗啟動預設標準游標；在 `toggle_grab_cursor` 實施第一鐵律：當 `!window.focused` 或剛失去焦點時，游標無條件維持自由釋放 (`CursorGrabMode::None`, `visible = true`)，絕不在非聚焦狀態定住或約束鼠標；
+  - 聚焦時才置中鎖定：當視窗獲得焦點（開局視窗首次聚焦就緒或切回視窗觸發 `WindowFocused { focused: true }`）且背包未開啟時，游標精確定位至視窗中央 `(width/2, height/2)` 並鎖定 (`CursorGrabMode::Locked`, `visible = false`)，同時觸發 `CursorJustLocked` 防誤觸閘門；
+  - 按 ESC 鍵釋放游標 (`CursorGrabMode::None`, `visible = true`)，點擊視窗重新置中鎖定；關閉背包時同步檢測 `window.focused`，保證未獲焦點時絕不誤鎖。
 
 - **9/30 第三梯隊 (Tier 3) 3D DDA 快速體素遍歷演算法、區塊網格記憶體零拷貝提取優化與冗餘代碼清理**:
   - 實裝 Amanatides & Woo 3D 快速體素遍歷演算法 (Fast Voxel Traversal / 3D DDA)，徹底淘汰 0.05m 固定步長線性搜尋；結合 Slab Method 達成火把等局部子幾何體 (Sub-block AABB) 精準求交，並產出精確表面法線與相鄰放置座標；全面套用於 `player_interaction`、`draw_target_block_highlight` 與 `update_crosshair`；

@@ -126,17 +126,8 @@ pub struct PlayerCamera;
 
 fn setup_player(
     mut commands: Commands,
-    mut q_windows: Query<&mut Window, With<PrimaryWindow>>,
     registry: Res<ItemRegistry>,
 ) {
-    // 🚀 初始化時精確鎖定並置中滑鼠游標
-    if let Ok(mut window) = q_windows.get_single_mut() {
-        let center = Vec2::new(window.width() / 2.0, window.height() / 2.0);
-        window.set_cursor_position(Some(center));
-        window.cursor.grab_mode = CursorGrabMode::Locked;
-        window.cursor.visible = false;
-    }
-
     let mut inventory = Inventory::new(36);
     inventory.set_slot(0, Some(ItemStack::new(ItemType::Stone, 64, &registry)));
     inventory.set_slot(1, Some(ItemStack::new(ItemType::Dirt, 64, &registry)));
@@ -185,28 +176,59 @@ fn setup_player(
 }
 
 fn toggle_grab_cursor(
-    mut q_windows: Query<&mut Window, With<PrimaryWindow>>,
+    mut q_windows: Query<(Entity, &mut Window), With<PrimaryWindow>>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse_btn: Res<ButtonInput<MouseButton>>,
+    mut focus_events: EventReader<bevy::window::WindowFocused>,
     inv_state: Option<Res<crate::ui::inventory::InventoryScreenState>>,
     mut initial_grab_done: Local<bool>,
     mut cursor_just_locked: ResMut<CursorJustLocked>,
 ) {
     cursor_just_locked.0 = false;
 
-    let Ok(mut window) = q_windows.get_single_mut() else { return; };
+    let Ok((window_entity, mut window)) = q_windows.get_single_mut() else { return; };
+
+    // 檢查是否有視窗聚焦/失焦事件
+    let mut gained_focus = false;
+    let mut lost_focus = false;
+    for ev in focus_events.read() {
+        if ev.window == window_entity {
+            if ev.focused {
+                gained_focus = true;
+            } else {
+                lost_focus = true;
+            }
+        }
+    }
+
+    // 🚀 規則 1：視窗未獲焦點時絕對不鎖鼠標 (失去焦點或目前處於非聚焦狀態)
+    // 若視窗未聚焦或剛失去焦點，游標無條件維持自由釋放狀態，絕不置中或鎖定！
+    if !window.focused || lost_focus {
+        if window.cursor.grab_mode != CursorGrabMode::None {
+            window.cursor.grab_mode = CursorGrabMode::None;
+        }
+        if !window.cursor.visible {
+            window.cursor.visible = true;
+        }
+        return;
+    }
 
     let inv_is_open = inv_state.as_ref().map_or(false, |s| s.is_open);
 
-    // 🚀 開局視窗就緒時剛性置中並鎖定滑鼠一次（確保 Windows/Winit 視窗載入就緒後游標精準置中）
-    if !*initial_grab_done {
-        if !inv_is_open && window.width() > 0.0 && window.height() > 0.0 {
-            let center = Vec2::new(window.width() / 2.0, window.height() / 2.0);
-            window.set_cursor_position(Some(center));
-            window.cursor.grab_mode = CursorGrabMode::Locked;
-            window.cursor.visible = false;
-            *initial_grab_done = true;
-        }
+    // 🚀 規則 2：聚焦時才置中鎖定 (開局首次聚焦就緒或重新獲得焦點時)
+    let should_focus_lock = (!*initial_grab_done || gained_focus) && !inv_is_open;
+    if should_focus_lock && window.width() > 0.0 && window.height() > 0.0 {
+        let center = Vec2::new(window.width() / 2.0, window.height() / 2.0);
+        window.set_cursor_position(Some(center));
+        window.cursor.grab_mode = CursorGrabMode::Locked;
+        window.cursor.visible = false;
+        *initial_grab_done = true;
+        cursor_just_locked.0 = true; // 避免切回視窗時的點擊誤破壞/放置方塊
+        return;
+    }
+
+    if !*initial_grab_done && window.width() > 0.0 && window.height() > 0.0 {
+        *initial_grab_done = true;
     }
 
     // 若背包開啟中，游標模式由背包 UI 系統全權託管
@@ -214,13 +236,14 @@ fn toggle_grab_cursor(
         return;
     }
 
-    // 🚀 按 ESC 鍵解鎖滑鼠脫離 (游標重獲自由並顯現)
+    // 🚀 規則 3：按 ESC 鍵主動釋放游標脫離遊戲 (游標重獲自由並顯現)
     if keys.just_pressed(KeyCode::Escape) {
         window.cursor.grab_mode = CursorGrabMode::None;
         window.cursor.visible = true;
+        return;
     }
 
-    // 🚀 點擊滑鼠左鍵或右鍵重新置中鎖定滑鼠 (如果目前不在鎖定狀態)
+    // 🚀 規則 4：在聚焦視窗內點擊滑鼠左鍵或右鍵，重新置中鎖定滑鼠
     if window.cursor.grab_mode != CursorGrabMode::Locked 
         && (mouse_btn.just_pressed(MouseButton::Left) || mouse_btn.just_pressed(MouseButton::Right)) 
     {
@@ -1017,6 +1040,89 @@ mod tests {
         }
         schedule.run(&mut world);
         assert!(!world.resource::<CursorJustLocked>().0, "次幀應清空 cursor_just_locked 恢復正常互動");
+    }
+
+    #[test]
+    fn test_cursor_unfocused_never_locks_and_focus_locks() {
+        let mut world = bevy::prelude::World::new();
+        world.insert_resource(ButtonInput::<KeyCode>::default());
+        world.insert_resource(ButtonInput::<MouseButton>::default());
+        world.insert_resource(CursorJustLocked::default());
+        world.insert_resource(Events::<bevy::window::WindowFocused>::default());
+
+        // 初始狀態：視窗未獲得焦點 (focused: false)
+        let window_entity = world.spawn((
+            Window {
+                title: "Test Window".into(),
+                resolution: (1280.0, 720.0).into(),
+                cursor: bevy::window::Cursor {
+                    grab_mode: CursorGrabMode::None,
+                    visible: true,
+                    ..default()
+                },
+                focused: false,
+                ..default()
+            },
+            PrimaryWindow,
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(toggle_grab_cursor);
+
+        // 1. 視窗未獲焦點時：絕對不鎖定游標
+        schedule.run(&mut world);
+        let win = world.get::<Window>(window_entity).unwrap();
+        assert_eq!(win.cursor.grab_mode, CursorGrabMode::None, "未聚焦時絕對不鎖定鼠標");
+        assert!(win.cursor.visible, "未聚焦時游標必須可見");
+
+        // 2. 未聚焦狀態下即使用戶點擊滑鼠左鍵，也絕不鎖定
+        {
+            let mut mouse = world.resource_mut::<ButtonInput<MouseButton>>();
+            mouse.press(MouseButton::Left);
+        }
+        schedule.run(&mut world);
+        let win = world.get::<Window>(window_entity).unwrap();
+        assert_eq!(win.cursor.grab_mode, CursorGrabMode::None, "未聚焦時點擊滑鼠絕不能鎖定");
+        assert!(win.cursor.visible);
+        assert!(!world.resource::<CursorJustLocked>().0);
+
+        {
+            let mut mouse = world.resource_mut::<ButtonInput<MouseButton>>();
+            mouse.release(MouseButton::Left);
+            mouse.reset(MouseButton::Left);
+        }
+
+        // 3. 視窗獲得焦點 (聚焦)：立即置中並鎖定！
+        {
+            let mut win = world.get_mut::<Window>(window_entity).unwrap();
+            win.focused = true;
+            let mut events = world.resource_mut::<Events<bevy::window::WindowFocused>>();
+            events.send(bevy::window::WindowFocused {
+                window: window_entity,
+                focused: true,
+            });
+        }
+        schedule.run(&mut world);
+        let win = world.get::<Window>(window_entity).unwrap();
+        assert_eq!(win.cursor.grab_mode, CursorGrabMode::Locked, "聚焦時才置中鎖定");
+        assert!(!win.cursor.visible, "鎖定時隱藏游標");
+        assert_eq!(win.cursor_position(), Some(Vec2::new(640.0, 360.0)), "聚焦時精準置中");
+        assert!(world.resource::<CursorJustLocked>().0, "聚焦時標記 cursor_just_locked 防止點擊誤觸");
+
+        // 4. 視窗失去焦點 (失焦)：立即釋放游標！
+        {
+            let mut win = world.get_mut::<Window>(window_entity).unwrap();
+            win.focused = false;
+            let mut events = world.resource_mut::<Events<bevy::window::WindowFocused>>();
+            events.send(bevy::window::WindowFocused {
+                window: window_entity,
+                focused: false,
+            });
+        }
+        schedule.run(&mut world);
+        let win = world.get::<Window>(window_entity).unwrap();
+        assert_eq!(win.cursor.grab_mode, CursorGrabMode::None, "失焦時立即解鎖游標");
+        assert!(win.cursor.visible, "失焦時游標恢復可見");
     }
 }
 
