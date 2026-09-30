@@ -28,6 +28,11 @@ fn main() {
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "CaveGame".into(),
+                    cursor: bevy::window::Cursor {
+                        grab_mode: bevy::window::CursorGrabMode::Locked,
+                        visible: false,
+                        ..default()
+                    },
                     ..default()
                 }),
                 ..default()

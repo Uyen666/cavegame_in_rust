@@ -244,7 +244,9 @@ pub fn toggle_inventory_screen(
     let press_e = keys.just_pressed(KeyCode::KeyE);
     let press_esc = keys.just_pressed(KeyCode::Escape);
 
-    if !press_e && !press_esc {
+    // 🚀 關鍵防線：只有按下 E 鍵，或在「背包開啟中」按下 ESC 鍵，才觸發背包切換！
+    // 若背包處於關閉狀態，ESC 鍵屬於「滑鼠脫離遊戲視窗 (Cursor Release)」，此處絕不攔截與重鎖！
+    if !press_e && (!press_esc || !state.is_open) {
         return;
     }
 
@@ -264,7 +266,9 @@ pub fn toggle_inventory_screen(
         window.cursor.visible = true;
         *root_vis = Visibility::Inherited;
     } else {
-        // 關閉背包：鎖定滑鼠游標，自動歸還游標手持物品
+        // 關閉背包：鎖定滑鼠游標並精確置中，自動歸還游標手持物品
+        let center = Vec2::new(window.width() / 2.0, window.height() / 2.0);
+        window.set_cursor_position(Some(center));
         window.cursor.grab_mode = CursorGrabMode::Locked;
         window.cursor.visible = false;
         *root_vis = Visibility::Hidden;

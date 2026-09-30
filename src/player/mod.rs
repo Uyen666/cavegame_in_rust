@@ -9,14 +9,25 @@ use bevy::color::Mix;
 use bevy::render::view::RenderLayers;
 use crate::item::{Inventory, ItemStack, ItemType, ItemKind, ItemRegistry, get_block_drop};
 
+#[derive(Resource, Default)]
+pub struct CursorJustLocked(pub bool);
+
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_player)
+        app.init_resource::<CursorJustLocked>()
+           .add_systems(Startup, setup_player)
            .add_systems(
                Update,
-               (toggle_grab_cursor, player_interaction, player_input_capture, update_fog_color, draw_target_block_highlight)
+               (
+                   toggle_grab_cursor,
+                   player_interaction,
+                   player_input_capture,
+                   update_fog_color,
+                   draw_target_block_highlight,
+               )
+                   .chain()
                    .run_if(in_state(crate::GameState::InGame))
            );
     }
@@ -26,8 +37,15 @@ fn player_input_capture(
     keys: Res<ButtonInput<KeyCode>>,
     mut scroll_evr: EventReader<bevy::input::mouse::MouseWheel>,
     mut q_player: Query<(&mut Player, &mut Inventory)>,
+    q_windows: Query<&Window, With<PrimaryWindow>>,
     inv_state: Option<Res<crate::ui::inventory::InventoryScreenState>>,
 ) {
+    if let Ok(window) = q_windows.get_single() {
+        if window.cursor.grab_mode != CursorGrabMode::Locked {
+            return;
+        }
+    }
+
     if let Some(ref state) = inv_state {
         if state.is_open {
             return;
@@ -111,8 +129,10 @@ fn setup_player(
     mut q_windows: Query<&mut Window, With<PrimaryWindow>>,
     registry: Res<ItemRegistry>,
 ) {
-    // Grab cursor
+    // 🚀 初始化時精確鎖定並置中滑鼠游標
     if let Ok(mut window) = q_windows.get_single_mut() {
+        let center = Vec2::new(window.width() / 2.0, window.height() / 2.0);
+        window.set_cursor_position(Some(center));
         window.cursor.grab_mode = CursorGrabMode::Locked;
         window.cursor.visible = false;
     }
@@ -169,25 +189,46 @@ fn toggle_grab_cursor(
     keys: Res<ButtonInput<KeyCode>>,
     mouse_btn: Res<ButtonInput<MouseButton>>,
     inv_state: Option<Res<crate::ui::inventory::InventoryScreenState>>,
+    mut initial_grab_done: Local<bool>,
+    mut cursor_just_locked: ResMut<CursorJustLocked>,
 ) {
-    if let Some(ref state) = inv_state {
-        if state.is_open {
-            return;
-        }
-    }
+    cursor_just_locked.0 = false;
 
     let Ok(mut window) = q_windows.get_single_mut() else { return; };
 
-    // 按 ESC 鍵解鎖滑鼠
+    let inv_is_open = inv_state.as_ref().map_or(false, |s| s.is_open);
+
+    // 🚀 開局視窗就緒時剛性置中並鎖定滑鼠一次（確保 Windows/Winit 視窗載入就緒後游標精準置中）
+    if !*initial_grab_done {
+        if !inv_is_open && window.width() > 0.0 && window.height() > 0.0 {
+            let center = Vec2::new(window.width() / 2.0, window.height() / 2.0);
+            window.set_cursor_position(Some(center));
+            window.cursor.grab_mode = CursorGrabMode::Locked;
+            window.cursor.visible = false;
+            *initial_grab_done = true;
+        }
+    }
+
+    // 若背包開啟中，游標模式由背包 UI 系統全權託管
+    if inv_is_open {
+        return;
+    }
+
+    // 🚀 按 ESC 鍵解鎖滑鼠脫離 (游標重獲自由並顯現)
     if keys.just_pressed(KeyCode::Escape) {
         window.cursor.grab_mode = CursorGrabMode::None;
         window.cursor.visible = true;
     }
 
-    // 點擊左鍵重新鎖定滑鼠 (如果目前不在鎖定狀態)
-    if mouse_btn.just_pressed(MouseButton::Left) {
+    // 🚀 點擊滑鼠左鍵或右鍵重新置中鎖定滑鼠 (如果目前不在鎖定狀態)
+    if window.cursor.grab_mode != CursorGrabMode::Locked 
+        && (mouse_btn.just_pressed(MouseButton::Left) || mouse_btn.just_pressed(MouseButton::Right)) 
+    {
+        let center = Vec2::new(window.width() / 2.0, window.height() / 2.0);
+        window.set_cursor_position(Some(center));
         window.cursor.grab_mode = CursorGrabMode::Locked;
         window.cursor.visible = false;
+        cursor_just_locked.0 = true; // 標記剛鎖定，防止此點擊誤觸方塊破壞或放置
     }
 }
 
@@ -435,9 +476,10 @@ fn player_interaction(
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
     mut q_player: Query<(&Transform, &mut Player, &mut Inventory)>,
+    cursor_just_locked: Res<CursorJustLocked>,
 ) {
     let Ok(window) = q_windows.get_single() else { return; };
-    if window.cursor.grab_mode != CursorGrabMode::Locked { return; }
+    if window.cursor.grab_mode != CursorGrabMode::Locked || cursor_just_locked.0 { return; }
     
     let Ok((player_transform, mut player, mut inventory)) = q_player.get_single_mut() else { return; };
 
@@ -697,8 +739,14 @@ fn draw_target_block_highlight(
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     world: Res<WorldManager>,
     q_player: Query<&Player>,
+    q_windows: Query<&Window, With<PrimaryWindow>>,
     mut gizmos: Gizmos,
 ) {
+    if let Ok(window) = q_windows.get_single() {
+        if window.cursor.grab_mode != CursorGrabMode::Locked {
+            return;
+        }
+    }
     let Ok(player) = q_player.get_single() else { return; };
     if player.is_spectator { return; } // 旁觀者模式跳過
     
@@ -898,6 +946,77 @@ mod tests {
         // 4. 火把 (硬度 0.0)：秒碎
         let torch = BlockType::Torch;
         assert_eq!(torch.hardness(), 0.0);
+    }
+
+    #[test]
+    fn test_cursor_release_on_escape_and_relock_on_click() {
+        let mut world = bevy::prelude::World::new();
+        world.insert_resource(ButtonInput::<KeyCode>::default());
+        world.insert_resource(ButtonInput::<MouseButton>::default());
+        world.insert_resource(CursorJustLocked::default());
+        world.insert_resource(Events::<bevy::window::WindowFocused>::default());
+
+        let window_entity = world.spawn((
+            Window {
+                title: "Test Window".into(),
+                resolution: (1280.0, 720.0).into(),
+                cursor: bevy::window::Cursor {
+                    grab_mode: CursorGrabMode::Locked,
+                    visible: false,
+                    ..default()
+                },
+                ..default()
+            },
+            PrimaryWindow,
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(toggle_grab_cursor);
+
+        // 1. 初生影格：自動鎖定並置中 (640, 360)
+        schedule.run(&mut world);
+        let win = world.get::<Window>(window_entity).unwrap();
+        assert_eq!(win.cursor.grab_mode, CursorGrabMode::Locked);
+        assert!(!win.cursor.visible);
+        assert_eq!(win.cursor_position(), Some(Vec2::new(640.0, 360.0)));
+
+        // 2. 按下 ESC：釋放游標脫離視窗
+        {
+            let mut keys = world.resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::Escape);
+        }
+        schedule.run(&mut world);
+        let win = world.get::<Window>(window_entity).unwrap();
+        assert_eq!(win.cursor.grab_mode, CursorGrabMode::None, "按下 ESC 應釋放滑鼠游標");
+        assert!(win.cursor.visible, "按下 ESC 應顯示滑鼠游標");
+
+        // 清理 ESC 輸入
+        {
+            let mut keys = world.resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Escape);
+            keys.reset(KeyCode::Escape);
+        }
+
+        // 3. 點擊滑鼠左鍵：重新置中並鎖定滑鼠，且觸發 cursor_just_locked
+        {
+            let mut mouse = world.resource_mut::<ButtonInput<MouseButton>>();
+            mouse.press(MouseButton::Left);
+        }
+        schedule.run(&mut world);
+        let win = world.get::<Window>(window_entity).unwrap();
+        assert_eq!(win.cursor.grab_mode, CursorGrabMode::Locked, "點擊左鍵應重新鎖定滑鼠");
+        assert!(!win.cursor.visible);
+        assert_eq!(win.cursor_position(), Some(Vec2::new(640.0, 360.0)), "重新鎖定時游標必須精確置中");
+        assert!(world.resource::<CursorJustLocked>().0, "重新鎖定那一影格應標記 cursor_just_locked 防止誤觸方塊");
+
+        // 4. 下一影格無點擊：cursor_just_locked 自動復位
+        {
+            let mut mouse = world.resource_mut::<ButtonInput<MouseButton>>();
+            mouse.release(MouseButton::Left);
+            mouse.reset(MouseButton::Left);
+        }
+        schedule.run(&mut world);
+        assert!(!world.resource::<CursorJustLocked>().0, "次幀應清空 cursor_just_locked 恢復正常互動");
     }
 }
 
