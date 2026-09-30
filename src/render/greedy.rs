@@ -1040,79 +1040,124 @@ fn generate_fluid_mesh(
     }
 }
 
+/// 構建用於 UI 物品欄（Hotbar / Inventory）等 3D 預覽的獨立體素網格。
+///
+/// 採用與區塊貪婪網格生成器完全一致的座標系、頂點位元壓縮（Packed Format）與頂點繞行法（Winding Order），
+/// 確保在 GPU 背面剔除（Backface Culling）與自訂 WGSL Shader 下各表面法線正確朝外且 UV 貼圖映射無瑕疵。
 pub fn build_single_voxel_mesh(block: BlockType) -> Mesh {
     let mut bucket = empty_mesh();
     if block == BlockType::Air {
         return Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     }
 
-    let is_torch = block.is_torch();
-    let (min_x, max_x) = (0.0, 1.0);
-    let (min_y, max_y) = (0.0, 1.0);
-    let (min_z, max_z) = (0.0, 1.0);
-
-    for d in 0..3 {
-        for rev in [false, true] {
-            let normal_val = if rev { -1 } else { 1 };
-            let normal_vec = match d {
-                0 => [normal_val as f32, 0.0, 0.0],
-                1 => [0.0, normal_val as f32, 0.0],
-                2 => [0.0, 0.0, normal_val as f32],
-                _ => [0.0, 0.0, 0.0],
-            };
-            
-            let tex_layer = get_texture_layer(block, d, normal_val);
-            let sky_lights = [15, 15, 15, 15];
-            let block_lights = [15, 15, 15, 15]; // UI full bright
-            
-            let (v1, v2, v3, v4) = match (d, rev) {
-                (0, false) => ([max_x, min_y, max_z], [max_x, max_y, max_z], [max_x, max_y, min_z], [max_x, min_y, min_z]),
-                (0, true)  => ([min_x, min_y, min_z], [min_x, max_y, min_z], [min_x, max_y, max_z], [min_x, min_y, max_z]),
-                (1, false) => ([min_x, max_y, min_z], [min_x, max_y, max_z], [max_x, max_y, max_z], [max_x, max_y, min_z]),
-                (1, true)  => ([min_x, min_y, max_z], [min_x, min_y, min_z], [max_x, min_y, min_z], [max_x, min_y, max_z]),
-                (2, false) => ([min_x, min_y, max_z], [max_x, min_y, max_z], [max_x, max_y, max_z], [min_x, max_y, max_z]),
-                (2, true)  => ([max_x, min_y, min_z], [min_x, min_y, min_z], [min_x, max_y, min_z], [max_x, max_y, min_z]),
-                _ => unreachable!(),
+    if block.is_torch() {
+        // 🔥 火把特化幾何：使用程序化頂點解算，並進行雙面渲染以確保在所有角度清晰可見
+        push_single_torch_mesh(&mut bucket, block);
+    } else {
+        // 標準 1x1x1 體素方塊：逐軸解算 6 個獨立面，嚴格遵循與區塊網格化一致之 (u, v) 切線空間與 CCW 正確環繞
+        for d in 0..3usize {
+            let (u, v) = match d {
+                0 => (1, 2), // d=0 (X-face): u=Y, v=Z
+                1 => (0, 2), // d=1 (Y-face): u=X, v=Z
+                _ => (0, 1), // d=2 (Z-face): u=X, v=Y
             };
 
-            let start_len = bucket.2.len();
-            let (fv1, fv2, fv3, fv4, f_rev) = if is_torch {
-                let base = [0.0f32, 0.0, 0.0];
-                (base, base, base, base, false)
-            } else {
-                (v1, v2, v3, v4, rev)
-            };
-            push_quad(
-                &mut bucket,
-                fv1, fv2, fv3, fv4,
-                normal_vec,
-                [1.0, 1.0, 1.0, 1.0],
-                tex_layer,
-                sky_lights,
-                block_lights,
-                0,
-                1, 1,
-                f_rev, d
-            );
-            if is_torch {
-                for i in start_len..bucket.2.len() {
-                    bucket.2[i] = [0.0, 0.0];
+            for normal_val in [1i32, -1i32] {
+                let normal_vec = match d {
+                    0 => [normal_val as f32, 0.0, 0.0],
+                    1 => [0.0, normal_val as f32, 0.0],
+                    2 => [0.0, 0.0, normal_val as f32],
+                    _ => [0.0, 0.0, 0.0],
+                };
+
+                let tex_layer = get_texture_layer(block, d, normal_val);
+                let sky_lights = [15, 15, 15, 15];
+                let block_lights = [15, 15, 15, 15]; // UI 預覽鎖定 15 級滿亮
+
+                let mut x = [0i32; 3];
+                x[d] = if normal_val > 0 { 1 } else { 0 };
+
+                let mut du = [0i32; 3];
+                du[u] = 1;
+                let mut dv = [0i32; 3];
+                dv[v] = 1;
+
+                let v1 = [x[0] as f32, x[1] as f32, x[2] as f32];
+                let v2 = [(x[0] + du[0]) as f32, (x[1] + du[1]) as f32, (x[2] + du[2]) as f32];
+                let v3 = [(x[0] + du[0] + dv[0]) as f32, (x[1] + du[1] + dv[1]) as f32, (x[2] + du[2] + dv[2]) as f32];
+                let v4 = [(x[0] + dv[0]) as f32, (x[1] + dv[1]) as f32, (x[2] + dv[2]) as f32];
+
+                // 繞行方向與貪婪網格算法嚴格對齊：
+                // 當 d=1 (Y-face) 時，du × dv = X × Z = -Y，因此需要反轉 rev 以維持 CCW 朝外法線
+                let mut rev = normal_val < 0;
+                if d == 1 {
+                    rev = !rev;
                 }
+
+                push_quad(
+                    &mut bucket,
+                    v1, v2, v3, v4,
+                    normal_vec,
+                    [1.0, 1.0, 1.0, 1.0],
+                    tex_layer,
+                    sky_lights,
+                    block_lights,
+                    0,
+                    1, 1,
+                    rev, d,
+                );
             }
         }
     }
-    
+
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-    let mut positions = Vec::new();
-    for _ in 0..bucket.0.len() {
-        positions.push([0.0, 0.0, 0.0]); // dummy positions for AABB
-    }
+    let positions = vec![[0.0, 0.0, 0.0]; bucket.0.len()]; // dummy positions for Bevy AABB calculation
 
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(ATTRIBUTE_PACKED_DATA, bucket.0);
     mesh.insert_attribute(ATTRIBUTE_FLOW_VECTOR, bucket.2);
     mesh.insert_indices(Indices::U32(bucket.1));
     mesh
+}
+
+/// 構建單一火把的 UI 預覽網格（雙面渲染以杜絕任何角度背面剔除漏面）
+fn push_single_torch_mesh(bucket: &mut MeshData, block: BlockType) {
+    let sky_lights = [15, 15, 15, 15];
+    let block_lights = [15, 15, 15, 15];
+    let v_base = [0.0f32, 0.0, 0.0];
+
+    for d in 0..3usize {
+        for normal_val in [1i32, -1i32] {
+            let normal_vec = match d {
+                0 => [normal_val as f32, 0.0, 0.0],
+                1 => [0.0, normal_val as f32, 0.0],
+                2 => [0.0, 0.0, normal_val as f32],
+                _ => [0.0, 0.0, 0.0],
+            };
+
+            let tex_layer = get_texture_layer(block, d, normal_val);
+
+            // 雙面渲染：推入正面與背面，使得在任何角度觀察均能完整顯色
+            for rev in [false, true] {
+                let start_len = bucket.2.len();
+                push_quad(
+                    bucket,
+                    v_base, v_base, v_base, v_base,
+                    normal_vec,
+                    [1.0, 1.0, 1.0, 1.0],
+                    tex_layer,
+                    sky_lights,
+                    block_lights,
+                    0,
+                    1, 1,
+                    rev, d,
+                );
+                for i in start_len..bucket.2.len() {
+                    bucket.2[i] = [0.0, 0.0];
+                }
+            }
+        }
+    }
 }
 
 pub fn push_torch_quads(
@@ -1197,3 +1242,71 @@ pub fn push_torch_quads(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_single_voxel_mesh_air() {
+        let mesh = build_single_voxel_mesh(BlockType::Air);
+        assert_eq!(mesh.count_vertices(), 0);
+        assert!(mesh.indices().is_none());
+    }
+
+    #[test]
+    fn test_build_single_voxel_mesh_oak_log() {
+        let mesh = build_single_voxel_mesh(BlockType::OakLog);
+        assert_eq!(mesh.count_vertices(), 24); // 6 faces * 4 vertices
+
+        let indices = mesh.indices().expect("Indices must exist");
+        assert_eq!(indices.len(), 36); // 6 faces * 2 triangles * 3 vertices
+
+        // Verify packed data attributes
+        let packed_attr = mesh.attribute(ATTRIBUTE_PACKED_DATA).expect("Packed attribute exists");
+        let packed_data: &[u32] = match packed_attr {
+            bevy::render::mesh::VertexAttributeValues::Uint32(v) => v,
+            _ => panic!("Expected Uint32 format"),
+        };
+        assert_eq!(packed_data.len(), 24);
+
+        // Check that all 6 face IDs (0..=5) are covered
+        let mut face_seen = [false; 6];
+        for &packed in packed_data {
+            let face_id = ((packed >> 16) & 0x07) as usize;
+            let tex_layer = (packed >> 19) & 0x0F;
+            assert!(face_id < 6);
+            face_seen[face_id] = true;
+
+            // OakLog: Top (+Y, face_id 2) = 6, Bottom (-Y, face_id 3) = 6, Sides (0, 1, 4, 5) = 5
+            if face_id == 2 || face_id == 3 {
+                assert_eq!(tex_layer, 6, "Oak log top/bottom must use texture layer 6");
+            } else {
+                assert_eq!(tex_layer, 5, "Oak log sides must use texture layer 5");
+            }
+        }
+        assert!(face_seen.iter().all(|&seen| seen), "All 6 faces must be present in single voxel mesh");
+    }
+
+    #[test]
+    fn test_build_single_voxel_mesh_torch() {
+        let mesh = build_single_voxel_mesh(BlockType::Torch);
+        // Double-sided rendering: 6 faces * 2 sides * 4 vertices = 48 vertices
+        assert_eq!(mesh.count_vertices(), 48);
+
+        let indices = mesh.indices().expect("Indices must exist");
+        assert_eq!(indices.len(), 72); // 48 / 4 * 6 = 72 indices
+
+        let packed_attr = mesh.attribute(ATTRIBUTE_PACKED_DATA).expect("Packed attribute exists");
+        let packed_data: &[u32] = match packed_attr {
+            bevy::render::mesh::VertexAttributeValues::Uint32(v) => v,
+            _ => panic!("Expected Uint32 format"),
+        };
+
+        for &packed in packed_data {
+            let tex_layer = (packed >> 19) & 0x0F;
+            assert_eq!(tex_layer, 13, "Torch must use texture layer 13");
+        }
+    }
+}
+
