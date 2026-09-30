@@ -32,10 +32,13 @@ pub fn update_day_night_cycle(
 }
 
 pub fn fluid_tick_system(
+    mut commands: Commands,
     time: Res<Time>,
     mut timer: ResMut<FluidTickTimer>,
     mut world_manager: ResMut<WorldManager>,
     config: Res<crate::config::EngineConfig>,
+    mut q_player: Query<(&Transform, &mut crate::item::Inventory)>,
+    registry: Res<crate::item::ItemRegistry>,
 ) {
     let tick_speed = config.fluid_tick_speed;
     timer.0.set_duration(std::time::Duration::from_secs_f32(tick_speed));
@@ -137,7 +140,7 @@ pub fn fluid_tick_system(
                                 
                                 let allow_flow_here = min_dist == 999 
                                     || dist_to_pos == min_dist 
-                                    || (min_dist != 1 && b_curr_pos == BlockType::Air);
+                                    || (min_dist != 1 && (b_curr_pos == BlockType::Air || b_curr_pos.is_torch()));
 
                                 if allow_flow_here {
                                     if npos_fluid_level > max_n { max_n = npos_fluid_level; }
@@ -150,6 +153,17 @@ pub fn fluid_tick_system(
                     } else {
                         target_level = 0;
                     }
+                }
+            }
+        }
+
+        // 🚀 流體沖刷物理：若水流擴散至火把位置，直接將火把沖刷破壞並移除光源，掉落物返還玩家背包
+        if block.is_torch() && target_level > 0 {
+            world_manager.set_block_global(pos, BlockType::Air, &mut commands);
+            for (p_tf, mut inv) in &mut q_player {
+                if p_tf.translation.distance(pos.as_vec3()) <= 12.0 {
+                    inv.add_item(crate::item::ItemStack::new(crate::item::ItemType::Torch, 1, &registry), &registry);
+                    break;
                 }
             }
         }
@@ -167,7 +181,7 @@ pub fn fluid_tick_system(
                 if npos.y >= 0 && npos.y < crate::utils::math::WORLD_MAX_Y {
                     let neighbor_block = world_manager.get_block_global(npos);
                     let neighbor_fluid = world_manager.get_fluid_global(npos) & 0x0F;
-                    if neighbor_block == BlockType::Air || neighbor_fluid > 0 {
+                    if neighbor_block == BlockType::Air || neighbor_block.is_torch() || neighbor_fluid > 0 {
                         if pushed_this_tick.insert(npos) {
                             world_manager.fluid_queue.push_back(npos);
                         }

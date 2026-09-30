@@ -3,3 +3,12 @@
 /.vscode
 *.log
 expanded.rs
+.DS_Store
+Thumbs.db
+*.env
+*.env.*
+*.secret
+*.key
+*.pem
+*.token
+*.tmp

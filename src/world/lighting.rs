@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use crate::world::voxel::BlockType;
 use crate::world::generator::ChunkBuffer;
 use crate::world::chunk::ChunkLightBuffer;
 
@@ -22,10 +21,10 @@ pub fn init_sunlight(
                 let block = blocks.blocks[idx];
 
                 if gy > max_surface_y && !is_blocked {
-                    if block == BlockType::Air {
+                    if !block.is_opaque() {
                         light_buffer.set_sky_light(idx, 15);
                     } else {
-                        // Encountered foliage or block above max_surface_y, block direct sunlight!
+                        // 遇到不透明方塊 (如樹葉/固體)，阻斷直射陽光
                         light_buffer.set_sky_light(idx, 0);
                         is_blocked = true;
                     }
@@ -60,7 +59,7 @@ pub fn propagate_sky_light(blocks: &ChunkBuffer, light_buffer: &mut ChunkLightBu
             for &(nx, ny, nz) in &neighbors {
                 if nx < 32 && ny < 32 && nz < 32 {
                     let nidx = nx + ny * 32 + nz * 1024;
-                    if blocks.blocks[nidx] == BlockType::Air && light_buffer.get_sky_light(nidx) < light {
+                    if !blocks.blocks[nidx].is_opaque() && light_buffer.get_sky_light(nidx) < light {
                         should_enqueue = true;
                         break;
                     }
@@ -95,7 +94,7 @@ pub fn propagate_sky_light(blocks: &ChunkBuffer, light_buffer: &mut ChunkLightBu
         for &(nx, ny, nz) in &neighbors {
             if nx < 32 && ny < 32 && nz < 32 {
                 let nidx = nx + ny * 32 + nz * 1024;
-                if blocks.blocks[nidx] == BlockType::Air {
+                if !blocks.blocks[nidx].is_opaque() {
                     if light_buffer.get_sky_light(nidx) < light - 1 {
                         light_buffer.set_sky_light(nidx, light - 1);
                         queue.push_back(nidx);

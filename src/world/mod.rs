@@ -587,6 +587,28 @@ mod tests {
         assert_eq!(world_manager.get_block_light_global(torch_pos + IVec3::Y), 0);
         assert_eq!(world_manager.get_block_light_global(torch_pos + IVec3::new(2, 0, 0)), 0);
     }
+
+    #[test]
+    fn test_sunlight_penetrates_glass_and_torches() {
+        let chunk_pos = IVec3::new(0, 0, 0);
+        let mut blocks = generator::ChunkBuffer { blocks: [BlockType::Air; 32768] };
+        let mut light_buf = ChunkLightBuffer::default();
+        let heightmap = [5i32; 1024]; // max surface height is 5 (ground is at <= 5)
+
+        // Place glass at y=10 (col bx=0, bz=0)
+        let idx_glass = 0 + 10 * 32 + 0 * 1024;
+        blocks.blocks[idx_glass] = BlockType::Glass;
+
+        // Place torch at y=8
+        let idx_torch = 0 + 8 * 32 + 0 * 1024;
+        blocks.blocks[idx_torch] = BlockType::Torch;
+
+        lighting::init_sunlight(chunk_pos, &blocks, &mut light_buf, &heightmap);
+
+        // y=10 (Glass) and y=8 (Torch) should both receive direct sunlight 15 because they are non-opaque!
+        assert_eq!(light_buf.get_sky_light(idx_glass), 15, "Glass must allow direct sunlight penetration");
+        assert_eq!(light_buf.get_sky_light(idx_torch), 15, "Torch must allow direct sunlight penetration");
+    }
 }
 
 

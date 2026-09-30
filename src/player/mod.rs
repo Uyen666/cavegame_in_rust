@@ -550,6 +550,7 @@ fn update_fog_color(
     mut q_fog: Query<&mut FogSettings, With<PlayerCamera>>,
     mut q_proj: Query<&mut Projection, With<PlayerCamera>>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
+    mut materials: ResMut<Assets<crate::render::material::VoxelMaterial>>,
 ) {
     let Ok(cam_tf) = q_camera.get_single() else { return; };
     let translation = cam_tf.translation();
@@ -577,6 +578,8 @@ fn update_fog_color(
     // 防禦：render_distance 不得為 0
     if config.render_distance == 0 { return; }
     let max_distance = config.render_distance as f32 * 32.0; // 8 * 32 = 256.0
+    let fog_start = max_distance * 0.75; // 192 格柔和起霧
+    let fog_end = max_distance - 8.0;   // 248 格完全消融遮擋地圖邊界
 
     // 【遠平面剛性鎖死】：獨立 query 確保不因 FogSettings 缺失而連帶失敗
     if let Ok(mut proj) = q_proj.get_single_mut() {
@@ -589,9 +592,20 @@ fn update_fog_color(
     if let Ok(mut fog) = q_fog.get_single_mut() {
         fog.color = final_color;
         fog.falloff = FogFalloff::Linear {
-            start: max_distance * 0.75, // 192 格柔和起霧
-            end:   max_distance - 8.0,  // 248 格完全消融遮擋地圖邊界
+            start: fog_start,
+            end:   fog_end,
         };
+    }
+
+    // 🚀 【GPU 著色器迷霧同步】：將背景色與相機座標直接推播至 WGSL 片元著色器
+    let lin = final_color.to_linear();
+    let fog_col = Vec4::new(lin.red, lin.green, lin.blue, 1.0);
+    let cam_pos = Vec4::new(translation.x, translation.y, translation.z, 1.0);
+    for (_, mat) in materials.iter_mut() {
+        mat.env.fog_start = fog_start;
+        mat.env.fog_end = fog_end;
+        mat.env.fog_color = fog_col;
+        mat.env.camera_pos = cam_pos;
     }
 }
 

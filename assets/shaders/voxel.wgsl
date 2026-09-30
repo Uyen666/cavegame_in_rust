@@ -25,6 +25,13 @@ struct EnvironmentUniform {
     is_fluid: u32,
     fluid_scroll_speed: f32,
     sky_factor: f32,
+    fog_start: f32,
+    fog_end: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+    fog_color: vec4<f32>,
+    camera_pos: vec4<f32>,
 };
 @group(2) @binding(2) var<uniform> env: EnvironmentUniform;
 
@@ -231,6 +238,15 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
         }
     }
     
+    // 🚀 遠景迷霧平滑插值 (Distance Fog Falloff)
+    let dist = length(in.world_position.xyz - env.camera_pos.xyz);
+    let fog_range = max(env.fog_end - env.fog_start, 1.0);
+    let fog_factor = clamp((dist - env.fog_start) / fog_range, 0.0, 1.0);
+    final_rgb = mix(final_rgb, env.fog_color.rgb, fog_factor);
+    if env.is_fluid == 1u {
+        final_alpha = mix(final_alpha, 1.0, fog_factor);
+    }
+
     return vec4<f32>(final_rgb, final_alpha);
 }
 #endif

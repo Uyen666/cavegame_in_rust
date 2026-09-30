@@ -13,8 +13,8 @@ pub fn get_distance_to_drop(world_manager: &WorldManager, start_pos: bevy::math:
             return 999;
         }
         
-        // 🚀 只有真正的物理深淵（空氣且沒水），才叫懸崖！防止現有的瀑布水柱將 min_dist 惡性拉低到 1
-        if b_below == crate::world::voxel::BlockType::Air && f_below == 0 {
+        // 🚀 只有真正的物理深淵（空氣/火把且沒水），才叫懸崖！防止現有的瀑布水柱將 min_dist 惡性拉低到 1
+        if (b_below == crate::world::voxel::BlockType::Air || b_below.is_torch()) && f_below == 0 {
             return step as u32;
         }
     }
@@ -28,8 +28,8 @@ pub fn wake_up_fluids_in_radius(world: &mut WorldManager, center: bevy::math::IV
         let block = world.get_block_global(npos);
         let fluid_level = world.get_fluid_global(npos) & 0x0F;
         
-        // 🚀 純淨去重喚醒防線
-        if block == crate::world::voxel::BlockType::Air || fluid_level > 0 {
+        // 🚀 純淨去重喚醒防線 (空氣、火把或流體)
+        if block == crate::world::voxel::BlockType::Air || block.is_torch() || fluid_level > 0 {
             if pushed_set.insert(npos) {
                 world.fluid_queue.push_back(npos);
             }

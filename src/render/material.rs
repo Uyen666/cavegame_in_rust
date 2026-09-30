@@ -8,6 +8,13 @@ pub struct EnvironmentUniform {
     pub is_fluid: u32,
     pub fluid_scroll_speed: f32,
     pub sky_factor: f32,
+    pub fog_start: f32,
+    pub fog_end: f32,
+    pub _pad0: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
+    pub fog_color: Vec4,
+    pub camera_pos: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
