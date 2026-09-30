@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
-use crate::world::{BlockType, registry::{ToolTier, ToolType}};
+use crate::world::{BlockType, registry::{ToolTier, ToolType, DropTable}};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u16)]
@@ -74,11 +74,13 @@ impl ItemType {
 }
 
 pub fn get_block_drop(block: BlockType) -> Option<ItemType> {
-    match block {
-        BlockType::Grass => Some(ItemType::Dirt),
-        BlockType::CoalOre => Some(ItemType::Coal),
-        BlockType::Air => None,
-        other => ItemType::from_block(other),
+    match block.drop_table() {
+        DropTable::None => None,
+        _ => match block {
+            BlockType::Grass => Some(ItemType::Dirt),
+            BlockType::CoalOre => Some(ItemType::Coal),
+            other => ItemType::from_block(other),
+        },
     }
 }
 
@@ -446,6 +448,15 @@ mod tests {
         assert!(rem2.is_none());
         assert_eq!(inv.slot(0).unwrap().count, 64);
         assert_eq!(inv.slot(1).unwrap().count, 16);
+    }
+
+    #[test]
+    fn test_block_drops_honor_drop_table() {
+        assert_eq!(get_block_drop(BlockType::Glass), None, "Glass should drop nothing");
+        assert_eq!(get_block_drop(BlockType::Air), None, "Air should drop nothing");
+        assert_eq!(get_block_drop(BlockType::Torch), Some(ItemType::Torch));
+        assert_eq!(get_block_drop(BlockType::TorchWallN), Some(ItemType::Torch));
+        assert_eq!(get_block_drop(BlockType::Grass), Some(ItemType::Dirt));
     }
 }
 

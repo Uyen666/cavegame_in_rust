@@ -125,6 +125,8 @@ src/
 * **火把特化物件系統 (Torch Specialized Object System)**：`BlockType` 提供 `get_aabb_offsets()` 方法回傳自訂包圍盒，且具備**朝向感知 (Direction-Aware)** 能力，讓鋼絲選中邊框動態貼合牆面傾斜火把。玩家的瞄準與破壞實作了 **微型物件射線檢測 (Sub-Block Raycast Precision)**，射線會精確比對 AABB 交點，若未擊中火把本體則會穿透至後方牆壁。火把頂點的 `block_lights` 強制鎖定為 15 級滿亮，並在地形貪婪網格生成時透過嚴格判斷 `is_opaque()` 來**禁用火把與玻璃的 AO 陰影投射**，避免在其後方牆面產生突兀的暗角。每個面生成 12 Quad 雙面幾何 (Double-Sided)，確保任何角度皆無缺面穿幫。
 * **平滑光照連續性校驗與 UI 預覽網格對齊 (Smooth Lighting Gradient Merging & Unified UI Meshing)**：在貪婪網格的 `can_merge` 邏輯中，針對發光體注入了針對 `block_lights` 的四角平滑連貫性與雙維度梯度校驗，杜絕了在夜間因天空光無梯度而導致不同火把光強的網格遭粗暴合併的現象，讓火把光能在周圍地形上呈現極致順滑的光照漸層 (Smooth Lighting)。此外，在 UI 物品欄的 `build_single_voxel_mesh` 生成時，徹底重構並與區塊貪婪網格的切線空間 (u, v) 及 CCW 繞行方向剛性統一，杜絕了舊手寫頂點表中 +X 面背面剔除漏面（導致原木等方塊右側面破洞並透視到底部）的缺陷；火把預覽更注入 12 Quad 雙面幾何與滿載 `block_light(15)`，使得 UI 在任何環境與視角下均保持完美無死角立體顯色。
 * **光照即時廣播 (Runtime Lighting Remesh Broadcast)**：`set_block_global` 在執行完 BFS 光照泛洪後，會對所有被波及而標記為 dirty 的區塊統一設置 `is_lighting_ready = true`，確保 `mesh_dirty_chunks` 系統的 3x3 鄰居光照完工鎖不會阻塞這些區塊的即時重烘焙，實現放置/破壞火把時光照零延遲亮起。
+* **四階段正交光照更新與光源動態消除 (Four-Phase Orthogonal Lighting Updates & Light Source Removal)**：徹底摒棄了舊有按「是否為空氣方塊」粗暴二分的分支邏輯，將 `set_block_global` 升級為四大正交階段：(1) 舊發光體消除：當破壞或覆蓋發光方塊 (如火把) 時，觸發雙向 BFS 佇列精準消除舊光場，杜絕光源殘留；(2) 固體遮蔽更新：當放置不透明方塊時阻斷天空光與方塊光；(3) 固體破壞湧入：當挖開不透明方塊時，允許周遭天空光與方塊光泛洪湧入；(4) 新光源擴散：當放置新發光體時擴散新光場。同時光照 BFS 傳播全面依據 `!is_opaque()` 判定，允許玻璃與火把等透明方塊正確穿透光線。
+* **UI 網格緩存與查詢解耦 (Hotbar Mesh Caching & Change Detection)**：將快捷列 `update_hotbar_ui` 的觸發條件由 `Changed<Player>` 解耦為 `Changed<Inventory>`，消除每幀滑鼠轉動相機時重複執行 UI 系統的開銷；並在 `UiPreviewMesh` 組件引入 `current_block` 狀態緩存，僅在槽位方塊類型變更時重新建立 Mesh，徹底消滅每幀重複調用 `meshes.add` 所造成的嚴重內存溢出與 GPU 網格資產洩漏。
 ## 8. 🌫️ 動態環境霧化與視覺包覆 (Dynamic Environment & Fog Alignment)
 * **視線亮度感知與晝夜雙層背景同步 (Eye-Light & Day-Night Sky Sync)**：遊戲實作了 `update_dynamic_environment` 系統。白天天空呈現蔚藍色，天黑時則平滑過渡至**深邃夜空藍 (Midnight Blue)**。同時每幀根據玩家眼部的光照數據（`eye_light`），動態插值（Lerp）出合適的環境色，確保玩家從地表潛入洞穴時，背景顏色能從星空或藍天滑順地過渡至帶有微弱環境光的深灰色，徹底消除畫面突變的生硬感。
 * **相機遠剪裁面動態對齊與原生迷霧阻斷 (Far Clip Alignment & Fog Falloff)**：將相機的 `far` 剪裁面與渲染視距 (`render_distance`) 動態剛性鎖死為 `max_distance + 64.0`，賦予幾何體充裕的深層演算空間。同時結合 Bevy 原生的 `FogSettings` 實施黃金比例漸變：在 `max_distance * 0.75` 處柔和起霧，並在 `max_distance - 8.0` 處完全阻斷。這將地圖加載邊界完美遮蔽，達成了無瑕疵的超遠景深包覆。
@@ -177,6 +179,8 @@ src/
 ## 14. 🛠️ 開發環境與工作流 (Development Workflow)
 * **VS Code 終端環境自適應 (.vscode)**：為避免系統環境變數遺失引發的終端機報錯，專案於根目錄掛載了專屬的 `.vscode/settings.json`，強制將 Cargo 路徑注入整合終端機。同時配備 `.vscode/tasks.json`，讓開發者只需按下 `Ctrl+Shift+B` 便能一鍵無縫 `cargo run`，維持最高的開發效率。
 ## 最近更新紀錄
+- **9/30 火把光源殘留修復與 UI 網格記憶體洩漏根治**: 修復了打掉火把後光源永久殘留的重大缺陷，將方塊變更重構為四階段正交光照更新；修復了天空光在玻璃與火把等透明方塊上的傳播阻斷；根治了 Hotbar 每幀滑鼠移動時重複調用 `meshes.add` 造成的記憶體洩漏；並修正了玻璃方塊破壞時掉落物掉落表匹配問題。
+
 - **8/8 通用 Entity 物理組件化**: 將原先綁定於 Player 的運動學、流體感測與 Swept AABB 碰撞消解解耦，封裝為獨立的 PhysicsPlugin。透過 RigidBody、AabbCollider、Velocity 等元件，實現支援多軸同步消解、Safewalk 防跌落與旁觀者模式切換之通用 ECS 物理架構。
 
 - **8/8 重大 Bug 熱修復**: 修正了 greedy.rs 流體網格打包資料（Packed Data）的 Bit Shifts 偏差與溢位，徹底消滅了水體渲染產生的 GPU 頂點爆炸尖刺；並重構了 WorldManager::set_fluid_global 的 Chunk 邊界連動髒污標記機制，確保流體動態即時烘焙；同時擴增了 FluidSensor 的全範圍 AABB 掃描，還原了精確的流體浮力互動。

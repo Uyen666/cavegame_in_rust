@@ -117,7 +117,7 @@ pub fn propagate_sky_light_global(
         }
 
         let current_block = world_manager.get_block_global(pos);
-        if current_block != BlockType::Air {
+        if current_block.is_opaque() {
             continue;
         }
 
@@ -137,7 +137,7 @@ pub fn propagate_sky_light_global(
 
             let n_block = world_manager.get_block_global(npos);
             
-            if n_block == BlockType::Air {
+            if !n_block.is_opaque() {
                 // 🚀 太陽直射不減光鐵律
                 let next_light = if light == 15 && offset == bevy::math::IVec3::new(0, -1, 0) {
                     15
@@ -176,7 +176,7 @@ pub fn remove_sky_light_global(
             }
 
             let n_block = world_manager.get_block_global(npos);
-            if n_block != crate::world::voxel::BlockType::Air {
+            if n_block.is_opaque() {
                 continue;
             }
 
@@ -191,8 +191,6 @@ pub fn remove_sky_light_global(
                 if n_light == expected_light {
                     world_manager.set_sky_light_global(npos, 0);
                     remove_queue.push_back((npos, n_light));
-                } else if n_light >= expected_light {
-                    propagate_queue.push_back(npos);
                 } else {
                     propagate_queue.push_back(npos);
                 }
@@ -267,7 +265,7 @@ pub fn remove_block_light_global(
                 if n_light == expected_light && emitted == 0 {
                     world_manager.set_block_light_global(npos, 0);
                     remove_queue.push_back((npos, n_light));
-                } else if n_light >= expected_light {
+                } else {
                     propagate_queue.push_back(npos);
                 }
             }

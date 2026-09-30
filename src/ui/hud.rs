@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use crate::player::{Player, PlayerCamera};
+use crate::player::PlayerCamera;
 use crate::world::{WorldManager, BlockType};
 use crate::item::{Inventory, ItemRegistry, ItemKind, ItemType};
 
@@ -107,6 +107,7 @@ pub fn update_crosshair(
 #[derive(Component)]
 pub struct UiPreviewMesh {
     pub slot_index: usize,
+    pub current_block: BlockType,
 }
 
 #[derive(Resource)]
@@ -174,7 +175,7 @@ pub fn setup_ui_3d_preview(
                 transform: Transform::from_xyz(offset_x, 0.0, 0.0),
                 ..default()
             },
-            UiPreviewMesh { slot_index: i },
+            UiPreviewMesh { slot_index: i, current_block: BlockType::Air },
             layer.clone(),
         ));
     }
@@ -469,7 +470,7 @@ pub fn setup_hotbar_ui(mut commands: Commands) {
 }
 
 pub fn update_hotbar_ui(
-    q_player: Query<(&Inventory, &Player), Or<(Changed<Inventory>, Changed<Player>)>>,
+    q_player: Query<&Inventory, Changed<Inventory>>,
     registry: Res<ItemRegistry>,
     icon_reg: Option<Res<ItemIconRegistry>>,
     mut q_slots: Query<(&HotbarSlotUi, &mut BackgroundColor, &mut BorderColor, &mut Style, &Children), Without<HotbarDurabilityBarFillNode>>,
@@ -479,27 +480,36 @@ pub fn update_hotbar_ui(
     q_dur_container: Query<Entity, With<HotbarDurabilityBarContainerNode>>,
     mut q_dur_fill: Query<(&mut Style, &mut BackgroundColor), (With<HotbarDurabilityBarFillNode>, Without<HotbarSlotUi>)>,
     preview_imgs: Option<Res<Ui3dPreviewImages>>,
-    mut q_preview_mesh: Query<(Entity, &mut Handle<Mesh>, &UiPreviewMesh), Without<HotbarSlotUi>>,
+    mut q_preview_mesh: Query<(Entity, &mut Handle<Mesh>, &mut UiPreviewMesh), Without<HotbarSlotUi>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut q_visibility: Query<&mut Visibility>,
 ) {
-    let Ok((inventory, _player)) = q_player.get_single() else { return; };
+    let Ok(inventory) = q_player.get_single() else { return; };
 
-    // 🚀 1. 動態更新 9 個攝影棚的方塊網格
-    for (mesh_entity, mut mesh_handle, preview_mesh) in q_preview_mesh.iter_mut() {
+    // 🚀 1. 動態更新 9 個攝影棚的方塊網格 (具備快取比對，杜絕重複分配)
+    for (mesh_entity, mut mesh_handle, mut preview_mesh) in q_preview_mesh.iter_mut() {
         let slot_idx = preview_mesh.slot_index;
         let item_stack = inventory.slot(slot_idx);
 
-        let mut show_mesh = false;
-        if let Some(stack) = item_stack {
+        let target_block = if let Some(stack) = item_stack {
             if let Some(def) = registry.get(stack.item_type) {
                 if let ItemKind::Block(block_type) = def.kind {
-                    if block_type != BlockType::Air {
-                        show_mesh = true;
-                        *mesh_handle = meshes.add(crate::render::greedy::build_single_voxel_mesh(block_type));
-                    }
+                    block_type
+                } else {
+                    BlockType::Air
                 }
+            } else {
+                BlockType::Air
             }
+        } else {
+            BlockType::Air
+        };
+
+        let show_mesh = target_block != BlockType::Air;
+
+        if preview_mesh.current_block != target_block {
+            preview_mesh.current_block = target_block;
+            *mesh_handle = meshes.add(crate::render::greedy::build_single_voxel_mesh(target_block));
         }
 
         if let Ok(mut vis) = q_visibility.get_mut(mesh_entity) {

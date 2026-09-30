@@ -359,8 +359,13 @@ impl WorldManager {
         // 🛡️ 防御線：取得區塊（經過上方復活邏輯後，必定能取得，除非意外）
         let Some(entry) = self.chunks.get_mut(&chunk_pos) else { return };
 
-        // 1. 同步資料層 buffer
+        // 1. 取得舊方塊並進行無變更早期退出判定
         let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
+        let old_block = entry.buffer.blocks[idx];
+        if old_block == block {
+            return;
+        }
+
         entry.buffer.blocks[idx] = block;
         entry.is_modified = true;
         self.dirty_chunks_for_meshing.insert(chunk_pos);
@@ -415,18 +420,54 @@ impl WorldManager {
             }
         }
 
-        // 5. Light update hook (Runtime block destruction)
-        if block == BlockType::Air {
+        // 5. 核心雙軌光照更新 (Core Dual-Light Propagation & Removal)
+
+        // 5a. 若被摧毀/取代的舊方塊是發光體 (例如 Torch / TorchWall)，無條件移除其發散的光源
+        let old_emitted = old_block.emitted_light();
+        if old_emitted > 0 {
+            let old_light = self.get_block_light_global(pos);
+            self.set_block_light_global(pos, 0);
+            let mut block_remove_queue = std::collections::VecDeque::new();
+            let mut block_prop_queue = std::collections::VecDeque::new();
+            block_remove_queue.push_back((pos, old_light.max(old_emitted)));
+            crate::world::lighting::remove_block_light_global(self, block_remove_queue, &mut block_prop_queue);
+            crate::world::lighting::propagate_block_light_global(self, block_prop_queue);
+        }
+
+        // 5b. 若新放置的方塊是不透明固體 (Opaque)，剛性阻斷天空光與方塊光
+        if block.is_opaque() {
+            let old_sky_light = self.get_sky_light_global(pos);
+            if old_sky_light > 0 {
+                self.set_sky_light_global(pos, 0);
+                let mut sky_remove_queue = std::collections::VecDeque::new();
+                let mut sky_prop_queue = std::collections::VecDeque::new();
+                sky_remove_queue.push_back((pos, old_sky_light));
+                crate::world::lighting::remove_sky_light_global(self, sky_remove_queue, &mut sky_prop_queue);
+                crate::world::lighting::propagate_sky_light_global(self, sky_prop_queue);
+            }
+
+            let old_block_light = self.get_block_light_global(pos);
+            if old_block_light > 0 {
+                self.set_block_light_global(pos, 0);
+                let mut block_remove_queue = std::collections::VecDeque::new();
+                let mut block_prop_queue = std::collections::VecDeque::new();
+                block_remove_queue.push_back((pos, old_block_light));
+                crate::world::lighting::remove_block_light_global(self, block_remove_queue, &mut block_prop_queue);
+                crate::world::lighting::propagate_block_light_global(self, block_prop_queue);
+            }
+        }
+
+        // 5c. 若舊方塊為不透明固體，且新方塊為透光體 (如挖開泥土變空氣、放玻璃)，允許外界光線湧入
+        if old_block.is_opaque() && !block.is_opaque() {
+            // 天空光湧入
             let top_light = self.get_sky_light_global(pos + IVec3::Y);
             if top_light == 15 {
                 self.set_sky_light_global(pos, 15);
                 self.dirty_chunks_for_meshing.insert(chunk_pos);
-                
                 let mut sky_prop_queue = std::collections::VecDeque::new();
                 sky_prop_queue.push_back(pos);
                 crate::world::lighting::propagate_sky_light_global(self, sky_prop_queue);
             } else {
-                let mut sky_prop_queue = std::collections::VecDeque::new();
                 let neighbors = [
                     pos + IVec3::X, pos - IVec3::X,
                     pos + IVec3::Y, pos - IVec3::Y,
@@ -441,13 +482,13 @@ impl WorldManager {
                 }
                 if max_neighbor_light > 1 {
                     self.set_sky_light_global(pos, max_neighbor_light - 1);
+                    let mut sky_prop_queue = std::collections::VecDeque::new();
                     sky_prop_queue.push_back(pos);
                     crate::world::lighting::propagate_sky_light_global(self, sky_prop_queue);
                 }
             }
 
-            // 方塊光蔓延
-            let mut block_prop_queue = std::collections::VecDeque::new();
+            // 周遭既有方塊光湧入
             let neighbors = [
                 pos + IVec3::X, pos - IVec3::X,
                 pos + IVec3::Y, pos - IVec3::Y,
@@ -462,45 +503,25 @@ impl WorldManager {
             }
             if max_neighbor_block_light > 1 {
                 self.set_block_light_global(pos, max_neighbor_block_light - 1);
-                block_prop_queue.push_back(pos);
-                crate::world::lighting::propagate_block_light_global(self, block_prop_queue);
-            }
-        } else {
-            // 🚀 正統光照阻斷泛洪更新 (Light Removal BFS)
-            // 只有不透明方塊才需要移除天空光，火把等透明方塊保留天空光穿透
-            if block.is_opaque() {
-                let old_sky_light = self.get_sky_light_global(pos);
-                if old_sky_light > 0 {
-                    self.set_sky_light_global(pos, 0);
-                    let mut sky_remove_queue = std::collections::VecDeque::new();
-                    let mut sky_prop_queue = std::collections::VecDeque::new();
-                    sky_remove_queue.push_back((pos, old_sky_light));
-                    crate::world::lighting::remove_sky_light_global(self, sky_remove_queue, &mut sky_prop_queue);
-                    crate::world::lighting::propagate_sky_light_global(self, sky_prop_queue);
-                }
-            }
-
-            let old_block_light = self.get_block_light_global(pos);
-            if old_block_light > 0 {
-                self.set_block_light_global(pos, 0);
-                let mut block_remove_queue = std::collections::VecDeque::new();
-                let mut block_prop_queue = std::collections::VecDeque::new();
-                block_remove_queue.push_back((pos, old_block_light));
-                crate::world::lighting::remove_block_light_global(self, block_remove_queue, &mut block_prop_queue);
-                crate::world::lighting::propagate_block_light_global(self, block_prop_queue);
-            }
-
-            // 如果新放的是發光方塊 (例如 Torch)
-            let emitted = block.emitted_light();
-            if emitted > 0 {
-                self.set_block_light_global(pos, emitted);
                 let mut block_prop_queue = std::collections::VecDeque::new();
                 block_prop_queue.push_back(pos);
                 crate::world::lighting::propagate_block_light_global(self, block_prop_queue);
             }
         }
 
-        // 🚀 資料層鐵血解鎖：所有受光照影響的區塊，無條件解鎖光照狀態
+        // 5d. 若新方塊具備發光能力 (例如放置 Torch)，向外擴散方塊光
+        let new_emitted = block.emitted_light();
+        if new_emitted > 0 {
+            let current_light = self.get_block_light_global(pos);
+            if new_emitted > current_light {
+                self.set_block_light_global(pos, new_emitted);
+                let mut block_prop_queue = std::collections::VecDeque::new();
+                block_prop_queue.push_back(pos);
+                crate::world::lighting::propagate_block_light_global(self, block_prop_queue);
+            }
+        }
+
+        // 🚀 資料層鐵血解鎖：所有受光照影響的區塊，無條件解鎖光照狀態以供即時烘焙
         let dirty_snapshot: Vec<IVec3> = self.dirty_chunks_for_meshing.iter().copied().collect();
         for &dirty_cp in &dirty_snapshot {
             if let Some(entry) = self.chunks.get_mut(&dirty_cp) {
@@ -521,6 +542,50 @@ impl WorldManager {
 
     pub fn is_chunk_lighting_ready(&self, chunk_pos: IVec3) -> bool {
         self.chunks.get(&chunk_pos).map(|e| e.is_lighting_ready).unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::world::CommandQueue;
+
+    #[test]
+    fn test_torch_placement_and_destruction_lighting() {
+        let mut world_manager = WorldManager::default();
+        let ecs_world = bevy::prelude::World::new();
+        let mut queue = CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &ecs_world);
+
+        // Pre-create chunk at (0, 0, 0)
+        let chunk_pos = IVec3::new(0, 0, 0);
+        world_manager.chunks.insert(chunk_pos, ChunkEntry {
+            buffer: generator::ChunkBuffer { blocks: [BlockType::Air; 32768] },
+            light_buffer: ChunkLightBuffer::default(),
+            fluid_buffer: None,
+            entity: None,
+            is_modified: false,
+            is_lighting_ready: true,
+        });
+
+        let torch_pos = IVec3::new(10, 10, 10);
+        // Place torch
+        world_manager.set_block_global(torch_pos, BlockType::Torch, &mut commands);
+
+        // Verify torch position has light 15, adjacent has light 14
+        assert_eq!(world_manager.get_block_light_global(torch_pos), 15);
+        assert_eq!(world_manager.get_block_light_global(torch_pos + IVec3::X), 14);
+        assert_eq!(world_manager.get_block_light_global(torch_pos + IVec3::Y), 14);
+        assert_eq!(world_manager.get_block_light_global(torch_pos + IVec3::new(2, 0, 0)), 13);
+
+        // Destroy torch (replace with Air)
+        world_manager.set_block_global(torch_pos, BlockType::Air, &mut commands);
+
+        // Verify that light is completely removed (no light retention!)
+        assert_eq!(world_manager.get_block_light_global(torch_pos), 0, "Torch location must be 0 after destruction");
+        assert_eq!(world_manager.get_block_light_global(torch_pos + IVec3::X), 0, "Adjacent block must be 0 after torch destruction");
+        assert_eq!(world_manager.get_block_light_global(torch_pos + IVec3::Y), 0);
+        assert_eq!(world_manager.get_block_light_global(torch_pos + IVec3::new(2, 0, 0)), 0);
     }
 }
 
