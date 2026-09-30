@@ -243,6 +243,7 @@ impl ItemStack {
 pub struct Inventory {
     pub slots: Vec<Option<ItemStack>>,
     pub selected_slot: usize,
+    pub carried_item: Option<ItemStack>,
 }
 
 impl Inventory {
@@ -250,6 +251,7 @@ impl Inventory {
         Self {
             slots: vec![None; capacity],
             selected_slot: 0,
+            carried_item: None,
         }
     }
 
@@ -354,6 +356,57 @@ impl Inventory {
         }
         false
     }
+
+    /// 交換兩個槽位的物品堆疊
+    pub fn swap_slots(&mut self, a: usize, b: usize) {
+        if a < self.slots.len() && b < self.slots.len() {
+            self.slots.swap(a, b);
+        }
+    }
+
+    /// 點擊背包槽位：與游標攜帶之物品進行交互 (拿起/放下/堆疊/置換)
+    pub fn click_slot(&mut self, index: usize, registry: &ItemRegistry) {
+        if index >= self.slots.len() { return; }
+
+        match (self.carried_item.take(), self.slots[index].take()) {
+            (None, None) => {},
+            (None, Some(slot_stack)) => {
+                // 游標為空，槽位有物 -> 拿起槽位物品
+                self.carried_item = Some(slot_stack);
+            },
+            (Some(carried), None) => {
+                // 游標有物，槽位為空 -> 放下游標物品
+                self.slots[index] = Some(carried);
+            },
+            (Some(mut carried), Some(mut slot_stack)) => {
+                if slot_stack.can_stack_with(&carried, registry) {
+                    // 同類物品 -> 嘗試合併堆疊
+                    let rem = slot_stack.add_count(carried.count, registry);
+                    self.slots[index] = Some(slot_stack);
+                    if rem > 0 {
+                        carried.count = rem;
+                        self.carried_item = Some(carried);
+                    } else {
+                        self.carried_item = None;
+                    }
+                } else {
+                    // 不同物品 -> 相互置換 (Swap)
+                    self.slots[index] = Some(carried);
+                    self.carried_item = Some(slot_stack);
+                }
+            }
+        }
+    }
+
+    /// 關閉介面或重置時，自動將游標攜帶之物品返還至背包
+    pub fn return_carried_item(&mut self, registry: &ItemRegistry) {
+        if let Some(carried) = self.carried_item.take() {
+            if let Some(overflow) = self.add_item(carried, registry) {
+                // 若背包全部放滿，強行放回快捷列選中槽
+                self.set_slot(self.selected_slot, Some(overflow));
+            }
+        }
+    }
 }
 
 pub struct ItemPlugin;
@@ -457,6 +510,32 @@ mod tests {
         assert_eq!(get_block_drop(BlockType::Torch), Some(ItemType::Torch));
         assert_eq!(get_block_drop(BlockType::TorchWallN), Some(ItemType::Torch));
         assert_eq!(get_block_drop(BlockType::Grass), Some(ItemType::Dirt));
+    }
+
+    #[test]
+    fn test_inventory_click_slot_pickup_and_swap() {
+        let registry = ItemRegistry;
+        let mut inv = Inventory::new(36);
+        inv.set_slot(0, Some(ItemStack::new(ItemType::Stone, 32, &registry)));
+        inv.set_slot(1, Some(ItemStack::new(ItemType::Dirt, 10, &registry)));
+
+        // 1. Click slot 0 with empty cursor -> picks up 32 Stone
+        inv.click_slot(0, &registry);
+        assert!(inv.slot(0).is_none());
+        assert_eq!(inv.carried_item.as_ref().unwrap().item_type, ItemType::Stone);
+        assert_eq!(inv.carried_item.as_ref().unwrap().count, 32);
+
+        // 2. Click slot 1 (Dirt) while holding Stone -> swaps Stone and Dirt
+        inv.click_slot(1, &registry);
+        assert_eq!(inv.slot(1).as_ref().unwrap().item_type, ItemType::Stone);
+        assert_eq!(inv.slot(1).as_ref().unwrap().count, 32);
+        assert_eq!(inv.carried_item.as_ref().unwrap().item_type, ItemType::Dirt);
+        assert_eq!(inv.carried_item.as_ref().unwrap().count, 10);
+
+        // 3. Click empty slot 0 -> places Dirt
+        inv.click_slot(0, &registry);
+        assert_eq!(inv.slot(0).as_ref().unwrap().item_type, ItemType::Dirt);
+        assert!(inv.carried_item.is_none());
     }
 }
 

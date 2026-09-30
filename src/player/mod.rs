@@ -26,7 +26,14 @@ fn player_input_capture(
     keys: Res<ButtonInput<KeyCode>>,
     mut scroll_evr: EventReader<bevy::input::mouse::MouseWheel>,
     mut q_player: Query<(&mut Player, &mut Inventory)>,
+    inv_state: Option<Res<crate::ui::inventory::InventoryScreenState>>,
 ) {
+    if let Some(ref state) = inv_state {
+        if state.is_open {
+            return;
+        }
+    }
+
     if let Ok((mut player, mut inventory)) = q_player.get_single_mut() {
         if keys.just_pressed(KeyCode::Space) {
             player.wants_to_jump = true; // 🚀 鎖存點擊意圖
@@ -74,6 +81,26 @@ pub struct Player {
     pub wants_to_jump: bool, // 🚀 跳躍輸入鎖存器（輸入緩衝）
     pub has_spawned: bool,        // 🚀 初次登入地表降落鎖
     pub scroll_accumulator: f32,  // 🚀 滾輪能量累加器
+    pub mining_target: Option<IVec3>, // 🚀 當前採掘方塊座標
+    pub mining_progress: f32,          // 🚀 採掘進度 (0.0 ~ 1.0)
+    pub mining_hit_timer: f32,         // 🚀 碎屑噴濺計時器
+}
+
+impl Default for Player {
+    fn default() -> Self {
+        Self {
+            pitch: 0.0,
+            yaw: 0.0,
+            is_crouching: false,
+            is_spectator: false,
+            wants_to_jump: false,
+            has_spawned: false,
+            scroll_accumulator: 0.0,
+            mining_target: None,
+            mining_progress: 0.0,
+            mining_hit_timer: 0.0,
+        }
+    }
 }
 
 #[derive(Component)]
@@ -102,15 +129,7 @@ fn setup_player(
     inventory.set_slot(8, Some(ItemStack::new(ItemType::IronPickaxe, 1, &registry)));
 
     commands.spawn((
-        Player {
-            pitch: 0.0,
-            yaw: 0.0,
-            is_crouching: false,
-            is_spectator: false,
-            wants_to_jump: false,
-            has_spawned: false,
-            scroll_accumulator: 0.0,
-        },
+        Player::default(),
         inventory,
         crate::phys::components::RigidBody {
             gravity_scale: 1.0,
@@ -149,7 +168,14 @@ fn toggle_grab_cursor(
     mut q_windows: Query<&mut Window, With<PrimaryWindow>>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse_btn: Res<ButtonInput<MouseButton>>,
+    inv_state: Option<Res<crate::ui::inventory::InventoryScreenState>>,
 ) {
+    if let Some(ref state) = inv_state {
+        if state.is_open {
+            return;
+        }
+    }
+
     let Ok(mut window) = q_windows.get_single_mut() else { return; };
 
     // 按 ESC 鍵解鎖滑鼠
@@ -215,7 +241,14 @@ pub fn player_move(
     time: Res<Time>,
     world: Res<WorldManager>,
     config: Res<crate::config::EngineConfig>,
+    inv_state: Option<Res<crate::ui::inventory::InventoryScreenState>>,
 ) {
+    if let Some(ref state) = inv_state {
+        if state.is_open {
+            return;
+        }
+    }
+
     let (mut player, mut transform, mut vel, mut rb, mut collider, ground, fluid) = q_player.single_mut();
     let dt = time.delta_seconds();
 
@@ -393,31 +426,38 @@ pub fn player_move(
 
 fn player_interaction(
     mut commands: Commands,
+    time: Res<Time>,
     mouse_keys: Res<ButtonInput<MouseButton>>,
     kbd_keys: Res<ButtonInput<KeyCode>>,
     mut world: ResMut<WorldManager>,
     registry: Res<ItemRegistry>,
+    mut particle_mgr: ResMut<crate::render::particles::ParticleManager>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
-    mut q_player: Query<(&Transform, &Player, &mut Inventory)>,
+    mut q_player: Query<(&Transform, &mut Player, &mut Inventory)>,
 ) {
-    let left = mouse_keys.just_pressed(MouseButton::Left);
-    let right = mouse_keys.just_pressed(MouseButton::Right);
-    let key_f = kbd_keys.just_pressed(KeyCode::KeyF);
-
-    if !left && !right && !key_f {
-        return;
-    }
-    
     let Ok(window) = q_windows.get_single() else { return; };
     if window.cursor.grab_mode != CursorGrabMode::Locked { return; }
     
-    let Ok((player_transform, player, mut inventory)) = q_player.get_single_mut() else { return; };
+    let Ok((player_transform, mut player, mut inventory)) = q_player.get_single_mut() else { return; };
 
     // 🚀 旁觀者權限閹割：禁止修改世界幾何
     if player.is_spectator {
         return; 
     }
+
+    let left_holding = mouse_keys.pressed(MouseButton::Left);
+    let right = mouse_keys.just_pressed(MouseButton::Right);
+    let key_f = kbd_keys.just_pressed(KeyCode::KeyF);
+
+    if !left_holding && !right && !key_f {
+        player.mining_target = None;
+        player.mining_progress = 0.0;
+        player.mining_hit_timer = 0.0;
+        return;
+    }
+
+    let mut hit_any_target = false;
 
     if let Ok(cam_transform) = q_camera.get_single() {
         let start = cam_transform.translation();
@@ -449,20 +489,87 @@ fn player_interaction(
             }
 
             if hit_aabb {
-                if left {
+                hit_any_target = true;
+                if left_holding {
                     let old_block = world.get_block_global(block_pos);
-                    world.set_block_global(block_pos, BlockType::Air, &mut commands);
-                    
-                    // 【流體聯鎖喚醒機制】(Fluid Block Update Hook)
-                    crate::world::fluid::wake_up_fluids_in_radius(&mut world, block_pos);
+                    let hardness = old_block.hardness();
 
-                    // 🚀 直接自動入包 (Direct Auto-Pickup)
-                    if let Some(drop_item) = get_block_drop(old_block) {
-                        inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
+                    if hardness <= 0.0 {
+                        // 🚀 零硬度方塊 (如火把)：直接秒碎
+                        let color = crate::render::particles::get_block_debris_color(old_block);
+                        particle_mgr.spawn_debris(block_pos.as_vec3() + 0.5, color, 6);
+
+                        world.set_block_global(block_pos, BlockType::Air, &mut commands);
+                        crate::world::fluid::wake_up_fluids_in_radius(&mut world, block_pos);
+
+                        if let Some(drop_item) = get_block_drop(old_block) {
+                            inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
+                        }
+                        player.mining_target = None;
+                        player.mining_progress = 0.0;
+                        player.mining_hit_timer = 0.0;
+                    } else {
+                        // 🚀 具備硬度方塊：累積採掘進度
+                        if player.mining_target != Some(block_pos) {
+                            player.mining_target = Some(block_pos);
+                            player.mining_progress = 0.0;
+                            player.mining_hit_timer = 0.0;
+                        }
+
+                        let mut speed_multiplier = 1.0;
+                        let mut can_harvest = old_block.required_tier() == crate::world::registry::ToolTier::None;
+
+                        if let Some(selected_item) = inventory.selected_item() {
+                            if let Some(def) = registry.get(selected_item.item_type) {
+                                if let ItemKind::Tool { tool_type, tier, efficiency, .. } = def.kind {
+                                    if tool_type == old_block.preferred_tool() {
+                                        speed_multiplier = efficiency;
+                                        if tier >= old_block.required_tier() {
+                                            can_harvest = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        let break_time = if can_harvest {
+                            old_block.hardness() * 1.5 / speed_multiplier
+                        } else {
+                            old_block.hardness() * 5.0 / speed_multiplier
+                        };
+
+                        let damage_rate = 1.0 / break_time.max(0.05);
+                        let dt = time.delta_seconds().min(0.05);
+                        player.mining_progress += damage_rate * dt;
+                        player.mining_hit_timer += dt;
+
+                        // 敲擊過程中每 0.18 秒飛散 2 顆細微碎屑
+                        if player.mining_hit_timer >= 0.18 {
+                            player.mining_hit_timer = 0.0;
+                            let hit_color = crate::render::particles::get_block_debris_color(old_block);
+                            particle_mgr.spawn_debris(block_pos.as_vec3() + 0.5, hit_color, 2);
+                        }
+
+                        if player.mining_progress >= 1.0 {
+                            // 方塊徹底破碎！噴發 14 顆碎裂粒子
+                            let burst_color = crate::render::particles::get_block_debris_color(old_block);
+                            particle_mgr.spawn_debris(block_pos.as_vec3() + 0.5, burst_color, 14);
+
+                            world.set_block_global(block_pos, BlockType::Air, &mut commands);
+                            crate::world::fluid::wake_up_fluids_in_radius(&mut world, block_pos);
+
+                            if can_harvest {
+                                if let Some(drop_item) = get_block_drop(old_block) {
+                                    inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
+                                }
+                            }
+
+                            inventory.damage_selected_tool(1);
+                            player.mining_target = None;
+                            player.mining_progress = 0.0;
+                            player.mining_hit_timer = 0.0;
+                        }
                     }
-
-                    // 🚀 若手持工具，扣減耐久度 1 (耐久歸零時自動碎裂清空為 None)
-                    inventory.damage_selected_tool(1);
                 } else if right {
                     if let Some(place_pos) = last_air_pos {
                         let block_aabb = Aabb::new(
@@ -537,6 +644,12 @@ fn player_interaction(
                 last_air_pos = Some(block_pos);
             }
             dist += step;
+        }
+
+        if !hit_any_target {
+            player.mining_target = None;
+            player.mining_progress = 0.0;
+            player.mining_hit_timer = 0.0;
         }
     }
 }
@@ -652,10 +765,25 @@ fn draw_target_block_highlight(
             let center = (box_min + box_max) * 0.5;
             let size = (box_max - box_min) * 1.002;
             
+            let is_mining = player.mining_target == Some(block_pos) && player.mining_progress > 0.0;
+            let border_color = if is_mining {
+                Color::srgb(0.2 + player.mining_progress * 0.8, 0.2, 0.0)
+            } else {
+                Color::srgb(0.1, 0.1, 0.1)
+            };
+
             gizmos.cuboid(
                 Transform::from_translation(center).with_scale(size),
-                Color::srgb(0.1, 0.1, 0.1),
+                border_color,
             );
+
+            if is_mining {
+                let inner_scale = size * (1.0 - player.mining_progress * 0.15);
+                gizmos.cuboid(
+                    Transform::from_translation(center).with_scale(inner_scale),
+                    Color::srgb(1.0, 0.6, 0.1),
+                );
+            }
             break; // 找到第一個固體方塊且擊中 AABB 即可停手
         }
         dist += step;
@@ -688,13 +816,8 @@ mod tests {
             crate::phys::components::GroundSensor::default(),
             crate::phys::components::FluidSensor::default(),
             Player {
-                pitch: 0.0,
-                yaw: 0.0,
-                is_crouching: false,
-                is_spectator: false,
-                wants_to_jump: false,
                 has_spawned: true,
-                scroll_accumulator: 0.0,
+                ..default()
             },
         )).id();
 
@@ -787,6 +910,45 @@ mod tests {
         // 驗證速度向下 (下潛)
         let vel = world.get::<crate::phys::components::Velocity>(entity).unwrap();
         assert!(vel.y < 0.0, "按下下蹲鍵應向下潛水，目前值: {}", vel.y);
+    }
+
+    #[test]
+    fn test_progressive_mining_hardness_and_tool_efficiency() {
+        let registry = ItemRegistry;
+        let stone = BlockType::Stone;
+        assert_eq!(stone.hardness(), 1.5);
+        assert_eq!(stone.preferred_tool(), crate::world::registry::ToolType::Pickaxe);
+        assert_eq!(stone.required_tier(), crate::world::registry::ToolTier::Wood);
+
+        // 1. 空手 (無匹配工具) 對石頭：無法採掘 (can_harvest = false), break_time = 1.5 * 5.0 / 1.0 = 7.5s
+        let hand_break_time = stone.hardness() * 5.0 / 1.0;
+        assert_eq!(hand_break_time, 7.5);
+
+        // 2. 木鎬 (Pickaxe, Wood tier, efficiency 2.0)：可採掘 (tier >= Wood), break_time = 1.5 * 1.5 / 2.0 = 1.125s
+        let wood_pick = registry.get(ItemType::WoodenPickaxe).unwrap();
+        if let ItemKind::Tool { efficiency, tier, tool_type, .. } = wood_pick.kind {
+            assert_eq!(tool_type, stone.preferred_tool());
+            assert!(tier >= stone.required_tier());
+            let wood_break_time = stone.hardness() * 1.5 / efficiency;
+            assert_eq!(wood_break_time, 1.125);
+        } else {
+            panic!("Expected tool");
+        }
+
+        // 3. 鐵鎬 (Pickaxe, Iron tier, efficiency 6.0)：可採掘 (tier >= Wood), break_time = 1.5 * 1.5 / 6.0 = 0.375s
+        let iron_pick = registry.get(ItemType::IronPickaxe).unwrap();
+        if let ItemKind::Tool { efficiency, tier, tool_type, .. } = iron_pick.kind {
+            assert_eq!(tool_type, stone.preferred_tool());
+            assert!(tier >= stone.required_tier());
+            let iron_break_time = stone.hardness() * 1.5 / efficiency;
+            assert_eq!(iron_break_time, 0.375);
+        } else {
+            panic!("Expected tool");
+        }
+
+        // 4. 火把 (硬度 0.0)：秒碎
+        let torch = BlockType::Torch;
+        assert_eq!(torch.hardness(), 0.0);
     }
 }
 
