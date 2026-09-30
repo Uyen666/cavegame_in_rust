@@ -148,6 +148,7 @@ src/
 * **Minecraft 規格動態尋路大腦 (5-Block Lookahead Pathfinding)**：導入具備 5 格遠視的懸崖探測系統。具備純淨拓撲掃描防線，嚴格區分真實深淵與瀑布水柱；同時實作「局部平地開路特權」，允許水流在鎖定遠處懸崖的同時溢入一格高的平地隧道，解決逆流綁架死鎖。
 * **立體喚醒防線與高效全域去重 (3x3x3 Wake-up & Queue Deduplication)**：方塊更新時強制喚醒周圍 3x3x3 立體空間的空氣與流體，並利用 `HashSet` 達成 `O(1)` 極速去重與嚴格的「固體過濾」，徹底防堵隊列洪水 (Queue Flooding) 癱瘓每幀運算預算，保證水流不卡頓不斷流。
 * **精準頂面剔除特權 (Precise Top Face Culling)**：廢除了舊版粗暴的固體天花板遮擋剔除。一格高隧道內的流動水 (Level 1~7) 頂面將 100% 正常渲染，呈現完美平滑的水流遞減斜面。同時保留滿格水源 (Level 8) 的 Z-Fighting 防閃爍隱藏機制，達成物理與渲染的極致一體化。
+* **流體雙軌光照平滑採樣與日夜動態同步 (Fluid Dual-Light Averaging & Day-Night Sync)**：修復了 `push_fluid_quad` 頂點光照打包時將天空光粗暴複製並寫入方塊光槽位的致命缺陷。全面重構為雙軌平滑採樣：頂點周遭 4 格分別獨立採集天空光與方塊光並平均，精確寫入 `packed_data` 的 `[28..32]` (天空光) 與 `[24..28]` (方塊光) 槽位。使得水體在夜間隨 `env.sky_factor` 自動深邃變暗，杜絕夜晚水面發光如同夜光塑料的穿幫，同時正確響應周遭火把的暖色照明。
 
 ## 10. 🚀 極限效能優化與非同步網格管線 (Extreme Performance & Async Meshing Pipeline)
 * **全域配置模組與編譯器優化 (Global Config & Const Optimization)**：建立了 `config.rs` 集中管理 `render_distance` 與流體參數。但為了防止每影格讀取導致的效能衰退，將 `MAX_FLUID_LEVEL` 等底層規則強制回歸 `const`，成功釋放 Rust 編譯器的「常數摺疊與循環展開 (Loop Unrolling)」極致優化，FPS 暴增回穩。
@@ -179,6 +180,8 @@ src/
 ## 14. 🛠️ 開發環境與工作流 (Development Workflow)
 * **VS Code 終端環境自適應 (.vscode)**：為避免系統環境變數遺失引發的終端機報錯，專案於根目錄掛載了專屬的 `.vscode/settings.json`，強制將 Cargo 路徑注入整合終端機。同時配備 `.vscode/tasks.json`，讓開發者只需按下 `Ctrl+Shift+B` 便能一鍵無縫 `cargo run`，維持最高的開發效率。
 ## 最近更新紀錄
+- **9/30 夜晚水面發光缺陷修復**: 修正了 `greedy.rs` 中 `push_fluid_quad` 誤將天空光寫入方塊光（Block Light）導致水體在黑夜恆定 15 滿亮發光的 Bug；實裝頂點雙軌光照平滑採樣，確保夜晚水體隨 `sky_factor` 柔和變暗且正常接收火把光。
+
 - **9/30 火把光源殘留修復與 UI 網格記憶體洩漏根治**: 修復了打掉火把後光源永久殘留的重大缺陷，將方塊變更重構為四階段正交光照更新；修復了天空光在玻璃與火把等透明方塊上的傳播阻斷；根治了 Hotbar 每幀滑鼠移動時重複調用 `meshes.add` 造成的記憶體洩漏；並修正了玻璃方塊破壞時掉落物掉落表匹配問題。
 
 - **8/8 通用 Entity 物理組件化**: 將原先綁定於 Player 的運動學、流體感測與 Swept AABB 碰撞消解解耦，封裝為獨立的 PhysicsPlugin。透過 RigidBody、AabbCollider、Velocity 等元件，實現支援多軸同步消解、Safewalk 防跌落與旁觀者模式切換之通用 ECS 物理架構。

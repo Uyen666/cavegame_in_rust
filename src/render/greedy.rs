@@ -797,7 +797,7 @@ fn push_fluid_quad(
         let vz = v[2];
         let y_offset_down = offsets[i] as u32;
 
-        // 🚀 邊界頂點光照平滑校準 (Vertex Ambient Light Averaging)
+        // 🚀 邊界頂點雙軌光照平滑校準 (Vertex Ambient Dual-Light Averaging)
         let (dx_min, dx_max, dy_min, dy_max, dz_min, dz_max) = match face_id {
             0 => (0, 0, -1, 0, -1, 0), // +X
             1 => (-1,-1, -1, 0, -1, 0), // -X
@@ -808,22 +808,26 @@ fn push_fluid_quad(
             _ => unreachable!(),
         };
         
-        let mut light_sum = 0;
+        let mut sky_light_sum = 0;
+        let mut block_light_sum = 0;
         for dx in dx_min..=dx_max {
             for dy in dy_min..=dy_max {
                 for dz in dz_min..=dz_max {
                     let sample_gp = base_gp + IVec3::new(vx + dx, vy + dy, vz + dz);
-                    light_sum += world.get_light_global(sample_gp).0 as u32;
+                    let (sl, bl) = world.get_light_global(sample_gp);
+                    sky_light_sum += sl as u32;
+                    block_light_sum += bl as u32;
                 }
             }
         }
-        let smooth_light = (light_sum / 4) as u8;
+        let smooth_sky_light = (sky_light_sum / 4).min(15) as u8;
+        let smooth_block_light = (block_light_sum / 4).min(15) as u8;
 
         let packed: u32 = (((vx as u32) & 0x3F) + ((vy as u32) & 0x3F) * 33 + ((vz as u32) & 0x3F) * 1089)
                         | ((face_id as u32 & 0x07) << 16)
                         | ((y_offset_down & 0x07) << 19)
-                        | (((smooth_light as u32) & 0x0F) << 24)
-                        | (((smooth_light as u32) & 0x0F) << 28);
+                        | (((smooth_block_light as u32) & 0x0F) << 24)
+                        | (((smooth_sky_light as u32) & 0x0F) << 28);
                         
         out.0.push(packed);
         out.2.push(flow);
@@ -1306,6 +1310,52 @@ mod tests {
         for &packed in packed_data {
             let tex_layer = (packed >> 19) & 0x0F;
             assert_eq!(tex_layer, 13, "Torch must use texture layer 13");
+        }
+    }
+
+    #[test]
+    fn test_fluid_mesh_dual_lighting_packing() {
+        let chunk_pos = IVec3::ZERO;
+        let mut blocks = [const { None }; 27];
+        let mut fluids = [const { None }; 27];
+        let mut lights = [const { None }; 27];
+
+        let center_idx = 13; // (0, 0, 0) chunk in 3x3x3: (0+1)*9 + (0+1)*3 + (0+1) = 13
+        blocks[center_idx] = Some(Box::new(crate::world::generator::ChunkBuffer {
+            blocks: [BlockType::Air; 32768],
+        }));
+
+        let mut fluid_arr = Box::new([0u8; 32768]);
+        let idx = crate::utils::math::voxel_pos_to_index(10, 10, 10);
+        fluid_arr[idx] = 8 | 0x80; // Source block (level 8)
+        fluids[center_idx] = Some(fluid_arr);
+
+        let mut light_buf = Box::new(crate::world::chunk::ChunkLightBuffer::default());
+        for i in 0..32768 {
+            light_buf.set_sky_light(i, 15);
+            light_buf.set_block_light(i, 0);
+        }
+        lights[center_idx] = Some(light_buf);
+
+        let input_data = ChunkMeshInputData {
+            chunk_pos,
+            blocks,
+            fluids,
+            lights,
+            surface_heights: Some(Box::new([100; 1156])),
+        };
+
+        let mut out = (Vec::new(), Vec::new(), Vec::new());
+        generate_fluid_mesh(chunk_pos, &input_data, &mut out);
+
+        assert!(!out.0.is_empty(), "Fluid mesh vertices should be generated");
+        for &packed in &out.0 {
+            let sky_light = (packed >> 28) & 0x0F;
+            let block_light = (packed >> 24) & 0x0F;
+            // 天空光應維持 15 滿亮
+            assert_eq!(sky_light, 15, "Sky light should be 15 on surface");
+            // 方塊光在無光源時必須嚴格為 0，不得被天空光污染寫入 15
+            assert_eq!(block_light, 0, "Block light must be 0 without any light source nearby");
         }
     }
 }
