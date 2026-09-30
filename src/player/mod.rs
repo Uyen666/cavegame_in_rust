@@ -464,151 +464,128 @@ fn player_interaction(
         let forward = cam_transform.forward();
         let max_dist = 5.0;
 
-        let mut dist = 0.0;
-        let step = 0.05;
-        let mut last_air_pos: Option<IVec3> = None;
+        if let Some(hit) = crate::utils::math::raycast_voxel(&world, start, *forward, max_dist) {
+            hit_any_target = true;
+            let block_pos = hit.block_pos;
+            let place_pos = hit.adjacent_pos;
 
-        while dist < max_dist {
-            let pos = start + forward * dist;
-            // 修正：3D 體素座標定位必須使用 floor()，與 AABB 的標準對齊
-            let block_pos = IVec3::new(pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
+            if left_holding {
+                let old_block = hit.block_type;
+                let hardness = old_block.hardness();
 
-            let mut hit_aabb = false;
-            let block = world.get_block_global(block_pos);
-            if block.is_solid() || block.is_torch() {
-                let (aabb_min, aabb_max) = block.get_aabb_offsets();
-                let origin = Vec3::new(block_pos.x as f32, block_pos.y as f32, block_pos.z as f32);
-                let box_min = origin + Vec3::from_array(aabb_min);
-                let box_max = origin + Vec3::from_array(aabb_max);
-                
-                if pos.x >= box_min.x && pos.x <= box_max.x &&
-                   pos.y >= box_min.y && pos.y <= box_max.y &&
-                   pos.z >= box_min.z && pos.z <= box_max.z {
-                    hit_aabb = true;
-                }
-            }
+                if hardness <= 0.0 {
+                    // 🚀 零硬度方塊 (如火把)：直接秒碎
+                    let color = crate::render::particles::get_block_debris_color(old_block);
+                    particle_mgr.spawn_debris(block_pos.as_vec3() + 0.5, color, 6);
 
-            if hit_aabb {
-                hit_any_target = true;
-                if left_holding {
-                    let old_block = world.get_block_global(block_pos);
-                    let hardness = old_block.hardness();
+                    world.set_block_global(block_pos, BlockType::Air, &mut commands);
+                    crate::world::fluid::wake_up_fluids_in_radius(&mut world, block_pos);
 
-                    if hardness <= 0.0 {
-                        // 🚀 零硬度方塊 (如火把)：直接秒碎
-                        let color = crate::render::particles::get_block_debris_color(old_block);
-                        particle_mgr.spawn_debris(block_pos.as_vec3() + 0.5, color, 6);
-
-                        world.set_block_global(block_pos, BlockType::Air, &mut commands);
-                        crate::world::fluid::wake_up_fluids_in_radius(&mut world, block_pos);
-
-                        if let Some(drop_item) = get_block_drop(old_block) {
-                            inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
-                        }
-                        player.mining_target = None;
+                    if let Some(drop_item) = get_block_drop(old_block) {
+                        inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
+                    }
+                    player.mining_target = None;
+                    player.mining_progress = 0.0;
+                    player.mining_hit_timer = 0.0;
+                } else {
+                    // 🚀 具備硬度方塊：累積採掘進度
+                    if player.mining_target != Some(block_pos) {
+                        player.mining_target = Some(block_pos);
                         player.mining_progress = 0.0;
                         player.mining_hit_timer = 0.0;
-                    } else {
-                        // 🚀 具備硬度方塊：累積採掘進度
-                        if player.mining_target != Some(block_pos) {
-                            player.mining_target = Some(block_pos);
-                            player.mining_progress = 0.0;
-                            player.mining_hit_timer = 0.0;
-                        }
+                    }
 
-                        let mut speed_multiplier = 1.0;
-                        let mut can_harvest = old_block.required_tier() == crate::world::registry::ToolTier::None;
+                    let mut speed_multiplier = 1.0;
+                    let mut can_harvest = old_block.required_tier() == crate::world::registry::ToolTier::None;
 
-                        if let Some(selected_item) = inventory.selected_item() {
-                            if let Some(def) = registry.get(selected_item.item_type) {
-                                if let ItemKind::Tool { tool_type, tier, efficiency, .. } = def.kind {
-                                    if tool_type == old_block.preferred_tool() {
-                                        speed_multiplier = efficiency;
-                                        if tier >= old_block.required_tier() {
-                                            can_harvest = true;
-                                        }
+                    if let Some(selected_item) = inventory.selected_item() {
+                        if let Some(def) = registry.get(selected_item.item_type) {
+                            if let ItemKind::Tool { tool_type, tier, efficiency, .. } = def.kind {
+                                if tool_type == old_block.preferred_tool() {
+                                    speed_multiplier = efficiency;
+                                    if tier >= old_block.required_tier() {
+                                        can_harvest = true;
                                     }
                                 }
                             }
                         }
-
-                        let break_time = if can_harvest {
-                            old_block.hardness() * 1.5 / speed_multiplier
-                        } else {
-                            old_block.hardness() * 5.0 / speed_multiplier
-                        };
-
-                        let damage_rate = 1.0 / break_time.max(0.05);
-                        let dt = time.delta_seconds().min(0.05);
-                        player.mining_progress += damage_rate * dt;
-                        player.mining_hit_timer += dt;
-
-                        // 敲擊過程中每 0.18 秒飛散 2 顆細微碎屑
-                        if player.mining_hit_timer >= 0.18 {
-                            player.mining_hit_timer = 0.0;
-                            let hit_color = crate::render::particles::get_block_debris_color(old_block);
-                            particle_mgr.spawn_debris(block_pos.as_vec3() + 0.5, hit_color, 2);
-                        }
-
-                        if player.mining_progress >= 1.0 {
-                            // 方塊徹底破碎！噴發 14 顆碎裂粒子
-                            let burst_color = crate::render::particles::get_block_debris_color(old_block);
-                            particle_mgr.spawn_debris(block_pos.as_vec3() + 0.5, burst_color, 14);
-
-                            world.set_block_global(block_pos, BlockType::Air, &mut commands);
-                            crate::world::fluid::wake_up_fluids_in_radius(&mut world, block_pos);
-
-                            if can_harvest {
-                                if let Some(drop_item) = get_block_drop(old_block) {
-                                    inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
-                                }
-                            }
-
-                            inventory.damage_selected_tool(1);
-                            player.mining_target = None;
-                            player.mining_progress = 0.0;
-                            player.mining_hit_timer = 0.0;
-                        }
                     }
-                } else if right {
-                    if let Some(place_pos) = last_air_pos {
-                        let block_aabb = Aabb::new(
-                            Vec3::new(place_pos.x as f32, place_pos.y as f32, place_pos.z as f32),
-                            Vec3::new(place_pos.x as f32 + 1.0, place_pos.y as f32 + 1.0, place_pos.z as f32 + 1.0),
-                        );
 
-                        let p_pos = player_transform.translation;
-                        let player_aabb = Aabb::new(
-                            Vec3::new(p_pos.x - 0.3, p_pos.y, p_pos.z - 0.3),
-                            Vec3::new(p_pos.x + 0.3, p_pos.y + 1.8, p_pos.z + 0.3),
-                        );
+                    let break_time = if can_harvest {
+                        old_block.hardness() * 1.5 / speed_multiplier
+                    } else {
+                        old_block.hardness() * 5.0 / speed_multiplier
+                    };
 
-                        if player_aabb.intersects(&block_aabb) {
-                            break;
+                    let damage_rate = 1.0 / break_time.max(0.05);
+                    let dt = time.delta_seconds().min(0.05);
+                    player.mining_progress += damage_rate * dt;
+                    player.mining_hit_timer += dt;
+
+                    // 敲擊過程中每 0.18 秒飛散 2 顆細微碎屑
+                    if player.mining_hit_timer >= 0.18 {
+                        player.mining_hit_timer = 0.0;
+                        let hit_color = crate::render::particles::get_block_debris_color(old_block);
+                        particle_mgr.spawn_debris(block_pos.as_vec3() + 0.5, hit_color, 2);
+                    }
+
+                    if player.mining_progress >= 1.0 {
+                        // 方塊徹底破碎！噴發 14 顆碎裂粒子
+                        let burst_color = crate::render::particles::get_block_debris_color(old_block);
+                        particle_mgr.spawn_debris(block_pos.as_vec3() + 0.5, burst_color, 14);
+
+                        world.set_block_global(block_pos, BlockType::Air, &mut commands);
+                        crate::world::fluid::wake_up_fluids_in_radius(&mut world, block_pos);
+
+                        if can_harvest {
+                            if let Some(drop_item) = get_block_drop(old_block) {
+                                inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
+                            }
                         }
 
-                        if let Some(selected_item) = inventory.selected_item().cloned() {
-                            if let Some(def) = registry.get(selected_item.item_type) {
-                                if let ItemKind::Block(base_block) = def.kind {
-                                    if selected_item.count > 0 {
-                                        let mut current_block = base_block;
-                                        if base_block == BlockType::Torch {
-                                            let diff = place_pos - block_pos;
-                                            if diff == IVec3::Y {
-                                                current_block = BlockType::Torch;
-                                            } else if diff == IVec3::X {
-                                                current_block = BlockType::TorchWallW;
-                                            } else if diff == IVec3::NEG_X {
-                                                current_block = BlockType::TorchWallE;
-                                            } else if diff == IVec3::Z {
-                                                current_block = BlockType::TorchWallN;
-                                            } else if diff == IVec3::NEG_Z {
-                                                current_block = BlockType::TorchWallS;
-                                            } else if diff == IVec3::NEG_Y {
-                                                break; // cannot place torch on ceiling
-                                            }
-                                        }
+                        inventory.damage_selected_tool(1);
+                        player.mining_target = None;
+                        player.mining_progress = 0.0;
+                        player.mining_hit_timer = 0.0;
+                    }
+                }
+            } else if right {
+                let block_aabb = Aabb::new(
+                    Vec3::new(place_pos.x as f32, place_pos.y as f32, place_pos.z as f32),
+                    Vec3::new(place_pos.x as f32 + 1.0, place_pos.y as f32 + 1.0, place_pos.z as f32 + 1.0),
+                );
 
+                let p_pos = player_transform.translation;
+                let player_aabb = Aabb::new(
+                    Vec3::new(p_pos.x - 0.3, p_pos.y, p_pos.z - 0.3),
+                    Vec3::new(p_pos.x + 0.3, p_pos.y + 1.8, p_pos.z + 0.3),
+                );
+
+                if !player_aabb.intersects(&block_aabb) {
+                    if let Some(selected_item) = inventory.selected_item().cloned() {
+                        if let Some(def) = registry.get(selected_item.item_type) {
+                            if let ItemKind::Block(base_block) = def.kind {
+                                if selected_item.count > 0 {
+                                    let mut current_block = base_block;
+                                    if base_block == BlockType::Torch {
+                                        let diff = hit.normal;
+                                        if diff == IVec3::Y {
+                                            current_block = BlockType::Torch;
+                                        } else if diff == IVec3::X {
+                                            current_block = BlockType::TorchWallW;
+                                        } else if diff == IVec3::NEG_X {
+                                            current_block = BlockType::TorchWallE;
+                                        } else if diff == IVec3::Z {
+                                            current_block = BlockType::TorchWallN;
+                                        } else if diff == IVec3::NEG_Z {
+                                            current_block = BlockType::TorchWallS;
+                                        } else if diff == IVec3::NEG_Y {
+                                            // cannot place torch on ceiling
+                                            current_block = BlockType::Air;
+                                        }
+                                    }
+
+                                    if current_block != BlockType::Air {
                                         world.set_block_global(place_pos, current_block, &mut commands);
                                         crate::world::fluid::wake_up_fluids_in_radius(&mut world, place_pos);
 
@@ -619,31 +596,25 @@ fn player_interaction(
                             }
                         }
                     }
-                } else if key_f {
-                    println!("🚀 [Fluid Debug] F Key Pressed! Detecting raycast...");
-                    if let Some(place_pos) = last_air_pos {
-                        if world.get_fluid_global(place_pos) > 0 {
-                            world.set_fluid_global(place_pos, 0);
-                            world.fluid_queue.push_back(place_pos);
-                            for dir in [IVec3::Y, IVec3::NEG_Y, IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
-                                world.fluid_queue.push_back(place_pos + dir);
-                            }
-                            println!("🌊 [Fluid Debug] Removed water at: {:?}", place_pos);
-                        } else {
-                            world.set_fluid_global(place_pos, crate::config::MAX_FLUID_LEVEL | 0x80);
-                            world.fluid_queue.push_back(place_pos);
-                            for dir in [IVec3::Y, IVec3::NEG_Y, IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
-                                world.fluid_queue.push_back(place_pos + dir);
-                            }
-                            println!("🌊 [Fluid Debug] Successfully spawned water source at global pos: {:?}", place_pos);
-                        }
-                    }
                 }
-                break;
-            } else {
-                last_air_pos = Some(block_pos);
+            } else if key_f {
+                println!("🚀 [Fluid Debug] F Key Pressed! Detecting raycast...");
+                if world.get_fluid_global(place_pos) > 0 {
+                    world.set_fluid_global(place_pos, 0);
+                    world.fluid_queue.push_back(place_pos);
+                    for dir in [IVec3::Y, IVec3::NEG_Y, IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
+                        world.fluid_queue.push_back(place_pos + dir);
+                    }
+                    println!("🌊 [Fluid Debug] Removed water at: {:?}", place_pos);
+                } else {
+                    world.set_fluid_global(place_pos, crate::config::MAX_FLUID_LEVEL | 0x80);
+                    world.fluid_queue.push_back(place_pos);
+                    for dir in [IVec3::Y, IVec3::NEG_Y, IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
+                        world.fluid_queue.push_back(place_pos + dir);
+                    }
+                    println!("🌊 [Fluid Debug] Successfully spawned water source at global pos: {:?}", place_pos);
+                }
             }
-            dist += step;
         }
 
         if !hit_any_target {
@@ -736,57 +707,35 @@ fn draw_target_block_highlight(
     let forward = cam_transform.forward();
     let max_dist = 5.0;
 
-    // 🚀 執行 3D 體素射線步進 (Raycast)
-    let mut dist = 0.0;
-    let step = 0.05;
-    while dist < max_dist {
-        let pos = start + forward * dist;
-        let block_pos = IVec3::new(pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
-        
-        let mut hit_aabb = false;
-        let mut box_min = Vec3::ZERO;
-        let mut box_max = Vec3::ZERO;
-        
-        let target_block = world.get_block_global(block_pos);
-        if target_block.is_solid() || target_block.is_torch() {
-            let (aabb_min, aabb_max) = target_block.get_aabb_offsets();
-            let origin = Vec3::new(block_pos.x as f32, block_pos.y as f32, block_pos.z as f32);
-            box_min = origin + Vec3::from_array(aabb_min);
-            box_max = origin + Vec3::from_array(aabb_max);
-            
-            if pos.x >= box_min.x && pos.x <= box_max.x &&
-               pos.y >= box_min.y && pos.y <= box_max.y &&
-               pos.z >= box_min.z && pos.z <= box_max.z {
-                hit_aabb = true;
-            }
-        }
+    // 🚀 執行 3D 快速體素遍歷 (Fast Voxel Traversal / 3D DDA)
+    if let Some(hit) = crate::utils::math::raycast_voxel(&world, start, *forward, max_dist) {
+        let (aabb_min, aabb_max) = hit.block_type.get_aabb_offsets();
+        let origin = hit.block_pos.as_vec3();
+        let box_min = origin + Vec3::from_array(aabb_min);
+        let box_max = origin + Vec3::from_array(aabb_max);
 
-        if hit_aabb {
-            let center = (box_min + box_max) * 0.5;
-            let size = (box_max - box_min) * 1.002;
-            
-            let is_mining = player.mining_target == Some(block_pos) && player.mining_progress > 0.0;
-            let border_color = if is_mining {
-                Color::srgb(0.2 + player.mining_progress * 0.8, 0.2, 0.0)
-            } else {
-                Color::srgb(0.1, 0.1, 0.1)
-            };
+        let center = (box_min + box_max) * 0.5;
+        let size = (box_max - box_min) * 1.002;
 
+        let is_mining = player.mining_target == Some(hit.block_pos) && player.mining_progress > 0.0;
+        let border_color = if is_mining {
+            Color::srgb(0.2 + player.mining_progress * 0.8, 0.2, 0.0)
+        } else {
+            Color::srgb(0.1, 0.1, 0.1)
+        };
+
+        gizmos.cuboid(
+            Transform::from_translation(center).with_scale(size),
+            border_color,
+        );
+
+        if is_mining {
+            let inner_scale = size * (1.0 - player.mining_progress * 0.15);
             gizmos.cuboid(
-                Transform::from_translation(center).with_scale(size),
-                border_color,
+                Transform::from_translation(center).with_scale(inner_scale),
+                Color::srgb(1.0, 0.6, 0.1),
             );
-
-            if is_mining {
-                let inner_scale = size * (1.0 - player.mining_progress * 0.15);
-                gizmos.cuboid(
-                    Transform::from_translation(center).with_scale(inner_scale),
-                    Color::srgb(1.0, 0.6, 0.1),
-                );
-            }
-            break; // 找到第一個固體方塊且擊中 AABB 即可停手
         }
-        dist += step;
     }
 }
 

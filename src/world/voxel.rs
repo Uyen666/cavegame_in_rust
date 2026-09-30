@@ -24,7 +24,6 @@ pub enum BlockType {
     TorchWallW = 15,
 }
 
-#[allow(dead_code)]
 impl BlockType {
     #[inline(always)]
     pub fn definition(self) -> &'static BlockDefinition {
@@ -72,6 +71,7 @@ impl BlockType {
     }
 
     #[inline(always)]
+    #[allow(dead_code)] // 預留供未來音效系統 (方塊敲擊、放置、走動音效) 調用
     pub fn sound_category(self) -> SoundCategory {
         self.definition().sound_category
     }

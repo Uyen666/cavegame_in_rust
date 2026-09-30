@@ -74,16 +74,6 @@ impl Chunk {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn get_block(&self, x: usize, y: usize, z: usize) -> BlockType {
-        if in_bounds(x, y, z) {
-            let idx = x + y * 32 + z * 1024;
-            self.buffer.blocks[idx]
-        } else {
-            BlockType::Air
-        }
-    }
-
     pub fn set_block(&mut self, x: usize, y: usize, z: usize, block: BlockType) {
         if in_bounds(x, y, z) {
             let idx = x + y * 32 + z * 1024;
@@ -99,10 +89,5 @@ impl Chunk {
             self.is_dirty = true;
             self.is_modified = true;
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn is_pure_air(&self) -> bool {
-        self.non_air_count == 0
     }
 }

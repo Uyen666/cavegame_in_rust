@@ -77,20 +77,10 @@ pub fn update_crosshair(
         let forward = cam_transform.forward();
         let max_dist = 50.0;
 
-        let mut dist = 0.0;
-        let step = 0.5;
-        while dist < max_dist {
-            let pos = start + forward * dist;
-            let block_pos = IVec3::new(pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
-
-            let block = world.get_block_global(block_pos);
-            if block.is_solid() {
-                if block == BlockType::Stone {
-                    hit_dark = true;
-                }
-                break;
+        if let Some(hit) = crate::utils::math::raycast_voxel(&world, start, *forward, max_dist) {
+            if hit.block_type == BlockType::Stone {
+                hit_dark = true;
             }
-            dist += step;
         }
     }
 

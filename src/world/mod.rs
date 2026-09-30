@@ -87,9 +87,9 @@ pub enum WorldType {
 ///   - `entity`  僅非空氣區塊才有，`None` 代表純空氣，不佔用任何 ECS Transform 開銷
 #[derive(Clone)]
 pub struct ChunkEntry {
-    pub buffer: generator::ChunkBuffer,
-    pub light_buffer: ChunkLightBuffer,
-    pub fluid_buffer: Option<Box<[u8; 32768]>>,
+    pub buffer: std::sync::Arc<generator::ChunkBuffer>,
+    pub light_buffer: std::sync::Arc<ChunkLightBuffer>,
+    pub fluid_buffer: Option<std::sync::Arc<[u8; 32768]>>,
     pub entity:  Option<Entity>,
     pub is_modified: bool,
     pub is_lighting_ready: bool,
@@ -184,8 +184,8 @@ impl WorldManager {
                 return; // 空氣/無流體操作直接忽略
             }
             let mut new_entry = ChunkEntry {
-                buffer: crate::world::generator::ChunkBuffer { blocks: [BlockType::Air; 32768] },
-                light_buffer: ChunkLightBuffer::default(),
+                buffer: std::sync::Arc::new(crate::world::generator::ChunkBuffer { blocks: [BlockType::Air; 32768] }),
+                light_buffer: std::sync::Arc::new(ChunkLightBuffer::default()),
                 fluid_buffer: None,
                 entity: None,
                 is_modified: true,
@@ -193,17 +193,17 @@ impl WorldManager {
             };
             if chunk_pos.y < 2 {
                 // 🚀 地底深層：預設填滿石頭，天空光照保持為 0（死黑溶洞）
-                new_entry.buffer.blocks = [BlockType::Stone; 32768];
+                std::sync::Arc::make_mut(&mut new_entry.buffer).blocks = [BlockType::Stone; 32768];
             } else {
                 // 🚀 高空世界：預設為空氣，天空光照必須強制填滿大自然的天空光！
-                new_entry.light_buffer.light_data.fill(0xF0); 
+                std::sync::Arc::make_mut(&mut new_entry.light_buffer).light_data.fill(0xF0); 
             }
             self.chunks.insert(chunk_pos, new_entry);
         }
         
         // 🛡️ 铁律：只對已在 HashMap 中的區塊操作流體，絕不學生區塊
         if let Some(entry) = self.chunks.get_mut(&chunk_pos) {
-            let fluid_buf = entry.fluid_buffer.get_or_insert(Box::new([0; 32768]));
+            let fluid_buf = std::sync::Arc::make_mut(entry.fluid_buffer.get_or_insert_with(|| std::sync::Arc::new([0; 32768])));
             let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
             fluid_buf[idx] = val;
             entry.is_modified = true;
@@ -222,12 +222,6 @@ impl WorldManager {
                 }
             }
         }
-    }
-
-    /// 相容舊簽名的全域方塊查詢（供 greedy.rs 等使用），實際上直接查 palette
-    #[allow(dead_code)]
-    pub fn get_block_global_mut(&self, pos: IVec3) -> BlockType {
-        self.get_block_global(pos)
     }
 
     pub fn get_sky_light_global(&self, pos: IVec3) -> u8 {
@@ -270,7 +264,7 @@ impl WorldManager {
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
         if let Some(entry) = self.chunks.get_mut(&chunk_pos) {
             let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
-            entry.light_buffer.set_sky_light(idx, light);
+            std::sync::Arc::make_mut(&mut entry.light_buffer).set_sky_light(idx, light);
             self.dirty_chunks_for_meshing.insert(chunk_pos);
         }
 
@@ -298,7 +292,7 @@ impl WorldManager {
         let (chunk_pos, local) = Self::global_to_chunk_pos(pos);
         if let Some(entry) = self.chunks.get_mut(&chunk_pos) {
             let idx = crate::utils::math::voxel_pos_to_index(local.x as usize, local.y as usize, local.z as usize);
-            entry.light_buffer.set_block_light(idx, light);
+            std::sync::Arc::make_mut(&mut entry.light_buffer).set_block_light(idx, light);
             self.dirty_chunks_for_meshing.insert(chunk_pos);
         }
 
@@ -338,8 +332,8 @@ impl WorldManager {
             
             // 🚀 動態復活限制：只有玩家真正主動放置非空氣方塊時，才觸發復活機制
             let mut new_entry = ChunkEntry {
-                buffer: crate::world::generator::ChunkBuffer { blocks: [BlockType::Air; 32768] },
-                light_buffer: ChunkLightBuffer::default(),
+                buffer: std::sync::Arc::new(crate::world::generator::ChunkBuffer { blocks: [BlockType::Air; 32768] }),
+                light_buffer: std::sync::Arc::new(ChunkLightBuffer::default()),
                 fluid_buffer: None,
                 entity: None,
                 is_modified: true,
@@ -347,10 +341,10 @@ impl WorldManager {
             };
             if chunk_pos.y < 2 {
                 // 🚀 如果是地底區塊，背景預設必須是石頭，否則會出現巨型灰色交界平面！
-                new_entry.buffer.blocks = [BlockType::Stone; 32768];
+                std::sync::Arc::make_mut(&mut new_entry.buffer).blocks = [BlockType::Stone; 32768];
             } else {
                 // 🚀 高空世界：預設為空氣，天空光照必須強制填滿大自然的天空光！
-                new_entry.light_buffer.light_data.fill(0xF0);
+                std::sync::Arc::make_mut(&mut new_entry.light_buffer).light_data.fill(0xF0);
             }
             self.chunks.insert(chunk_pos, new_entry);
             is_revived = true;
@@ -366,7 +360,7 @@ impl WorldManager {
             return;
         }
 
-        entry.buffer.blocks[idx] = block;
+        std::sync::Arc::make_mut(&mut entry.buffer).blocks[idx] = block;
         entry.is_modified = true;
         self.dirty_chunks_for_meshing.insert(chunk_pos);
 
@@ -377,7 +371,7 @@ impl WorldManager {
             // 3. Lazy Spawn：純空氣 Chunk 第一次放入非空氣方塊時，動態建立實體
             let mut chunk = Chunk::new(chunk_pos);
             chunk.buffer = generator::ChunkBuffer { blocks: entry.buffer.blocks };
-            chunk.light_buffer = entry.light_buffer.clone();
+            chunk.light_buffer = (*entry.light_buffer).clone();
             chunk.non_air_count = chunk.buffer.blocks.iter().filter(|&&b| b != BlockType::Air).count() as u16;
             chunk.set_block(local.x as usize, local.y as usize, local.z as usize, block);
             chunk.is_dirty = true;
@@ -560,8 +554,8 @@ mod tests {
         // Pre-create chunk at (0, 0, 0)
         let chunk_pos = IVec3::new(0, 0, 0);
         world_manager.chunks.insert(chunk_pos, ChunkEntry {
-            buffer: generator::ChunkBuffer { blocks: [BlockType::Air; 32768] },
-            light_buffer: ChunkLightBuffer::default(),
+            buffer: std::sync::Arc::new(generator::ChunkBuffer { blocks: [BlockType::Air; 32768] }),
+            light_buffer: std::sync::Arc::new(ChunkLightBuffer::default()),
             fluid_buffer: None,
             entity: None,
             is_modified: false,

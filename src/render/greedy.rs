@@ -141,9 +141,9 @@ fn push_quad(
 
 pub struct ChunkMeshInputData {
     pub chunk_pos: IVec3,
-    pub blocks: [Option<Box<crate::world::generator::ChunkBuffer>>; 27],
-    pub fluids: [Option<Box<[u8; 32768]>>; 27],
-    pub lights: [Option<Box<crate::world::chunk::ChunkLightBuffer>>; 27],
+    pub blocks: [Option<std::sync::Arc<crate::world::generator::ChunkBuffer>>; 27],
+    pub fluids: [Option<std::sync::Arc<[u8; 32768]>>; 27],
+    pub lights: [Option<std::sync::Arc<crate::world::chunk::ChunkLightBuffer>>; 27],
     pub surface_heights: Option<Box<[i32; 1156]>>, // 34x34 cache for [-1..=32]
 }
 
@@ -249,7 +249,7 @@ pub fn mesh_dirty_chunks(
                 if let Ok((_, mut chunk)) = q_chunks.get_mut(entity) {
                     // 🚀 數據真理之源剛性回寫外殼，確保存檔系統拿到的是最新狀態
                     chunk.buffer.blocks = entry.buffer.blocks.clone();
-                    chunk.light_buffer = entry.light_buffer.clone();
+                    chunk.light_buffer = (*entry.light_buffer).clone();
                     chunk.is_modified = entry.is_modified;
                     chunk.is_dirty = true;
                 }
@@ -257,7 +257,7 @@ pub fn mesh_dirty_chunks(
                 // 🚀 初生實體喚醒：為剛放入方塊的全空區塊建立渲染實體
                 let mut chunk = Chunk::new(chunk_pos);
                 chunk.buffer = crate::world::generator::ChunkBuffer { blocks: entry.buffer.blocks };
-                chunk.light_buffer = entry.light_buffer.clone();
+                chunk.light_buffer = (*entry.light_buffer).clone();
                 chunk.is_dirty = true;
                 chunk.is_modified = entry.is_modified;
                 
@@ -354,10 +354,10 @@ pub fn mesh_dirty_chunks(
                     let n_pos = chunk_pos + IVec3::new(dx, dy, dz);
                     if let Some(entry) = world_manager.get_chunk_ref(n_pos) {
                         let idx = ((dx + 1) * 9 + (dy + 1) * 3 + (dz + 1)) as usize;
-                        input_data.blocks[idx] = Some(Box::new(entry.buffer.clone()));
+                        input_data.blocks[idx] = Some(std::sync::Arc::clone(&entry.buffer));
                         input_data.fluids[idx] = entry.fluid_buffer.clone();
                         if entry.is_lighting_ready {
-                            input_data.lights[idx] = Some(Box::new(entry.light_buffer.clone()));
+                            input_data.lights[idx] = Some(std::sync::Arc::clone(&entry.light_buffer));
                         }
                         
                         let has_fluid = entry.fluid_buffer.as_ref().map_or(false, |fb| fb.iter().any(|&f| f > 0));
@@ -1321,21 +1321,21 @@ mod tests {
         let mut lights = [const { None }; 27];
 
         let center_idx = 13; // (0, 0, 0) chunk in 3x3x3: (0+1)*9 + (0+1)*3 + (0+1) = 13
-        blocks[center_idx] = Some(Box::new(crate::world::generator::ChunkBuffer {
+        blocks[center_idx] = Some(std::sync::Arc::new(crate::world::generator::ChunkBuffer {
             blocks: [BlockType::Air; 32768],
         }));
 
-        let mut fluid_arr = Box::new([0u8; 32768]);
+        let mut fluid_arr = [0u8; 32768];
         let idx = crate::utils::math::voxel_pos_to_index(10, 10, 10);
         fluid_arr[idx] = 8 | 0x80; // Source block (level 8)
-        fluids[center_idx] = Some(fluid_arr);
+        fluids[center_idx] = Some(std::sync::Arc::new(fluid_arr));
 
-        let mut light_buf = Box::new(crate::world::chunk::ChunkLightBuffer::default());
+        let mut light_buf = crate::world::chunk::ChunkLightBuffer::default();
         for i in 0..32768 {
             light_buf.set_sky_light(i, 15);
             light_buf.set_block_light(i, 0);
         }
-        lights[center_idx] = Some(light_buf);
+        lights[center_idx] = Some(std::sync::Arc::new(light_buf));
 
         let input_data = ChunkMeshInputData {
             chunk_pos,

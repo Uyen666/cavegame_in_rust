@@ -388,13 +388,13 @@ pub fn poll_loading_chunks(
                 )).id();
 
                 let entry = ChunkEntry {
-                    buffer:      ChunkBuffer { blocks: chunk_data.buffer.blocks },
-                    light_buffer: light_buffer.clone(),
+                    buffer: std::sync::Arc::new(ChunkBuffer { blocks: chunk_data.buffer.blocks }),
+                    light_buffer: std::sync::Arc::new(light_buffer),
                     fluid_buffer: chunk_data.fluid_buffer.as_ref().map(|v| {
-                        let mut b = Box::new([0u8; 32768]);
+                        let mut b = [0u8; 32768];
                         let len = v.len().min(32768);
                         b[..len].copy_from_slice(&v[..len]);
-                        b
+                        std::sync::Arc::new(b)
                     }),
                     entity:      Some(chunk_entity),
                     is_modified: false,
