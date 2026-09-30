@@ -315,9 +315,6 @@ pub fn player_move(
 
     let mut current_move_speed = move_speed;
     let is_jumping_triggered = player.wants_to_jump || keys.pressed(KeyCode::Space);
-    let is_ground_jumping = ground.on_ground && is_jumping_triggered;
-    let is_fluid_climbing = fluid.in_fluid && rb.is_colliding_horizontally && is_jumping_triggered;
-    let is_surface_escape = fluid.in_fluid && !fluid.head_in_fluid && is_jumping_triggered;
 
     // --- Horizontal input ---
     let forward = Vec3::new(-player.yaw.sin(), 0.0, -player.yaw.cos());
@@ -329,34 +326,62 @@ pub fn player_move(
     if keys.pressed(KeyCode::KeyA) { input_dir -= right; }
     if input_dir.length_squared() > 0.0 { input_dir = input_dir.normalize(); }
 
-    if fluid.in_fluid && !is_ground_jumping {
-        current_move_speed *= 0.4;
+    if fluid.in_fluid {
+        // 🚀 水中移動邏輯：保持流體阻尼與慣性，疾跑時提升游泳速度
+        let swim_speed_mult = if is_sprinting { 0.65 } else { 0.4 };
+        current_move_speed *= swim_speed_mult;
         vel.x += input_dir.x * current_move_speed * 10.0 * dt;
         vel.z += input_dir.z * current_move_speed * 10.0 * dt;
 
-        if is_fluid_climbing || is_surface_escape {
-            vel.y = config.physics.land_jump_impulse;
+        if ground.on_ground && is_jumping_triggered {
+            // 🚀 水底起跳：從水底河床躍起，保持水阻慣性
+            vel.y = config.physics.land_jump_impulse * 0.85;
             player.wants_to_jump = false;
+        } else if !fluid.head_in_fluid {
+            // 🚀 水面狀態 (頭部已露於水面)
+            let is_moving_forward = input_dir.length_squared() > 0.0;
+            if rb.is_colliding_horizontally && is_moving_forward && is_jumping_triggered {
+                // 🚀 登岸翻越 (Ledge Vault / Shore Hop)：前方有岸邊固體且嘗試翻上岸
+                // 僅在尚未具備高額向上速度時賦予單次小衝量，徹底消除連續多影格灌值造成的彈簧床現象
+                if vel.y < 2.0 {
+                    vel.y = config.physics.land_jump_impulse * 0.75;
+                    player.wants_to_jump = false;
+                }
+            } else if keys.pressed(KeyCode::Space) {
+                // 🚀 水面踩水 (Treading Water)：平穩維持在水面，眼部保持在水線之上，不拋射
+                if vel.y < 1.0 {
+                    vel.y = (vel.y + 12.0 * dt).min(1.0);
+                }
+                player.wants_to_jump = false;
+            }
         } else {
-            if keys.pressed(KeyCode::Space) {
-                vel.y += config.physics.water_buoyancy * dt; 
+            // 🚀 水下完全潛浸狀態 (Head in fluid)
+            if rb.is_colliding_horizontally && is_jumping_triggered {
+                // 🚀 瀑布攀爬 / 貼壁上游：平穩向上游升，杜絕 8.5 m/s 火箭發射
+                vel.y = (vel.y + 20.0 * dt).min(3.0);
+                player.wants_to_jump = false;
+            } else {
+                if keys.pressed(KeyCode::Space) {
+                    // 水中向上游
+                    vel.y += config.physics.water_buoyancy * dt;
+                }
+                let is_diving = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::KeyC);
+                if is_diving {
+                    // 🚀 水中下潛：統一與陸地下蹲鍵 (ControlLeft) 一致，並支援 C 鍵
+                    vel.y -= config.physics.water_buoyancy * dt;
+                }
             }
-            if keys.pressed(KeyCode::ShiftLeft) {
-                vel.y -= config.physics.water_buoyancy * dt;
-            }
-            // Gravity & Damping in fluid are handled by PhysicsPlugin (apply_kinematics)
         }
     } else {
-        // Instant horizontal speed on dry land
+        // 陸地移動邏輯：無慣性瞬時水平速度
         vel.x = input_dir.x * current_move_speed;
         vel.z = input_dir.z * current_move_speed;
-        // Gravity on land is handled by PhysicsPlugin
-    }
 
-    // --- Jump (Normal Land) ---
-    if (!fluid.in_fluid || is_ground_jumping) && is_jumping_triggered && ground.on_ground {
-        vel.y = config.physics.land_jump_impulse;
-        player.wants_to_jump = false; 
+        // --- Jump (Normal Land) ---
+        if is_jumping_triggered && ground.on_ground {
+            vel.y = config.physics.land_jump_impulse;
+            player.wants_to_jump = false; 
+        }
     }
 
     // 如果這一 Tick 結束了，且沒有按住 Space，直接洗淨點擊鎖存
@@ -622,3 +647,132 @@ fn draw_target_block_highlight(
         dist += step;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_world() -> (bevy::prelude::World, Entity) {
+        let mut world = bevy::prelude::World::new();
+        let mut time = Time::<()>::default();
+        time.advance_by(std::time::Duration::from_millis(16));
+        world.insert_resource(time);
+        world.insert_resource(ButtonInput::<KeyCode>::default());
+        world.insert_resource(crate::config::EngineConfig::default());
+        world.insert_resource(WorldManager::default());
+
+        let entity = world.spawn((
+            Transform::from_xyz(0.0, 10.0, 0.0),
+            crate::phys::components::Velocity::default(),
+            crate::phys::components::AabbCollider::from_dimensions(0.6, 1.8),
+            crate::phys::components::RigidBody {
+                gravity_scale: 1.0,
+                safewalk: false,
+                is_kinematic: false,
+                is_colliding_horizontally: false,
+            },
+            crate::phys::components::GroundSensor::default(),
+            crate::phys::components::FluidSensor::default(),
+            Player {
+                pitch: 0.0,
+                yaw: 0.0,
+                is_crouching: false,
+                is_spectator: false,
+                wants_to_jump: false,
+                has_spawned: true,
+                scroll_accumulator: 0.0,
+            },
+        )).id();
+
+        (world, entity)
+    }
+
+    #[test]
+    fn test_water_surface_treading_no_launch() {
+        let (mut world, entity) = create_test_world();
+        
+        // 設定為水面露頭狀態 (in_fluid = true, head_in_fluid = false, 不碰牆)
+        {
+            let mut fluid = world.get_mut::<crate::phys::components::FluidSensor>(entity).unwrap();
+            fluid.in_fluid = true;
+            fluid.head_in_fluid = false;
+        }
+
+        // 按住空白鍵
+        {
+            let mut keys = world.resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::Space);
+        }
+
+        // 執行 player_move 系統
+        let mut schedule = Schedule::default();
+        schedule.add_systems(player_move);
+        schedule.run(&mut world);
+
+        // 驗證向上速度被限制在平穩踩水上限 (<= 1.0)，絕對不准出現 8.5 的彈簧床拋射
+        let vel = world.get::<crate::phys::components::Velocity>(entity).unwrap();
+        assert!(vel.y > 0.0, "踩水應提供向上浮力");
+        assert!(vel.y <= 1.0, "踩水速度不可超過 1.0 m/s，以防止彈簧床彈跳，目前值: {}", vel.y);
+    }
+
+    #[test]
+    fn test_water_shore_hop_single_impulse() {
+        let (mut world, entity) = create_test_world();
+        
+        // 設定為水面露頭且貼近岸邊障礙物
+        {
+            let mut fluid = world.get_mut::<crate::phys::components::FluidSensor>(entity).unwrap();
+            fluid.in_fluid = true;
+            fluid.head_in_fluid = false;
+            let mut rb = world.get_mut::<crate::phys::components::RigidBody>(entity).unwrap();
+            rb.is_colliding_horizontally = true;
+        }
+
+        // 按住 W 與 Space 嘗試翻上岸
+        {
+            let mut keys = world.resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::KeyW);
+            keys.press(KeyCode::Space);
+        }
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(player_move);
+
+        // 影格 1：觸發登岸跳躍衝量
+        schedule.run(&mut world);
+        let vel_y1 = world.get::<crate::phys::components::Velocity>(entity).unwrap().y;
+        assert!(vel_y1 >= 6.0, "登岸應觸發單次翻越衝量 (~6.38)，目前值: {}", vel_y1);
+
+        // 影格 2：因為已經有向上速度 (vel.y >= 2.0)，不應再次重置注入衝量
+        schedule.run(&mut world);
+        let vel_y2 = world.get::<crate::phys::components::Velocity>(entity).unwrap().y;
+        assert_eq!(vel_y1, vel_y2, "下一幀不應重複覆蓋衝量，應維持連續自然拋物線");
+    }
+
+    #[test]
+    fn test_water_submerged_crouch_dive() {
+        let (mut world, entity) = create_test_world();
+        
+        // 設定為完全潛水狀態 (in_fluid = true, head_in_fluid = true)
+        {
+            let mut fluid = world.get_mut::<crate::phys::components::FluidSensor>(entity).unwrap();
+            fluid.in_fluid = true;
+            fluid.head_in_fluid = true;
+        }
+
+        // 按住下蹲鍵 ControlLeft (或 C)
+        {
+            let mut keys = world.resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::ControlLeft);
+        }
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(player_move);
+        schedule.run(&mut world);
+
+        // 驗證速度向下 (下潛)
+        let vel = world.get::<crate::phys::components::Velocity>(entity).unwrap();
+        assert!(vel.y < 0.0, "按下下蹲鍵應向下潛水，目前值: {}", vel.y);
+    }
+}
+
