@@ -608,6 +608,19 @@ fn player_interaction(
                             }
                         }
 
+                        // 🚀 樹木重力與倒塌物理：若破壞原木，觸發 Timber 連鎖倒塌或重力滑落
+                        if old_block == BlockType::OakLog {
+                            crate::world::tree::handle_tree_break(
+                                &mut world,
+                                &mut commands,
+                                &mut particle_mgr,
+                                &mut inventory,
+                                &registry,
+                                block_pos,
+                                can_harvest,
+                            );
+                        }
+
                         inventory.damage_selected_tool(1);
                         player.mining_target = None;
                         player.mining_progress = 0.0;

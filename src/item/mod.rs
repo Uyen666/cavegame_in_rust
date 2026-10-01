@@ -76,9 +76,15 @@ impl ItemType {
 pub fn get_block_drop(block: BlockType) -> Option<ItemType> {
     match block.drop_table() {
         DropTable::None => None,
+        DropTable::ItemDrop { item_id, .. } => match item_id {
+            100 => Some(ItemType::Coal),
+            102 => Some(ItemType::Stick),
+            _ => None,
+        },
         _ => match block {
             BlockType::Grass => Some(ItemType::Dirt),
             BlockType::CoalOre => Some(ItemType::Coal),
+            BlockType::OakLeaves => Some(ItemType::Stick),
             other => ItemType::from_block(other),
         },
     }

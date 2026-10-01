@@ -7,6 +7,7 @@ pub mod lighting;
 pub mod fluid;
 pub mod systems;
 pub mod registry;
+pub mod tree;
 use bevy::prelude::*;
 use bevy::utils::{HashMap, HashSet};
 use bevy::tasks::Task;
