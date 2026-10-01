@@ -9,6 +9,9 @@ use bevy::color::Mix;
 use bevy::render::view::RenderLayers;
 use crate::item::{Inventory, ItemStack, ItemType, ItemKind, ItemRegistry, get_block_drop};
 
+pub mod vitals;
+pub use vitals::PlayerVitals;
+
 #[derive(Resource, Default)]
 pub struct CursorJustLocked(pub bool);
 
@@ -22,6 +25,7 @@ impl Plugin for PlayerPlugin {
                Update,
                (
                    toggle_grab_cursor,
+                   vitals::update_player_vitals_system,
                    player_interaction,
                    player_input_capture,
                    update_fog_color,
@@ -141,6 +145,7 @@ fn setup_player(
 
     commands.spawn((
         Player::default(),
+        PlayerVitals::default(),
         inventory,
         crate::phys::components::RigidBody {
             gravity_scale: 1.0,
@@ -299,6 +304,8 @@ pub fn player_move(
         &mut crate::phys::components::AabbCollider,
         &crate::phys::components::GroundSensor,
         &crate::phys::components::FluidSensor,
+        Option<&mut PlayerVitals>,
+        Option<&Inventory>,
     )>,
     mut q_camera: Query<&mut Transform, (With<PlayerCamera>, Without<Player>)>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -313,7 +320,7 @@ pub fn player_move(
         }
     }
 
-    let (mut player, mut transform, mut vel, mut rb, mut collider, ground, fluid) = q_player.single_mut();
+    let (mut player, mut transform, mut vel, mut rb, mut collider, ground, fluid, mut maybe_vitals, maybe_inventory) = q_player.single_mut();
     let dt = time.delta_seconds();
 
     if dt < 0.0001 {
@@ -395,8 +402,9 @@ pub fn player_move(
     let player_height = if player.is_crouching { 1.5_f32 } else { 1.8_f32 };
     *collider = crate::phys::components::AabbCollider::from_dimensions(0.6, player_height);
     
-    let is_sprinting = keys.pressed(KeyCode::ShiftLeft);
-    let move_speed = if player.is_crouching { 
+    let can_sprint = maybe_vitals.as_ref().map_or(true, |v| v.stamina > 2.0);
+    let is_sprinting = keys.pressed(KeyCode::ShiftLeft) && can_sprint;
+    let base_speed = if player.is_crouching { 
         2.5_f32 
     } else if is_sprinting {
         5.6_f32
@@ -410,7 +418,9 @@ pub fn player_move(
         cam.translation.y += (target_cam_y - cam.translation.y) * (1.0 - (-10.0_f32 * dt).exp());
     }
 
-    let mut current_move_speed = move_speed;
+    let encumbrance = maybe_inventory.map_or(0.0, |inv| crate::player::vitals::calculate_inventory_encumbrance(inv));
+    let enc_speed_mult = (1.0 - encumbrance * 0.25).max(0.6);
+    let mut current_move_speed = base_speed * enc_speed_mult;
     let is_jumping_triggered = player.wants_to_jump || keys.pressed(KeyCode::Space);
 
     // --- Horizontal input ---
@@ -434,6 +444,9 @@ pub fn player_move(
             // 🚀 水底起跳：從水底河床躍起，保持水阻慣性
             vel.y = config.physics.land_jump_impulse * 0.85;
             player.wants_to_jump = false;
+            if let Some(ref mut vitals) = maybe_vitals {
+                vitals.stamina = (vitals.stamina - 4.0).max(0.0);
+            }
         } else if !fluid.head_in_fluid {
             // 🚀 水面狀態 (頭部已露於水面)
             let is_moving_forward = input_dir.length_squared() > 0.0;
@@ -443,6 +456,9 @@ pub fn player_move(
                 if vel.y < 2.0 {
                     vel.y = config.physics.land_jump_impulse * 0.75;
                     player.wants_to_jump = false;
+                    if let Some(ref mut vitals) = maybe_vitals {
+                        vitals.stamina = (vitals.stamina - 5.0).max(0.0);
+                    }
                 }
             } else if keys.pressed(KeyCode::Space) {
                 // 🚀 水面踩水 (Treading Water)：平穩維持在水面，眼部保持在水線之上，不拋射
@@ -478,6 +494,9 @@ pub fn player_move(
         if is_jumping_triggered && ground.on_ground {
             vel.y = config.physics.land_jump_impulse;
             player.wants_to_jump = false; 
+            if let Some(ref mut vitals) = maybe_vitals {
+                vitals.stamina = (vitals.stamina - 6.0).max(0.0);
+            }
         }
     }
 
@@ -499,13 +518,13 @@ fn player_interaction(
     mut torch_burn_mgr: ResMut<crate::world::TorchBurnManager>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
-    mut q_player: Query<(&Transform, &mut Player, &mut Inventory)>,
+    mut q_player: Query<(&Transform, &mut Player, &mut Inventory, Option<&mut PlayerVitals>)>,
     cursor_just_locked: Res<CursorJustLocked>,
 ) {
     let Ok(window) = q_windows.get_single() else { return; };
     if window.cursor.grab_mode != CursorGrabMode::Locked || cursor_just_locked.0 { return; }
     
-    let Ok((player_transform, mut player, mut inventory)) = q_player.get_single_mut() else { return; };
+    let Ok((player_transform, mut player, mut inventory, mut maybe_vitals)) = q_player.get_single_mut() else { return; };
 
     // 🚀 旁觀者權限閹割：禁止修改世界幾何
     if player.is_spectator {
@@ -635,66 +654,81 @@ fn player_interaction(
                     }
                 }
             } else if right {
-                let block_aabb = Aabb::new(
-                    Vec3::new(place_pos.x as f32, place_pos.y as f32, place_pos.z as f32),
-                    Vec3::new(place_pos.x as f32 + 1.0, place_pos.y as f32 + 1.0, place_pos.z as f32 + 1.0),
-                );
+                // 🚀 生理口渴飲水交互：若對準水源或相鄰格為水，且未手持可放置方塊時，飲水補充水份
+                let is_water_target = world.get_fluid_global(place_pos) > 0 || world.get_fluid_global(block_pos + IVec3::Y) > 0;
+                let holding_placeable_block = inventory.selected_item().and_then(|it| registry.get(it.item_type)).map_or(false, |def| matches!(def.kind, ItemKind::Block(_)));
 
-                let p_pos = player_transform.translation;
-                let player_aabb = Aabb::new(
-                    Vec3::new(p_pos.x - 0.3, p_pos.y, p_pos.z - 0.3),
-                    Vec3::new(p_pos.x + 0.3, p_pos.y + 1.8, p_pos.z + 0.3),
-                );
+                if is_water_target && !holding_placeable_block {
+                    if let Some(ref mut vitals) = maybe_vitals {
+                        if vitals.thirst < vitals.max_thirst {
+                            vitals.thirst = (vitals.thirst + 30.0).min(vitals.max_thirst);
+                            vitals.wetness = (vitals.wetness + 0.15).min(1.0);
+                            particle_mgr.spawn_debris(place_pos.as_vec3() + 0.5, Color::srgb_u8(60, 140, 240), 10);
+                            println!("【生理系統】飲用水源！口渴度恢復至: {:.1}%", vitals.thirst);
+                        }
+                    }
+                } else {
+                    let block_aabb = Aabb::new(
+                        Vec3::new(place_pos.x as f32, place_pos.y as f32, place_pos.z as f32),
+                        Vec3::new(place_pos.x as f32 + 1.0, place_pos.y as f32 + 1.0, place_pos.z as f32 + 1.0),
+                    );
 
-                if !player_aabb.intersects(&block_aabb) {
-                    if let Some(selected_item) = inventory.selected_item().cloned() {
-                        if let Some(def) = registry.get(selected_item.item_type) {
-                            if let ItemKind::Block(base_block) = def.kind {
-                                if selected_item.count > 0 {
-                                    let mut current_block = base_block;
-                                    if base_block == BlockType::Torch {
-                                        let diff = hit.normal;
-                                        if diff == IVec3::Y {
-                                            current_block = BlockType::Torch;
-                                        } else if diff == IVec3::X {
-                                            current_block = BlockType::TorchWallW;
-                                        } else if diff == IVec3::NEG_X {
-                                            current_block = BlockType::TorchWallE;
-                                        } else if diff == IVec3::Z {
-                                            current_block = BlockType::TorchWallN;
-                                        } else if diff == IVec3::NEG_Z {
-                                            current_block = BlockType::TorchWallS;
-                                        } else if diff == IVec3::NEG_Y {
-                                            // cannot place torch on ceiling
-                                            current_block = BlockType::Air;
+                    let p_pos = player_transform.translation;
+                    let player_aabb = Aabb::new(
+                        Vec3::new(p_pos.x - 0.3, p_pos.y, p_pos.z - 0.3),
+                        Vec3::new(p_pos.x + 0.3, p_pos.y + 1.8, p_pos.z + 0.3),
+                    );
+
+                    if !player_aabb.intersects(&block_aabb) {
+                        if let Some(selected_item) = inventory.selected_item().cloned() {
+                            if let Some(def) = registry.get(selected_item.item_type) {
+                                if let ItemKind::Block(base_block) = def.kind {
+                                    if selected_item.count > 0 {
+                                        let mut current_block = base_block;
+                                        if base_block == BlockType::Torch {
+                                            let diff = hit.normal;
+                                            if diff == IVec3::Y {
+                                                current_block = BlockType::Torch;
+                                            } else if diff == IVec3::X {
+                                                current_block = BlockType::TorchWallW;
+                                            } else if diff == IVec3::NEG_X {
+                                                current_block = BlockType::TorchWallE;
+                                            } else if diff == IVec3::Z {
+                                                current_block = BlockType::TorchWallN;
+                                            } else if diff == IVec3::NEG_Z {
+                                                current_block = BlockType::TorchWallS;
+                                            } else if diff == IVec3::NEG_Y {
+                                                // cannot place torch on ceiling
+                                                current_block = BlockType::Air;
+                                            }
+                                        }
+
+                                        if current_block != BlockType::Air {
+                                            world.set_block_global(place_pos, current_block, &mut commands);
+                                            crate::world::fluid::wake_up_fluids_in_radius(&mut world, place_pos);
+
+                                            if current_block.is_torch() {
+                                                torch_burn_mgr.register(place_pos, crate::world::torch::DEFAULT_TORCH_LIFETIME);
+                                            }
+
+                                            // 🚀 扣減 1 個物品 (數量降為 0 時自動置為 None)
+                                            inventory.consume_selected(1);
                                         }
                                     }
+                                } else if selected_item.item_type == ItemType::Flint {
+                                    // 🚀 燧石擊打火花與火把引燃合成
+                                    let spark_pos = hit.adjacent_pos.as_vec3() + 0.5;
+                                    particle_mgr.spawn_debris(spark_pos, Color::srgb_u8(255, 190, 40), 6);
 
-                                    if current_block != BlockType::Air {
-                                        world.set_block_global(place_pos, current_block, &mut commands);
-                                        crate::world::fluid::wake_up_fluids_in_radius(&mut world, place_pos);
-
-                                        if current_block.is_torch() {
-                                            torch_burn_mgr.register(place_pos, crate::world::torch::DEFAULT_TORCH_LIFETIME);
+                                    // 若背包擁有 Stick 與 Coal，點火合成 4 支火把！
+                                    if inventory.consume_item(ItemType::Stick, 1) {
+                                        if inventory.consume_item(ItemType::Coal, 1) {
+                                            inventory.add_item(ItemStack::new(ItemType::Torch, 4, &registry), &registry);
+                                            particle_mgr.spawn_debris(spark_pos, Color::srgb_u8(255, 120, 20), 14);
+                                        } else {
+                                            // 煤炭不足時返還 Stick
+                                            inventory.add_item(ItemStack::new(ItemType::Stick, 1, &registry), &registry);
                                         }
-
-                                        // 🚀 扣減 1 個物品 (數量降為 0 時自動置為 None)
-                                        inventory.consume_selected(1);
-                                    }
-                                }
-                            } else if selected_item.item_type == ItemType::Flint {
-                                // 🚀 燧石擊打火花與火把引燃合成
-                                let spark_pos = hit.adjacent_pos.as_vec3() + 0.5;
-                                particle_mgr.spawn_debris(spark_pos, Color::srgb_u8(255, 190, 40), 6);
-
-                                // 若背包擁有 Stick 與 Coal，點火合成 4 支火把！
-                                if inventory.consume_item(ItemType::Stick, 1) {
-                                    if inventory.consume_item(ItemType::Coal, 1) {
-                                        inventory.add_item(ItemStack::new(ItemType::Torch, 4, &registry), &registry);
-                                        particle_mgr.spawn_debris(spark_pos, Color::srgb_u8(255, 120, 20), 14);
-                                    } else {
-                                        // 煤炭不足時返還 Stick
-                                        inventory.add_item(ItemStack::new(ItemType::Stick, 1, &registry), &registry);
                                     }
                                 }
                             }
@@ -725,6 +759,25 @@ fn player_interaction(
             player.mining_target = None;
             player.mining_progress = 0.0;
             player.mining_hit_timer = 0.0;
+
+            if right {
+                let p_feet = IVec3::new(
+                    player_transform.translation.x.floor() as i32,
+                    player_transform.translation.y.floor() as i32,
+                    player_transform.translation.z.floor() as i32,
+                );
+                let in_water = world.get_fluid_global(p_feet) > 0 || world.get_fluid_global(p_feet + IVec3::Y) > 0;
+                if in_water {
+                    if let Some(ref mut vitals) = maybe_vitals {
+                        if vitals.thirst < vitals.max_thirst {
+                            vitals.thirst = (vitals.thirst + 30.0).min(vitals.max_thirst);
+                            vitals.wetness = 1.0;
+                            particle_mgr.spawn_debris(player_transform.translation, Color::srgb_u8(60, 140, 240), 10);
+                            println!("【生理系統】於水中飲水！口渴度恢復至: {:.1}%", vitals.thirst);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -878,6 +931,8 @@ mod tests {
                 has_spawned: true,
                 ..default()
             },
+            PlayerVitals::default(),
+            Inventory::new(36),
         )).id();
 
         (world, entity)
@@ -1163,5 +1218,75 @@ mod tests {
         assert_eq!(win.cursor.grab_mode, CursorGrabMode::None, "失焦時立即解鎖游標");
         assert!(win.cursor.visible, "失焦時游標恢復可見");
     }
+
+    #[test]
+    fn test_sprint_requires_stamina_and_jump_drains_stamina() {
+        let (mut world, entity) = create_test_world();
+
+        // 站在地面
+        {
+            let mut ground = world.get_mut::<crate::phys::components::GroundSensor>(entity).unwrap();
+            ground.on_ground = true;
+        }
+
+        // 1. 滿體力時疾跑 (ShiftLeft + W)
+        {
+            let mut keys = world.resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::ShiftLeft);
+            keys.press(KeyCode::KeyW);
+        }
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(player_move);
+        schedule.run(&mut world);
+
+        let vel = world.get::<crate::phys::components::Velocity>(entity).unwrap();
+        assert!((vel.z - (-5.6)).abs() < 0.05, "滿體力時疾跑速度應為 5.6 m/s，當前: {}", vel.z);
+
+        // 2. 體力耗盡 (stamina = 0.0) 時無法疾跑，降回普通走速 (4.3 m/s)
+        {
+            let mut vitals = world.get_mut::<PlayerVitals>(entity).unwrap();
+            vitals.stamina = 0.0;
+        }
+        schedule.run(&mut world);
+        let vel2 = world.get::<crate::phys::components::Velocity>(entity).unwrap();
+        assert!((vel2.z - (-4.3)).abs() < 0.05, "體力耗盡時疾跑失效降為普通速度 4.3 m/s，當前: {}", vel2.z);
+
+        // 3. 跳躍扣減體力
+        {
+            let mut vitals = world.get_mut::<PlayerVitals>(entity).unwrap();
+            vitals.stamina = 50.0;
+            let mut player = world.get_mut::<Player>(entity).unwrap();
+            player.wants_to_jump = true;
+        }
+        schedule.run(&mut world);
+        let vitals = world.get::<PlayerVitals>(entity).unwrap();
+        assert_eq!(vitals.stamina, 44.0, "地面起跳扣減 6.0 體力 (50 -> 44)");
+    }
+
+    #[test]
+    fn test_inventory_encumbrance_slows_player() {
+        let (mut world, entity) = create_test_world();
+        let registry = ItemRegistry;
+
+        // 填滿 6 組 64 個石頭 = 100% 負重
+        {
+            let mut inv = world.get_mut::<Inventory>(entity).unwrap();
+            for i in 0..6 {
+                inv.set_slot(i, Some(ItemStack::new(ItemType::Stone, 64, &registry)));
+            }
+            let mut keys = world.resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::KeyW);
+        }
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(player_move);
+        schedule.run(&mut world);
+
+        // 基準走速 4.3 * (1.0 - 1.0 * 0.25) = 4.3 * 0.75 = 3.225
+        let vel = world.get::<crate::phys::components::Velocity>(entity).unwrap();
+        assert!((vel.z - (-3.225)).abs() < 0.05, "100% 負重時移速應減緩 25% (4.3 -> ~3.225)，當前: {}", vel.z);
+    }
 }
+
 

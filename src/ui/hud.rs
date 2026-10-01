@@ -330,6 +330,18 @@ pub struct HotbarDurabilityBarContainerNode;
 #[derive(Component)]
 pub struct HotbarDurabilityBarFillNode;
 
+#[derive(Component)]
+pub struct VitalsHealthBarFill;
+
+#[derive(Component)]
+pub struct VitalsStaminaBarFill;
+
+#[derive(Component)]
+pub struct VitalsThirstBarFill;
+
+#[derive(Component)]
+pub struct VitalsStatusText;
+
 pub fn setup_hotbar_ui(mut commands: Commands) {
     commands.spawn((
         NodeBundle {
@@ -338,7 +350,7 @@ pub fn setup_hotbar_ui(mut commands: Commands) {
                 height: Val::Percent(100.0),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::FlexEnd,
-                padding: UiRect::bottom(Val::Px(20.0)),
+                padding: UiRect::bottom(Val::Px(16.0)),
                 ..default()
             },
             background_color: BackgroundColor(Color::NONE),
@@ -348,31 +360,146 @@ pub fn setup_hotbar_ui(mut commands: Commands) {
     )).with_children(|parent| {
         parent.spawn(NodeBundle {
             style: Style {
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(6.0),
-                padding: UiRect::all(Val::Px(6.0)),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(6.0),
                 ..default()
             },
-            background_color: BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+            background_color: BackgroundColor(Color::NONE),
             ..default()
-        }).with_children(|hotbar| {
-            for i in 0..9 {
-                hotbar.spawn((
-                    NodeBundle {
-                        style: Style {
-                            width: Val::Px(48.0),
-                            height: Val::Px(48.0),
-                            border: UiRect::all(Val::Px(1.0)),
-                            justify_content: JustifyContent::Center,
-                            align_items: AlignItems::Center,
-                            ..default()
-                        },
-                        background_color: BackgroundColor(Color::srgba(0.1, 0.1, 0.1, 0.5)),
-                        border_color: BorderColor(Color::srgba(0.3, 0.3, 0.3, 0.5)),
+        }).with_children(|col| {
+            // ── Vitals HUD Container (Health, Stamina, Thirst, Temp/Wetness) ──
+            col.spawn(NodeBundle {
+                style: Style {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(10.0),
+                    align_items: AlignItems::Center,
+                    padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+                    ..default()
+                },
+                background_color: BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+                ..default()
+            }).with_children(|vitals_ui| {
+                // HP Bar
+                vitals_ui.spawn(NodeBundle {
+                    style: Style {
+                        width: Val::Px(70.0),
+                        height: Val::Px(6.0),
+                        border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
-                    HotbarSlotUi { slot_index: i },
-                )).with_children(|slot| {
+                    background_color: BackgroundColor(Color::srgb(0.2, 0.05, 0.05)),
+                    border_color: BorderColor(Color::srgb(0.4, 0.1, 0.1)),
+                    ..default()
+                }).with_children(|bar| {
+                    bar.spawn((
+                        NodeBundle {
+                            style: Style {
+                                width: Val::Percent(100.0),
+                                height: Val::Percent(100.0),
+                                ..default()
+                            },
+                            background_color: BackgroundColor(Color::srgb(0.9, 0.2, 0.2)),
+                            ..default()
+                        },
+                        VitalsHealthBarFill,
+                    ));
+                });
+
+                // Stamina Bar
+                vitals_ui.spawn(NodeBundle {
+                    style: Style {
+                        width: Val::Px(70.0),
+                        height: Val::Px(6.0),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    background_color: BackgroundColor(Color::srgb(0.2, 0.2, 0.05)),
+                    border_color: BorderColor(Color::srgb(0.4, 0.4, 0.1)),
+                    ..default()
+                }).with_children(|bar| {
+                    bar.spawn((
+                        NodeBundle {
+                            style: Style {
+                                width: Val::Percent(100.0),
+                                height: Val::Percent(100.0),
+                                ..default()
+                            },
+                            background_color: BackgroundColor(Color::srgb(0.95, 0.8, 0.1)),
+                            ..default()
+                        },
+                        VitalsStaminaBarFill,
+                    ));
+                });
+
+                // Thirst Bar
+                vitals_ui.spawn(NodeBundle {
+                    style: Style {
+                        width: Val::Px(70.0),
+                        height: Val::Px(6.0),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    background_color: BackgroundColor(Color::srgb(0.05, 0.15, 0.25)),
+                    border_color: BorderColor(Color::srgb(0.1, 0.3, 0.5)),
+                    ..default()
+                }).with_children(|bar| {
+                    bar.spawn((
+                        NodeBundle {
+                            style: Style {
+                                width: Val::Percent(100.0),
+                                height: Val::Percent(100.0),
+                                ..default()
+                            },
+                            background_color: BackgroundColor(Color::srgb(0.2, 0.6, 0.95)),
+                            ..default()
+                        },
+                        VitalsThirstBarFill,
+                    ));
+                });
+
+                // Status Text
+                vitals_ui.spawn((
+                    TextBundle::from_section(
+                        "37.0°C | Dry",
+                        TextStyle {
+                            font_size: 11.0,
+                            color: Color::srgb(0.85, 0.85, 0.85),
+                            ..default()
+                        }
+                    ),
+                    VitalsStatusText,
+                ));
+            });
+
+            // ── Hotbar Row ──
+            col.spawn(NodeBundle {
+                style: Style {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(6.0),
+                    padding: UiRect::all(Val::Px(6.0)),
+                    ..default()
+                },
+                background_color: BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+                ..default()
+            }).with_children(|hotbar| {
+                for i in 0..9 {
+                    hotbar.spawn((
+                        NodeBundle {
+                            style: Style {
+                                width: Val::Px(48.0),
+                                height: Val::Px(48.0),
+                                border: UiRect::all(Val::Px(1.0)),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            background_color: BackgroundColor(Color::srgba(0.1, 0.1, 0.1, 0.5)),
+                            border_color: BorderColor(Color::srgba(0.3, 0.3, 0.3, 0.5)),
+                            ..default()
+                        },
+                        HotbarSlotUi { slot_index: i },
+                    )).with_children(|slot| {
                     // 1. 左上角微型鍵位數字 (1..9)
                     slot.spawn(TextBundle::from_section(
                         format!("{}", i + 1),
@@ -471,6 +598,7 @@ pub fn setup_hotbar_ui(mut commands: Commands) {
             }
         });
     });
+});
 }
 
 pub fn update_hotbar_ui(
@@ -638,6 +766,41 @@ pub fn cleanup_hotbar_ui(
 ) {
     for entity in q_ui.iter() {
         commands.entity(entity).despawn_recursive();
+    }
+}
+
+pub fn update_vitals_hud(
+    q_vitals: Query<&crate::player::PlayerVitals, Changed<crate::player::PlayerVitals>>,
+    mut q_hp: Query<&mut Style, (With<VitalsHealthBarFill>, Without<VitalsStaminaBarFill>, Without<VitalsThirstBarFill>)>,
+    mut q_sta: Query<&mut Style, (With<VitalsStaminaBarFill>, Without<VitalsHealthBarFill>, Without<VitalsThirstBarFill>)>,
+    mut q_thirst: Query<&mut Style, (With<VitalsThirstBarFill>, Without<VitalsHealthBarFill>, Without<VitalsStaminaBarFill>)>,
+    mut q_text: Query<&mut Text, With<VitalsStatusText>>,
+) {
+    let Ok(vitals) = q_vitals.get_single() else { return; };
+
+    let hp_pct = (vitals.health / vitals.max_health * 100.0).clamp(0.0, 100.0);
+    for mut style in q_hp.iter_mut() {
+        style.width = Val::Percent(hp_pct);
+    }
+
+    let sta_pct = (vitals.stamina / vitals.max_stamina * 100.0).clamp(0.0, 100.0);
+    for mut style in q_sta.iter_mut() {
+        style.width = Val::Percent(sta_pct);
+    }
+
+    let thirst_pct = (vitals.thirst / vitals.max_thirst * 100.0).clamp(0.0, 100.0);
+    for mut style in q_thirst.iter_mut() {
+        style.width = Val::Percent(thirst_pct);
+    }
+
+    let temp_str = format!("{:.1}°C", vitals.body_temperature);
+    let wet_str = if vitals.wetness > 0.05 {
+        format!("{:.0}% Wet", vitals.wetness * 100.0)
+    } else {
+        "Dry".to_string()
+    };
+    for mut text in q_text.iter_mut() {
+        text.sections[0].value = format!("{} | {}", temp_str, wet_str);
     }
 }
 

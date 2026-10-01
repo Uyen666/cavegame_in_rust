@@ -20,7 +20,7 @@ impl Plugin for UiPlugin {
            .add_systems(OnExit(GameState::InGame), (hud::cleanup_crosshair, hud::cleanup_hotbar_ui))
            .add_systems(
                Update,
-               (hud::update_crosshair, hud::update_hotbar_ui).run_if(in_state(GameState::InGame))
+               (hud::update_crosshair, hud::update_hotbar_ui, hud::update_vitals_hud).run_if(in_state(GameState::InGame))
            )
            
            .add_systems(OnEnter(GameState::Settings), settings::setup_settings)

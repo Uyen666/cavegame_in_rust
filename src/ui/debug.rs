@@ -120,7 +120,7 @@ fn update_debug_text(
     diagnostics: Res<DiagnosticsStore>,
     mut q_text: Query<&mut Text, With<DebugText>>,
     q_root: Query<&Visibility, With<DebugUiRoot>>,
-    q_player: Query<(&Transform, &crate::item::Inventory)>,
+    q_player: Query<(&Transform, &crate::item::Inventory, Option<&crate::player::PlayerVitals>)>,
     q_camera: Query<&GlobalTransform, With<crate::player::PlayerCamera>>,
     world_manager: Res<WorldManager>,
     cycle: Res<crate::world::DayNightCycle>,
@@ -152,7 +152,7 @@ fn update_debug_text(
     }
 
     // Always compute player coordinates every frame so movement is smooth
-    let (x, y, z, held_block) = if let Ok((player_transform, inventory)) = q_player.get_single() {
+    let (x, y, z, held_block, vitals_str) = if let Ok((player_transform, inventory, maybe_vitals)) = q_player.get_single() {
         let pos = player_transform.translation;
         let item_str = if let Some(stack) = inventory.selected_item() {
             if let Some(dur) = stack.durability {
@@ -163,9 +163,23 @@ fn update_debug_text(
         } else {
             "Empty".to_string()
         };
-        (pos.x, pos.y, pos.z, item_str)
+        let vitals_info = if let Some(vitals) = maybe_vitals {
+            let temp_warn = if vitals.body_temperature < 35.0 { " [HYPOTHERMIA!]" } else { "" };
+            let thirst_warn = if vitals.thirst <= 0.0 { " [DEHYDRATED!]" } else { "" };
+            format!(
+                "Vitals: HP: {:.0}/{:.0} | Stamina: {:.0}% | Thirst: {:.0}%{} | Temp: {:.1}°C{} | Wet: {:.0}%\n",
+                vitals.health, vitals.max_health,
+                vitals.stamina,
+                vitals.thirst, thirst_warn,
+                vitals.body_temperature, temp_warn,
+                vitals.wetness * 100.0,
+            )
+        } else {
+            String::new()
+        };
+        (pos.x, pos.y, pos.z, item_str, vitals_info)
     } else {
-        (0.0, 0.0, 0.0, String::from("Unknown"))
+        (0.0, 0.0, 0.0, String::from("Unknown"), String::new())
     };
 
     let foot_pos = IVec3::new(x.floor() as i32, y.floor() as i32, z.floor() as i32);
@@ -227,6 +241,7 @@ fn update_debug_text(
     let text_content = format!(
         "Cavegame Dev 2026\n\
          {}\n\
+         {}\
          Pos: X: {:.2}, Y: {:.2}, Z: {:.2}\n\
          Chunk: CX: {}, CY: {}, CZ: {} [bx: {}, by: {}, bz: {}]\n\
          Client Light: Eye: {:.1} (sky: {}, block: {})\n\
@@ -235,6 +250,7 @@ fn update_debug_text(
          Holding: {}\n\
          Loaded Chunks: [E: {} / D: {}]",
         *fps_cache,
+        vitals_str,
         x, y, z,
         chunk_pos.x, chunk_pos.y, chunk_pos.z, local_pos.x, local_pos.y, local_pos.z,
         eye_eff, eye_sky, eye_block,
