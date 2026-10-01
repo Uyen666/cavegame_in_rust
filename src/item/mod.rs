@@ -24,6 +24,7 @@ pub enum ItemType {
     Coal = 100,
     IronIngot = 101,
     Stick = 102,
+    Flint = 103,
 
     // Tools
     WoodenPickaxe = 200,
@@ -85,6 +86,7 @@ pub fn get_block_drop(block: BlockType) -> Option<ItemType> {
             BlockType::Grass => Some(ItemType::Dirt),
             BlockType::CoalOre => Some(ItemType::Coal),
             BlockType::OakLeaves => Some(ItemType::Stick),
+            BlockType::Gravel => Some(ItemType::Flint),
             other => ItemType::from_block(other),
         },
     }
@@ -132,6 +134,7 @@ impl ItemRegistry {
             ItemType::Coal => Some(ItemDefinition { id: item, name: "Coal", kind: ItemKind::Material, max_stack: 64 }),
             ItemType::IronIngot => Some(ItemDefinition { id: item, name: "Iron Ingot", kind: ItemKind::Material, max_stack: 64 }),
             ItemType::Stick => Some(ItemDefinition { id: item, name: "Stick", kind: ItemKind::Material, max_stack: 64 }),
+            ItemType::Flint => Some(ItemDefinition { id: item, name: "Flint", kind: ItemKind::Material, max_stack: 64 }),
 
             ItemType::WoodenPickaxe => Some(ItemDefinition { id: item, name: "Wooden Pickaxe", kind: ItemKind::Tool { tool_type: ToolType::Pickaxe, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 59 }, max_stack: 1 }),
             ItemType::StonePickaxe => Some(ItemDefinition { id: item, name: "Stone Pickaxe", kind: ItemKind::Tool { tool_type: ToolType::Pickaxe, tier: ToolTier::Stone, efficiency: 4.0, max_durability: 131 }, max_stack: 1 }),
@@ -347,6 +350,31 @@ impl Inventory {
         } else {
             false
         }
+    }
+
+    /// 從背包中扣除指定類型的物品數量。若數量足夠扣除則傳回 true，不足則傳回 false 且不扣除。
+    pub fn consume_item(&mut self, item_type: ItemType, mut amount: u16) -> bool {
+        let total: u16 = self.slots.iter().flatten().filter(|s| s.item_type == item_type).map(|s| s.count).sum();
+        if total < amount {
+            return false;
+        }
+        for slot in self.slots.iter_mut() {
+            if let Some(stack) = slot {
+                if stack.item_type == item_type {
+                    if stack.count <= amount {
+                        amount -= stack.count;
+                        *slot = None;
+                    } else {
+                        stack.count -= amount;
+                        amount = 0;
+                    }
+                    if amount == 0 {
+                        return true;
+                    }
+                }
+            }
+        }
+        true
     }
 
     /// 扣減 selected_slot 工具的耐久度。若耐久度降為 0 (碎裂)，剛性置為 None。

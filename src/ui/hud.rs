@@ -274,6 +274,19 @@ pub fn setup_item_icons(
         }
     });
 
+    // Flint Icon (尖銳暗灰黑燧石)
+    let flint_handle = create_icon(&|x, y| {
+        if (x >= 5 && x <= 10 && y >= 6 && y <= 11) || (x == 7 && y == 5) || (x == 11 && y == 9) {
+            if x == 7 && y == 6 {
+                [115, 120, 130, 255]
+            } else {
+                [50, 55, 60, 255]
+            }
+        } else {
+            [0, 0, 0, 0]
+        }
+    });
+
     icon_map.insert(ItemType::IronPickaxe, pickaxe_handle.clone());
     icon_map.insert(ItemType::WoodenPickaxe, pickaxe_handle.clone());
     icon_map.insert(ItemType::StonePickaxe, pickaxe_handle.clone());
@@ -286,6 +299,7 @@ pub fn setup_item_icons(
     icon_map.insert(ItemType::Coal, coal_handle);
     icon_map.insert(ItemType::IronIngot, ingot_handle);
     icon_map.insert(ItemType::Stick, stick_handle);
+    icon_map.insert(ItemType::Flint, flint_handle);
 
     commands.insert_resource(ItemIconRegistry {
         icons: icon_map,

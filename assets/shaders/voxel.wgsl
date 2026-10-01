@@ -217,7 +217,7 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     let tex_color = textureSample(array_texture, array_sampler, animated_uv, in.texture_index);
     let final_light = max(in.sky_light * env.sky_factor, in.block_light);
     let light_ratio = final_light / 15.0;
-    let shadow_intensity = 0.08 + (1.0 - 0.08) * (light_ratio * light_ratio);
+    let shadow_intensity = light_ratio * light_ratio;
     
     var final_rgb = tex_color.rgb * shadow_intensity;
     var final_alpha = tex_color.a; 

@@ -41,7 +41,7 @@ impl Default for EngineConfig {
         Self {
             fluid_scroll_speed: 0.12,
             fluid_tick_speed: 0.1,
-            min_ambient_light: 0.02,
+            min_ambient_light: 0.0, // 🚀 真黑環境：地底無光源處徹底為 0.0 絕對純黑
             render_distance: 8,
             max_mesh_uploads_per_frame: 3,
             smooth_lighting: true,

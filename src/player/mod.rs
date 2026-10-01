@@ -496,6 +496,7 @@ fn player_interaction(
     mut world: ResMut<WorldManager>,
     registry: Res<ItemRegistry>,
     mut particle_mgr: ResMut<crate::render::particles::ParticleManager>,
+    mut torch_burn_mgr: ResMut<crate::world::TorchBurnManager>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
     mut q_player: Query<(&Transform, &mut Player, &mut Inventory)>,
@@ -545,6 +546,9 @@ fn player_interaction(
 
                     world.set_block_global(block_pos, BlockType::Air, &mut commands);
                     crate::world::fluid::wake_up_fluids_in_radius(&mut world, block_pos);
+                    if old_block.is_torch() {
+                        torch_burn_mgr.remove(block_pos);
+                    }
 
                     if let Some(drop_item) = get_block_drop(old_block) {
                         inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
@@ -601,6 +605,9 @@ fn player_interaction(
 
                         world.set_block_global(block_pos, BlockType::Air, &mut commands);
                         crate::world::fluid::wake_up_fluids_in_radius(&mut world, block_pos);
+                        if old_block.is_torch() {
+                            torch_burn_mgr.remove(block_pos);
+                        }
 
                         if can_harvest {
                             if let Some(drop_item) = get_block_drop(old_block) {
@@ -667,8 +674,27 @@ fn player_interaction(
                                         world.set_block_global(place_pos, current_block, &mut commands);
                                         crate::world::fluid::wake_up_fluids_in_radius(&mut world, place_pos);
 
+                                        if current_block.is_torch() {
+                                            torch_burn_mgr.register(place_pos, crate::world::torch::DEFAULT_TORCH_LIFETIME);
+                                        }
+
                                         // 🚀 扣減 1 個物品 (數量降為 0 時自動置為 None)
                                         inventory.consume_selected(1);
+                                    }
+                                }
+                            } else if selected_item.item_type == ItemType::Flint {
+                                // 🚀 燧石擊打火花與火把引燃合成
+                                let spark_pos = hit.adjacent_pos.as_vec3() + 0.5;
+                                particle_mgr.spawn_debris(spark_pos, Color::srgb_u8(255, 190, 40), 6);
+
+                                // 若背包擁有 Stick 與 Coal，點火合成 4 支火把！
+                                if inventory.consume_item(ItemType::Stick, 1) {
+                                    if inventory.consume_item(ItemType::Coal, 1) {
+                                        inventory.add_item(ItemStack::new(ItemType::Torch, 4, &registry), &registry);
+                                        particle_mgr.spawn_debris(spark_pos, Color::srgb_u8(255, 120, 20), 14);
+                                    } else {
+                                        // 煤炭不足時返還 Stick
+                                        inventory.add_item(ItemStack::new(ItemType::Stick, 1, &registry), &registry);
                                     }
                                 }
                             }

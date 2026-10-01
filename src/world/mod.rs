@@ -8,6 +8,7 @@ pub mod fluid;
 pub mod systems;
 pub mod registry;
 pub mod tree;
+pub mod torch;
 use bevy::prelude::*;
 use bevy::utils::{HashMap, HashSet};
 use bevy::tasks::Task;
@@ -16,6 +17,7 @@ use bevy::render::primitives::Aabb;
 pub use chunk::{Chunk, ChunkData, ChunkLightBuffer};
 pub use voxel::BlockType;
 pub use registry::BlockRegistry;
+pub use torch::TorchBurnManager;
 use crate::utils::math::CHUNK_SIZE;
 use noise::{NoiseFn, Perlin, Fbm};
 
@@ -54,6 +56,7 @@ impl Plugin for WorldPlugin {
         app.init_resource::<WorldManager>()
             .init_resource::<BlockRegistry>()
             .init_resource::<DayNightCycle>()
+            .init_resource::<TorchBurnManager>()
             .insert_resource(systems::FluidTickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
             .add_systems(Startup, systems::setup_world)
             .add_systems(
@@ -63,6 +66,7 @@ impl Plugin for WorldPlugin {
                     systems::poll_loading_chunks,
                     systems::fluid_tick_system,
                     systems::update_day_night_cycle,
+                    torch::torch_burn_tick_system,
                 ).run_if(in_state(crate::GameState::InGame))
             );
     }
