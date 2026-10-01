@@ -217,7 +217,10 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     let tex_color = textureSample(array_texture, array_sampler, animated_uv, in.texture_index);
     let final_light = max(in.sky_light * env.sky_factor, in.block_light);
     let light_ratio = final_light / 15.0;
-    let shadow_intensity = light_ratio * light_ratio;
+    // 平滑感官光照衰減曲線 (Smooth Perceptual Lighting Falloff)：
+    // 解決純二次方 (x^2) 在相鄰光階間過於陡峭造成的光圈斷層，
+    // 同時在 final_light == 0.0 時嚴格保持 0.0 (絕對漆黑無光)。
+    let shadow_intensity = select(0.0, light_ratio * (0.25 + 0.75 * light_ratio), light_ratio > 0.0);
     
     var final_rgb = tex_color.rgb * shadow_intensity;
     var final_alpha = tex_color.a; 

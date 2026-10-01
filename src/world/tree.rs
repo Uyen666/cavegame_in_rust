@@ -4,10 +4,11 @@ use crate::world::{WorldManager, BlockType};
 use crate::item::{Inventory, ItemStack, ItemType, ItemRegistry};
 use crate::render::particles::{ParticleManager, get_block_debris_color};
 
-/// 工業級樹木連鎖倒塌與重力滑落系統 (Tree Felling & Gravity System)
+/// 工業級樹木連鎖倒塌系統 (Timber Universal Tree Felling System)
 /// 當原木被破壞時觸發：
-/// 1. 若使用斧頭 (can_harvest == true)：觸發 Timber 連鎖倒塌，整棵樹幹被砍伐收穫，樹冠崩解並掉落樹枝；
-/// 2. 若空手破壞 (can_harvest == false)：無木材掉落，上方樹幹在重力作用下整齊下落 1 格，杜絕浮空樹木！
+/// 1. 若使用斧頭 (can_harvest == true)：觸發 Timber 連鎖倒塌，整棵樹幹全數收穫為原木，樹冠崩解並掉落樹枝；
+/// 2. 若空手/非斧頭 (can_harvest == false)：整棵樹同樣連鎖倒塌（杜絕浮空樹木/重複滑落 bug），
+///    保底提供 1 塊原木與樹枝以利初期生存起步，其餘樹幹碎裂為木屑粒子。
 pub fn handle_tree_break(
     world: &mut WorldManager,
     commands: &mut Commands,
@@ -17,14 +18,14 @@ pub fn handle_tree_break(
     broken_pos: IVec3,
     can_harvest: bool,
 ) {
-    // 1. 尋找與 broken_pos 連接向上延伸的所有原木 (OakLog)
+    // 1. 尋找與 broken_pos 連接向上/水平延伸的所有連通原木 (OakLog)
     let mut logs_to_process = Vec::new();
     let mut visited_logs = HashSet::new();
     visited_logs.insert(broken_pos);
 
     let mut queue = vec![broken_pos];
     while let Some(curr) = queue.pop() {
-        // 向上、水平相鄰 1 格探測連通原木 (最高探測 24 格高度)
+        // 向上、水平相鄰探測連通原木 (最高探測 32 格高度)
         for dy in 0..=2 {
             for dx in -1..=1 {
                 for dz in -1..=1 {
@@ -32,7 +33,7 @@ pub fn handle_tree_break(
                         continue;
                     }
                     let neighbor_pos = curr + IVec3::new(dx, dy, dz);
-                    if neighbor_pos.y <= broken_pos.y || neighbor_pos.y > broken_pos.y + 24 {
+                    if neighbor_pos.y < broken_pos.y || neighbor_pos.y > broken_pos.y + 32 {
                         continue;
                     }
                     if !visited_logs.contains(&neighbor_pos) {
@@ -48,70 +49,60 @@ pub fn handle_tree_break(
         }
     }
 
-    // 依高度排序：由低至高或由高至低
-    if can_harvest {
-        // ── 斧頭採伐：連鎖砍倒整棵樹 (Timber Cascade) ──
-        let log_color = get_block_debris_color(BlockType::OakLog);
-        let leaf_color = get_block_debris_color(BlockType::OakLeaves);
-
-        // 收集受影響的樹葉
-        let mut leaves_to_decay = Vec::new();
-        let mut all_logs = visited_logs.clone();
-        for &lpos in &logs_to_process {
-            all_logs.insert(lpos);
-        }
-
-        for &lpos in &all_logs {
-            for dy in -1..=2 {
-                for dx in -2..=2 {
-                    for dz in -2..=2 {
-                        let leaf_pos = lpos + IVec3::new(dx, dy, dz);
+    // 2. 收集受影響的樹葉 (以所有原木為中心廣域搜尋)
+    let mut leaves_to_decay = Vec::new();
+    let mut visited_leaves = HashSet::new();
+    for &lpos in &visited_logs {
+        for dy in -2..=3 {
+            for dx in -3..=3 {
+                for dz in -3..=3 {
+                    let leaf_pos = lpos + IVec3::new(dx, dy, dz);
+                    if !visited_leaves.contains(&leaf_pos) {
+                        visited_leaves.insert(leaf_pos);
                         if world.get_block_global(leaf_pos) == BlockType::OakLeaves {
-                            if !leaves_to_decay.contains(&leaf_pos) {
-                                leaves_to_decay.push(leaf_pos);
-                            }
+                            leaves_to_decay.push(leaf_pos);
                         }
                     }
                 }
             }
         }
+    }
 
-        // 採收上方所有連通原木
+    let log_color = get_block_debris_color(BlockType::OakLog);
+    let leaf_color = get_block_debris_color(BlockType::OakLeaves);
+
+    // 3. 原木處理（無論持斧與否，全數倒塌消除，絕不留浮空原木）
+    if can_harvest {
+        // ── 持斧採伐：連鎖收穫上方所有連通原木 ──
         for log_pos in logs_to_process {
             world.set_block_global(log_pos, BlockType::Air, commands);
             particle_mgr.spawn_debris(log_pos.as_vec3() + 0.5, log_color, 8);
             inventory.add_item(ItemStack::new(ItemType::OakLog, 1, registry), registry);
             inventory.damage_selected_tool(1);
         }
-
-        // 樹冠崩解與掉落樹枝
-        for (idx, leaf_pos) in leaves_to_decay.into_iter().enumerate() {
-            world.set_block_global(leaf_pos, BlockType::Air, commands);
-            particle_mgr.spawn_debris(leaf_pos.as_vec3() + 0.5, leaf_color, 4);
-
-            // 每 3 片樹葉或確定性機率掉落 1 根木棒 (Stick)
-            if idx % 3 == 0 {
-                inventory.add_item(ItemStack::new(ItemType::Stick, 1, registry), registry);
-            }
-        }
     } else {
-        // ── 空手/非斧頭破壞：重力滑落 (Tree Gravity Fall) ──
-        // 上方原木按照由低至高順序，向下掉落 1 格
-        logs_to_process.sort_by_key(|p| p.y);
-        
-        let mut moved_logs = Vec::new();
-        for log_pos in logs_to_process {
-            let target_pos = log_pos - IVec3::Y;
-            if world.get_block_global(target_pos) == BlockType::Air || target_pos == broken_pos {
-                world.set_block_global(log_pos, BlockType::Air, commands);
-                world.set_block_global(target_pos, BlockType::OakLog, commands);
-                moved_logs.push(target_pos);
-            }
-        }
+        // ── 徒手/非斧頭破壞：辛苦砍斷樹幹使整棵樹倒塌 ──
+        // 保證獲得 1 塊原木掉落（初期拓荒起步，杜絕無木材卡關死局）
+        inventory.add_item(ItemStack::new(ItemType::OakLog, 1, registry), registry);
 
-        // 在樹根產生下墜碎屑反饋
-        let log_color = get_block_debris_color(BlockType::OakLog);
-        particle_mgr.spawn_debris(broken_pos.as_vec3() + 0.5, log_color, 6);
+        // 上方其餘原木全數碎裂為木屑粒子
+        for log_pos in logs_to_process {
+            world.set_block_global(log_pos, BlockType::Air, commands);
+            particle_mgr.spawn_debris(log_pos.as_vec3() + 0.5, log_color, 10);
+        }
+        // 破壞點噴發木屑反饋
+        particle_mgr.spawn_debris(broken_pos.as_vec3() + 0.5, log_color, 8);
+    }
+
+    // 4. 樹冠崩解與掉落樹枝（全數自然凋零，徹底消滅浮空樹葉）
+    for (idx, leaf_pos) in leaves_to_decay.into_iter().enumerate() {
+        world.set_block_global(leaf_pos, BlockType::Air, commands);
+        particle_mgr.spawn_debris(leaf_pos.as_vec3() + 0.5, leaf_color, 4);
+
+        // 每 3 片樹葉掉落 1 根木棒 (Stick)，提供基礎木質素材
+        if idx % 3 == 0 {
+            inventory.add_item(ItemStack::new(ItemType::Stick, 1, registry), registry);
+        }
     }
 }
 
@@ -182,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tree_barehand_gravity_fall() {
+    fn test_tree_barehand_felling_topple() {
         let mut world_manager = WorldManager::default();
         let ecs_world = BevyWorld::new();
         let mut queue = CommandQueue::default();
@@ -201,10 +192,11 @@ mod tests {
             is_lighting_ready: true,
         });
 
-        // 建立樹幹：y=1..=3
+        // 建立樹幹：y=1..=3，樹冠：y=4
         for y in 1..=3 {
             world_manager.set_block_global(IVec3::new(5, y, 5), BlockType::OakLog, &mut commands);
         }
+        world_manager.set_block_global(IVec3::new(5, 4, 5), BlockType::OakLeaves, &mut commands);
 
         // 空手打掉底層 y=1 (can_harvest = false)
         world_manager.set_block_global(IVec3::new(5, 1, 5), BlockType::Air, &mut commands);
@@ -218,13 +210,16 @@ mod tests {
             false,
         );
 
-        // 原本 y=2 的原木應掉落至 y=1，原本 y=3 的原木應掉落至 y=2，y=3 變為 Air
-        assert_eq!(world_manager.get_block_global(IVec3::new(5, 1, 5)), BlockType::OakLog, "樹木重力：上方原木應下落至 y=1");
-        assert_eq!(world_manager.get_block_global(IVec3::new(5, 2, 5)), BlockType::OakLog, "樹木重力：上方原木應下落至 y=2");
-        assert_eq!(world_manager.get_block_global(IVec3::new(5, 3, 5)), BlockType::Air, "樹木重力：原頂端位置應變為 Air");
+        // 樹木應全數倒塌消散，絕無殘留浮空方塊
+        assert_eq!(world_manager.get_block_global(IVec3::new(5, 1, 5)), BlockType::Air, "被破壞處應為 Air");
+        assert_eq!(world_manager.get_block_global(IVec3::new(5, 2, 5)), BlockType::Air, "上方樹幹應全數倒塌消除");
+        assert_eq!(world_manager.get_block_global(IVec3::new(5, 3, 5)), BlockType::Air, "上方樹幹應全數倒塌消除");
+        assert_eq!(world_manager.get_block_global(IVec3::new(5, 4, 5)), BlockType::Air, "樹葉應全數凋零消除");
 
-        // 背包不應有原木
-        let has_log = inv.slots.iter().flatten().any(|s| s.item_type == ItemType::OakLog);
-        assert!(!has_log, "空手打樹不應獲得原木掉落");
+        // 背包獲得 1 塊原木（初期生存起步保障）與樹枝
+        let log_count: u16 = inv.slots.iter().flatten().filter(|s| s.item_type == ItemType::OakLog).map(|s| s.count).sum();
+        assert_eq!(log_count, 1, "空手打倒整棵樹應保底掉落 1 塊原木以利合成基礎工具");
+        let has_stick = inv.slots.iter().flatten().any(|s| s.item_type == ItemType::Stick);
+        assert!(has_stick, "樹葉凋零應掉落樹枝");
     }
 }

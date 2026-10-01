@@ -125,17 +125,41 @@ fn push_quad(
         bucket.2.push(corner_sign);
     }
 
+    // 對角線翻轉檢測 (Voxel Quad Diagonal Flipping)：
+    // 避免固定分割 (0, 2) 對角線時，若頂點 0 與 2 較暗而 1 與 3 較亮，
+    // 會在面片中央產生一道貫穿兩暗角的暗色條紋/摺痕。
+    // 當 (l0 + l2) < (l1 + l3) 時翻轉對角線連接 (1, 3)，實現均勻平滑的光照過渡。
+    let l0 = sky_lights[0] as i32 + block_lights[0] as i32;
+    let l1 = sky_lights[1] as i32 + block_lights[1] as i32;
+    let l2 = sky_lights[2] as i32 + block_lights[2] as i32;
+    let l3 = sky_lights[3] as i32 + block_lights[3] as i32;
+    let flip_diagonal = (l0 + l2) < (l1 + l3);
+
     // Triangle indices — CCW for rev=false, CW (reversed) for rev=true
     if rev {
-        bucket.1.extend_from_slice(&[
-            base, base + 2, base + 1,
-            base, base + 3, base + 2,
-        ]);
+        if flip_diagonal {
+            bucket.1.extend_from_slice(&[
+                base, base + 3, base + 1,
+                base + 1, base + 3, base + 2,
+            ]);
+        } else {
+            bucket.1.extend_from_slice(&[
+                base, base + 2, base + 1,
+                base, base + 3, base + 2,
+            ]);
+        }
     } else {
-        bucket.1.extend_from_slice(&[
-            base, base + 1, base + 2,
-            base, base + 2, base + 3,
-        ]);
+        if flip_diagonal {
+            bucket.1.extend_from_slice(&[
+                base, base + 1, base + 3,
+                base + 1, base + 2, base + 3,
+            ]);
+        } else {
+            bucket.1.extend_from_slice(&[
+                base, base + 1, base + 2,
+                base, base + 2, base + 3,
+            ]);
+        }
     }
 }
 
@@ -1357,6 +1381,46 @@ mod tests {
             // 方塊光在無光源時必須嚴格為 0，不得被天空光污染寫入 15
             assert_eq!(block_light, 0, "Block light must be 0 without any light source nearby");
         }
+    }
+
+    #[test]
+    fn test_quad_diagonal_flip_on_lighting_gradient() {
+        let mut bucket: MeshData = (Vec::new(), Vec::new(), Vec::new());
+        let v1 = [0.0, 0.0, 0.0];
+        let v2 = [1.0, 0.0, 0.0];
+        let v3 = [1.0, 1.0, 0.0];
+        let v4 = [0.0, 1.0, 0.0];
+        let normal = [0.0, 0.0, 1.0];
+
+        // 1. 均勻光照 (0, 0, 0, 0)：不觸發翻轉，維持 [0, 1, 2, 0, 2, 3]
+        push_quad(
+            &mut bucket,
+            v1, v2, v3, v4,
+            normal,
+            [1.0; 4],
+            0,
+            [10, 10, 10, 10],
+            [0, 0, 0, 0],
+            0, 1, 1,
+            false, 2,
+        );
+        assert_eq!(&bucket.1[0..6], &[0, 1, 2, 0, 2, 3]);
+
+        // 2. 異向暗角梯度：頂點 0, 2 為暗 (0)，頂點 1, 3 為亮 (12)
+        // (l0 + l2 = 0) < (l1 + l3 = 24) -> 觸發對角線翻轉，生成 [base+0, base+1, base+3, base+1, base+2, base+3]
+        let base = bucket.0.len() as u32;
+        push_quad(
+            &mut bucket,
+            v1, v2, v3, v4,
+            normal,
+            [1.0; 4],
+            0,
+            [0, 12, 0, 12],
+            [0, 0, 0, 0],
+            0, 1, 1,
+            false, 2,
+        );
+        assert_eq!(&bucket.1[6..12], &[base, base + 1, base + 3, base + 1, base + 2, base + 3]);
     }
 }
 
