@@ -647,6 +647,17 @@ fn player_interaction(
                             );
                         }
 
+                        // 🚀 地質結構穩定度與礦坑坍塌物理：若在深層挖掘，檢查頂板跨度支護
+                        crate::world::collapse::handle_mining_collapse(
+                            &mut world,
+                            &mut commands,
+                            &mut particle_mgr,
+                            maybe_vitals.as_deref_mut(),
+                            player_transform.translation,
+                            block_pos,
+                            old_block,
+                        );
+
                         inventory.damage_selected_tool(1);
                         player.mining_target = None;
                         player.mining_progress = 0.0;

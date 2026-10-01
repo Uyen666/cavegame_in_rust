@@ -9,6 +9,7 @@ pub mod systems;
 pub mod registry;
 pub mod tree;
 pub mod torch;
+pub mod collapse;
 use bevy::prelude::*;
 use bevy::utils::{HashMap, HashSet};
 use bevy::tasks::Task;
