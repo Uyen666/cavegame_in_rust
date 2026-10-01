@@ -15,31 +15,37 @@ src/
 │   ├── mod.rs      (模組導出)
 │   └── swept.rs    (處理 AABB 空間幾何與 Swept AABB 連續碰撞消解)
 ├── player/         (玩家控制器模組)
-│   └── mod.rs      (玩家實體、滑鼠第一人稱視角、動態破壞/放置方塊互動與背包切換邏輯)
+│   ├── mod.rs      (玩家實體、第一人稱視角、動態互動、背包快捷列切換與輸入捕獲)
+│   └── vitals.rs   (玩家生理狀態機：Health、Stamina、Thirst、體溫、潮濕度、背包負重結算)
 ├── render/         (核心渲染管線模組)
 │   ├── mod.rs      (渲染器入口與自訂材質掛載、環境光配置)
 │   ├── greedy.rs   (工業級 AO 輔助型雙線性梯度貪婪網格生成演算法與 GPU 封裝)
 │   ├── material.rs (流體雙面渲染與網格材質流水線管線配置)
+│   ├── particles.rs(輕量化 3D 體素碎屑與火花粒子系統)
 │   ├── texture_array.rs (Texture2DArray 生成與管理，打包所有方塊貼圖)
 │   └── textures.rs (材質載入器與資產管理)
 ├── ui/             (使用者介面模組)
 │   ├── mod.rs      (UI 系統入口)
-│   ├── debug.rs    (F3 定時除錯疊加層、包含區塊狀態與平滑光照動態開關)
-│   ├── hud.rs      (遊戲 HUD 與準星渲染)
+│   ├── debug.rs    (F3 定時除錯疊加層、區塊狀態、生理數值與平滑光照動態開關)
+│   ├── hud.rs      (遊戲 HUD、準星、3D 離屏渲染 Hotbar 與 Vitals 體徵數值狀態條)
+│   ├── inventory.rs(36 格全功能沉浸式背包管理介面)
 │   ├── main_menu.rs(預留主選單介面)
 │   └── settings.rs (預留設定選單介面)
 ├── utils/          (通用工具模組)
 │   ├── mod.rs      (模組導出)
-│   └── math.rs     (全域坐標轉換、區塊索引映射與基礎數學常數)
+│   └── math.rs     (全域坐標轉換、區塊索引映射、3D DDA 體素射線步進與基礎數學常數)
 └── world/          (核心世界資料結構與管理系統)
     ├── mod.rs      (WorldManager、區塊 3D 動態加載/卸載生命週期調度與真理之源)
     ├── systems.rs  (Bevy ECS 系統分流：處理實體生成、網格髒污追蹤與非同步加載輪詢)
     ├── chunk.rs    (Chunk 實體結構與 1D 扁平化 ChunkBuffer，儲存方塊資料)
+    ├── collapse.rs (地質結構穩定度、礦坑木支架與覆岩應力坍塌物理)
     ├── fluid.rs    (流體動態系統：BFS 蔓延、水流等級下降與更新隊列)
     ├── generator.rs(工業級無狀態二階段地形管線：地形雕刻與 Fbm 噪音)
     ├── lighting.rs (光照子系統：天空光泛洪、方塊光與阻斷 BFS 重算)
     ├── registry.rs (數據驅動註冊表：BlockDefinition, BlockRegistry, BLOCK_DEFINITIONS 靜態無鎖表與 SixFaces 貼圖映射)
     ├── storage.rs  (手寫 RLE 壓縮與非同步硬碟讀寫，持久化存檔)
+    ├── torch.rs    (火把 180s 燃盡熄滅生命週期、Phase 5a BFS 光源消除與黑煙碎屑)
+    ├── tree.rs     (樹木 Timber 連鎖砍伐、葉落掉枝與空手樹幹重力滑落物理)
     ├── voxel.rs    (體素 BlockType 列舉，固有方法委派全域 static 表 0 鎖定開銷 O(1) 常數直尋)
     └── gen/        (地形生成演算法特定實作)
         ├── mod.rs
@@ -183,6 +189,28 @@ src/
 ## 14. 🛠️ 開發環境與工作流 (Development Workflow)
 * **VS Code 終端環境自適應 (.vscode)**：為避免系統環境變數遺失引發的終端機報錯，專案於根目錄掛載了專屬的 `.vscode/settings.json`，強制將 Cargo 路徑注入整合終端機。同時配備 `.vscode/tasks.json`，讓開發者只需按下 `Ctrl+Shift+B` 便能一鍵無縫 `cargo run`，維持最高的開發效率。
 ## 最近更新紀錄
+- **10/1 硬核真實生存四大里程碑系統 (Hardcore Realistic Survival 4-Step Milestone)**:
+  - **第一步：樹木重力與採伐工具門檻 (Tree Felling & Gravity System)**:
+    - `ToolTier::Wood` 斧頭採伐門檻：原木 (`OakLog`) 只有在手持斧頭時方可採收，空手敲擊不掉落原木；敲擊樹葉掉落木棒 (`ItemType::Stick`)；
+    - Timber 斧頭連鎖倒塌：手持斧頭砍伐樹幹底座時觸發 Timber 連鎖倒塌，整棵樹幹被砍伐收穫，樹冠凋落掉落木棒並爆發噴散樹葉碎屑粒子；
+    - 空手重力滑落：空手破壞樹幹底座時，上方懸空樹幹在重力作用下整齊下落 1 格，徹底消滅原版不科學的浮空樹木！
+  - **第二步：真黑極限暗夜與火把燃盡/燧石擊打引燃 (Pitch-Black Darkness & Torch Burnout / Flint Sparks)**:
+    - `voxel.wgsl` 著色器移除人工環境光偏移，`min_ambient_light` 設為 0.0，無光照環境達成 100% 真黑深邃體驗；
+    - 火把 180s 燃盡生命週期 (`TorchBurnManager`)：放置的火把在 180 秒後燃盡熄滅並轉為空氣，透過 BFS 光照消除管線精準抹除方塊光並噴散黑煙碎屑；
+    - 燧石擊打火花與引燃合成：破壞礫石掉落燧石 (`ItemType::Flint`)，右鍵擊打燧石可迸發火花並消耗木棒與煤炭手工引燃合成 4 支火把。
+  - **第三步：玩家生理狀態機與 HUD 體徵數值條 (Player Physiology State Machine & Vitals HUD)**:
+    - 實裝 `PlayerVitals` 元件，管理 Health (100)、Stamina (100)、Thirst (100)、Body Temperature (37.0°C) 與 Wetness (0~100%)；
+    - 疾跑與跳躍消耗體力，體力耗盡時自動降速為常規走速；
+    - 背包動態負重計算 (`calculate_inventory_encumbrance`)，攜帶沉重礦石與原木減緩移動速度並增加耐力消耗；
+    - 涉水增加潮濕度，潮濕與暗夜引發失溫（體溫低於 35°C 扣除生命值），靠近火把 (光照 >= 9) 可迅速烘烤回暖與蒸發水分；
+    - 口渴度持續消耗，右鍵水源（或浸於水中）飲水補充水份；
+    - Hotbar 上方掛載專屬生命 (紅)、體力 (黃)、口渴 (藍) 三色動態狀態條與體溫/潮濕度數值反饋，F3 除錯界面同步顯示生理指標。
+  - **第四步：地質結構穩定度、礦坑木支架與覆岩應力坍塌物理 (Geological Structural Integrity & Cave-in Physics)**:
+    - 地底覆岩應力 (Y <= 64)：在缺乏支護的情況下採礦會觸發頂板岩層失穩；
+    - 礦坑木支架 (`OakLog`) 支護半徑：任何 `OakLog` 木支架可在水平 4 格、垂直 4 格範圍內提供安全結構牽引；
+    - 自穩跨度檢測：窄於 5 格 (半徑 <= 2) 的天然岩柱/岩壁具備自穩拱效應，開掘大於 4 格開闊空腔時頂板失穩坍塌；
+    - 局部落石坍塌：失穩頂板崩解為空氣，碎石沿重力落於地面形成礫石堆 (Gravel)，對正下方玩家施加毀滅性落石重擊傷害。
+
 - **9/30 焦點驅動游標鎖定架構 (Focus-Driven Cursor Locking Architecture)**:
   - 視窗未獲焦點時絕對不鎖鼠標：移除 `WindowPlugin` 與 `setup_player` 中的過早鎖定，視窗啟動預設標準游標；在 `toggle_grab_cursor` 實施第一鐵律：當 `!window.focused` 或剛失去焦點時，游標無條件維持自由釋放 (`CursorGrabMode::None`, `visible = true`)，絕不在非聚焦狀態定住或約束鼠標；
   - 聚焦時才置中鎖定：當視窗獲得焦點（開局視窗首次聚焦就緒或切回視窗觸發 `WindowFocused { focused: true }`）且背包未開啟時，游標精確定位至視窗中央 `(width/2, height/2)` 並鎖定 (`CursorGrabMode::Locked`, `visible = false`)，同時觸發 `CursorJustLocked` 防誤觸閘門；

@@ -52,6 +52,12 @@
 - **5-Block Lookahead 尋路大腦**：流體具備 5 格遠視懸崖感測能力，支援重力截斷、瀑布落水柱全滿特權與退潮動態重新平衡。
 - **雙模態手持交互**：使用 **F 鍵** 進行收水（喚醒退潮連鎖）與放水（注入水源擴散）。
 
+### 🏕️ 5. 硬核真實生存四大系統 (Hardcore Realistic Survival)
+- **🪓 樹木重力與 Timber 斧頭砍伐**：空手敲樹幹無木材掉落且上方樹幹受重力整齊下落 1 格（告別浮空樹）；手持斧頭伐木觸發連鎖倒塌，整棵樹崩解並掉落木棒。
+- **🌑 真黑極限暗夜與火把燃盡**：著色器去除人造底光，達成 100% 真黑深邃暗夜；放置之火把在 180 秒後燃盡熄滅並動態消除光源；礫石掉落燧石可擊打火花引燃火把。
+- **❤️ 玩家生理狀態機與負重系統**：管理生命、體力、口渴、體溫 (37°C) 與潮濕度；疾跑跳躍消耗體力；負重減速；濕身入夜引發失溫，靠近火把可烘烤回暖；右鍵水源解渴。
+- **⛏️ 地質跨度、木支架與礦坑坍塌物理**：深層地底 (Y <= 64) 覆岩應力下，開掘大於 4 格開闊空腔若無支護將引發頂板坍塌落石並重創玩家；放置 `OakLog` 木支架可在半徑 4 格內提供安全牽引。
+
 ---
 
 ## 📂 系統架構與目錄結構 (System Architecture)
@@ -70,25 +76,31 @@ CaveGame/
     ├── phys/           # 物理碰撞模組
     │   └── swept.rs    # Swept AABB 連續碰撞與離散軸向位移消解
     ├── player/         # 玩家控制器
-    │   └── mod.rs      # 第一人稱視角、第一幀安全傳送、AABB 姿態與快捷列互動
+    │   ├── mod.rs      # 第一人稱視角、第一幀安全傳送、AABB 姿態與快捷列互動
+    │   └── vitals.rs   # 玩家生理狀態機 (生命/體力/口渴/體溫/潮濕度/負重)
     ├── render/         # 核心圖形渲染管線
     │   ├── greedy.rs   # AO 輔助型梯度貪婪網格化演算法 (Async)
     │   ├── material.rs # VoxelMaterial 自訂 WGSL 材質管線
+    │   ├── particles.rs# 3D 體素碎屑與火花粒子系統
     │   ├── texture_array.rs # Texture2DArray 材質打包管理
     │   └── textures.rs # 資產載入器
     ├── ui/             # 使用者介面與 HUD
-    │   ├── debug.rs    # F3 定時除錯疊加層、FPS、 Holding 與 F3+C 區塊邊界
-    │   ├── hud.rs      # 螢幕底部 3D 離屏渲染 Hotbar HUD 與準星
+    │   ├── debug.rs    # F3 定時除錯疊加層、FPS、生理數據與 F3+C 區塊邊界
+    │   ├── hud.rs      # 螢幕底部 3D 離屏渲染 Hotbar HUD、準星與 Vitals 體徵狀態條
+    │   ├── inventory.rs# 36 格全功能沉浸式背包管理介面
     │   ├── main_menu.rs# 主選單介面預留
     │   └── settings.rs # 設定選單介面預留
-    ├── utils/          # 工具模組 (座標轉換、數學常數)
+    ├── utils/          # 工具模組 (座標轉換、數學常數、3D DDA 快速體素步進)
     └── world/          # 體素世界核心數據結構與管理
         ├── chunk.rs    # 32x32x32 1D 扁平 ChunkBuffer
+        ├── collapse.rs # 地質結構穩定度、礦坑木支架與覆岩應力坍塌物理
         ├── fluid.rs    # BFS 心跳流體擴散與動態平衡
         ├── generator.rs# 二階段無狀態地形生成器 (Fbm + Ridged Noise)
         ├── lighting.rs # 天空光與方塊光雙層 BFS 阻斷與蔓延
         ├── registry.rs # 數據驅動註冊表 (BlockDefinition, BLOCK_DEFINITIONS 靜態無鎖表)
         ├── storage.rs  # RLE 存檔壓縮與異步硬碟持久化
+        ├── torch.rs    # 火把 180s 燃盡生命週期、BFS 光源消除與黑煙碎屑
+        ├── tree.rs     # 樹木 Timber 連鎖砍伐、葉落掉枝與空手樹幹重力滑落物理
         └── voxel.rs    # 方塊 BlockType 定義與 O(1) 無鎖常數直尋委派
 ```
 
