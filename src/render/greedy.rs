@@ -647,60 +647,48 @@ fn generate_greedy_mesh(
                 while i < CHUNK_SIZE {
                     if let Some(face) = mask[n] {
                         let mut w = 1i32;
-                        let dt_u = face.sky_lights[1] as i32 - face.sky_lights[0] as i32;
-                        let db_u = face.sky_lights[2] as i32 - face.sky_lights[3] as i32;
-                        let dt_u_b = face.block_lights[1] as i32 - face.block_lights[0] as i32;
-                        let db_u_b = face.block_lights[2] as i32 - face.block_lights[3] as i32;
-
-                        while i + w < CHUNK_SIZE {
-                            if let Some(next) = mask[n + w as usize] {
-                                let can_merge = if is_smooth_lighting {
-                                    let basic = next.block == face.block && next.normal == face.normal && next.tex_layer == face.tex_layer;
-                                    let prev = mask[n + (w - 1) as usize].unwrap();
-                                    let conn = next.sky_lights[0] == prev.sky_lights[1] && next.sky_lights[3] == prev.sky_lights[2] &&
-                                               next.block_lights[0] == prev.block_lights[1] && next.block_lights[3] == prev.block_lights[2];
-                                    let grad = (next.sky_lights[1] as i32 - next.sky_lights[0] as i32) == dt_u &&
-                                               (next.sky_lights[2] as i32 - next.sky_lights[3] as i32) == db_u &&
-                                               (next.block_lights[1] as i32 - next.block_lights[0] as i32) == dt_u_b &&
-                                               (next.block_lights[2] as i32 - next.block_lights[3] as i32) == db_u_b;
-                                    basic && conn && grad
-                                } else {
-                                    next == face
-                                };
-                                if can_merge { w += 1; } else { break; }
-                            } else { break; }
-                        }
-
                         let mut h = 1i32;
-                        'outer: while j + h < CHUNK_SIZE {
-                            for k in 0..w {
-                                if let Some(curr) = mask[n + (h * CHUNK_SIZE + k) as usize] {
-                                    let above = mask[n + ((h - 1) * CHUNK_SIZE + k) as usize].unwrap();
-                                    let can_merge = if is_smooth_lighting {
-                                        let basic = curr.block == face.block && curr.normal == face.normal && curr.tex_layer == face.tex_layer;
-                                        let v_conn = curr.sky_lights[0] == above.sky_lights[3] && curr.sky_lights[1] == above.sky_lights[2];
-                                        let mut h_conn = true;
-                                        if k > 0 {
-                                            let left = mask[n + (h * CHUNK_SIZE + k - 1) as usize].unwrap();
-                                            h_conn = curr.sky_lights[0] == left.sky_lights[1] && curr.sky_lights[3] == left.sky_lights[2];
-                                        }
-                                        let u_grad = (curr.sky_lights[1] as i32 - curr.sky_lights[0] as i32) == dt_u &&
-                                                     (curr.sky_lights[2] as i32 - curr.sky_lights[3] as i32) == db_u;
-                                        let base0 = mask[n + k as usize].unwrap();
-                                        let ref_dv_l = base0.sky_lights[3] as i32 - base0.sky_lights[0] as i32;
-                                        let ref_dv_r = base0.sky_lights[2] as i32 - base0.sky_lights[1] as i32;
-                                        let curr_dv_l = curr.sky_lights[3] as i32 - curr.sky_lights[0] as i32;
-                                        let curr_dv_r = curr.sky_lights[2] as i32 - curr.sky_lights[1] as i32;
-                                        let v_grad = curr_dv_l == ref_dv_l && curr_dv_r == ref_dv_r;
-                                        basic && v_conn && h_conn && u_grad && v_grad
+
+                        let is_uniform = face.sky_lights[0] == face.sky_lights[1]
+                            && face.sky_lights[1] == face.sky_lights[2]
+                            && face.sky_lights[2] == face.sky_lights[3]
+                            && face.block_lights[0] == face.block_lights[1]
+                            && face.block_lights[1] == face.block_lights[2]
+                            && face.block_lights[2] == face.block_lights[3];
+
+                        if !is_smooth_lighting || is_uniform {
+                            // 均勻光照表面（平原日光、夜間無光、洞穴深處等佔比 90% 以上之廣袤區域）：
+                            // 完全安全地進行最大貪婪矩形合併 (Greedy Merging)，保持極致渲染效能
+                            while i + w < CHUNK_SIZE {
+                                if let Some(next) = mask[n + w as usize] {
+                                    if next == face {
+                                        w += 1;
                                     } else {
-                                        Some(curr) == mask[n + k as usize]
-                                    };
-                                    if !can_merge { break 'outer; }
-                                } else { break 'outer; }
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
                             }
-                            h += 1;
+
+                            'outer: while j + h < CHUNK_SIZE {
+                                for k in 0..w {
+                                    if let Some(curr) = mask[n + (h * CHUNK_SIZE + k) as usize] {
+                                        if curr != face {
+                                            break 'outer;
+                                        }
+                                    } else {
+                                        break 'outer;
+                                    }
+                                }
+                                h += 1;
+                            }
                         }
+                        // 🚀 關鍵修復：若啟用平滑光照且面片具有光照梯度 (is_smooth_lighting && !is_uniform，如火把光暈周遭、AO 陰影邊角)：
+                        // 嚴格維持 w=1, h=1 逐體素獨立面片，絕不進行跨方塊合併！
+                        // 過去因在 h 方向漏檢 block_lights 並嘗試跨光階合併，導致中間頂點光照被粗暴抹除，
+                        // 在相鄰列邊界產生嚴重的光階斷層、矩形割裂縫與巨大對角線陰影褶痕。
+                        // 維持 1x1 確保所有頂點光照在相鄰方塊間 100% 連續平滑無縫插值！
 
                         let mut x    = [0i32; 3];
                         x[d] = face_coord;
@@ -724,27 +712,8 @@ fn generate_greedy_mesh(
                         let mut rev = face.normal < 0;
                         if d == 1 { rev = !rev; }
 
-                        let merged_sky_lights = if is_smooth_lighting {
-                            [
-                                mask[n].unwrap().sky_lights[0],
-                                mask[n + (w - 1) as usize].unwrap().sky_lights[1],
-                                mask[n + ((h - 1) * CHUNK_SIZE + w - 1) as usize].unwrap().sky_lights[2],
-                                mask[n + ((h - 1) * CHUNK_SIZE) as usize].unwrap().sky_lights[3],
-                            ]
-                        } else {
-                            face.sky_lights
-                        };
-                        
-                        let merged_block_lights = if is_smooth_lighting {
-                            [
-                                mask[n].unwrap().block_lights[0],
-                                mask[n + (w - 1) as usize].unwrap().block_lights[1],
-                                mask[n + ((h - 1) * CHUNK_SIZE + w - 1) as usize].unwrap().block_lights[2],
-                                mask[n + ((h - 1) * CHUNK_SIZE) as usize].unwrap().block_lights[3],
-                            ]
-                        } else {
-                            face.block_lights
-                        };
+                        let merged_sky_lights = face.sky_lights;
+                        let merged_block_lights = face.block_lights;
 
                         push_quad(
                             out,
@@ -1421,6 +1390,47 @@ mod tests {
             false, 2,
         );
         assert_eq!(&bucket.1[6..12], &[base, base + 1, base + 3, base + 1, base + 2, base + 3]);
+    }
+
+    #[test]
+    fn test_greedy_mesh_preserves_1x1_quads_on_lighting_gradient() {
+        let chunk_pos = IVec3::new(0, 0, 0);
+        let mut blocks = [const { None }; 27];
+        let fluids = [const { None }; 27];
+        let mut lights = [const { None }; 27];
+        let center_idx = 13;
+
+        let mut block_buf = crate::world::generator::ChunkBuffer { blocks: [BlockType::Air; 32768] };
+        // 在 y=10 放置 2 個相鄰的石頭方塊 (x=10, z=10) 與 (x=11, z=10)
+        let idx0 = crate::utils::math::voxel_pos_to_index(10, 10, 10);
+        let idx1 = crate::utils::math::voxel_pos_to_index(11, 10, 10);
+        block_buf.blocks[idx0] = BlockType::Stone;
+        block_buf.blocks[idx1] = BlockType::Stone;
+        blocks[center_idx] = Some(std::sync::Arc::new(block_buf));
+
+        // 設置非均勻火把光照梯度 (模擬火把光暈)：
+        let mut light_buf = crate::world::chunk::ChunkLightBuffer::default();
+        let a_idx0 = crate::utils::math::voxel_pos_to_index(10, 11, 10);
+        let a_idx1 = crate::utils::math::voxel_pos_to_index(11, 11, 10);
+        light_buf.set_block_light(a_idx0, 14);
+        light_buf.set_block_light(a_idx1, 10);
+        lights[center_idx] = Some(std::sync::Arc::new(light_buf));
+
+        let input_data = ChunkMeshInputData {
+            chunk_pos,
+            blocks,
+            fluids,
+            lights,
+            surface_heights: Some(Box::new([100; 1156])),
+        };
+
+        let mut out = (Vec::new(), Vec::new(), Vec::new());
+        generate_greedy_mesh(Entity::PLACEHOLDER, chunk_pos, &input_data, false, &mut out, true);
+
+        // 驗證頂面 (+Y face_id = 2)：因具有非均勻火把光梯度，必須嚴格拆解為 2 個獨立的 1x1 quad (共 8 個頂點)，
+        // 絕不可被暴力合併為單一 2x1 quad (4 頂點)，以杜絕 T-Junction 斷層與接縫撕裂！
+        let top_faces: Vec<_> = out.0.iter().filter(|&&packed| ((packed >> 16) & 0x07) == 2).collect();
+        assert_eq!(top_faces.len(), 8, "非均勻光照梯度下頂面必須保持 2 個獨立 1x1 quad (8 頂點)，當前: {}", top_faces.len());
     }
 }
 
