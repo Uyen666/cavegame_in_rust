@@ -799,9 +799,10 @@ pub fn calculate_sky_and_fog_color(
     sky_factor: f32,
     min_ambient_light: f32,
 ) -> Color {
-    // 天空底色由天體運行與晝夜循環純粹決定，絕不受地面火把等局部方塊光源干擾
+    // 🚀 真黑極限暗夜：天幕底色維持與 Step 2 真黑環境一致的極致深邃黑夜 (0.0005, 0.001, 0.004)
+    // 杜絕普通遊戲中偏亮發藍的夜空，還原硬核生存無光環境下伸手不見五指的壓迫感
+    let night_sky = bevy::color::LinearRgba::new(0.0005, 0.001, 0.004, 1.0);
     let day_sky = bevy::color::LinearRgba::new(0.5, 0.8, 1.0, 1.0);
-    let night_sky = bevy::color::LinearRgba::new(0.01, 0.02, 0.08, 1.0);
     // 將 sky_factor [0.05..1.0] 正規化為晝夜插值權重 [0.0..1.0]
     let day_factor = ((sky_factor - 0.05) / 0.95).clamp(0.0, 1.0);
     let current_sky = night_sky.mix(&day_sky, day_factor);
@@ -1314,11 +1315,11 @@ mod tests {
         let min_ambient = 0.0;
 
         // 1. 夜晚開闊地表 (sky_light = 15.0, sky_factor = 0.05)
-        // 應維持深邃藏青夜空底色，絕不受玩家眼部或地面有無火把影響
+        // 應維持真黑極限暗夜底色 (0.0005, 0.001, 0.004)，絕不受玩家眼部或地面有無火把影響
         let night_surface_col = calculate_sky_and_fog_color(15.0, 0.05, min_ambient);
         let night_lin = night_surface_col.to_linear();
-        assert!(night_lin.blue >= 0.07, "夜晚地表天空應呈現藏藍色，當前藍色通道: {}", night_lin.blue);
-        assert!(night_lin.red < 0.05 && night_lin.green < 0.05);
+        assert!((night_lin.blue - 0.004).abs() < 0.001, "夜晚地表天空應呈現極致深黑夜空（真黑環境），當前藍色通道: {}", night_lin.blue);
+        assert!(night_lin.red < 0.001 && night_lin.green < 0.002);
 
         // 2. 地底洞穴無天空光 (sky_light = 0.0，無論白天或黑夜)
         // 應呈現純粹地底黑霧 (0.0, 0.0, 0.0)，火把不得把洞穴遠景渲染成藍天
