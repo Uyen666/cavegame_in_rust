@@ -793,6 +793,27 @@ fn player_interaction(
     }
 }
 
+/// 計算大氣天空與環境迷霧色彩（純粹眼部天空暴露感知，徹底與地面火把等方塊光源解耦）
+pub fn calculate_sky_and_fog_color(
+    sky_light: f32,
+    sky_factor: f32,
+    min_ambient_light: f32,
+) -> Color {
+    // 天空底色由天體運行與晝夜循環純粹決定，絕不受地面火把等局部方塊光源干擾
+    let day_sky = bevy::color::LinearRgba::new(0.5, 0.8, 1.0, 1.0);
+    let night_sky = bevy::color::LinearRgba::new(0.01, 0.02, 0.08, 1.0);
+    // 將 sky_factor [0.05..1.0] 正規化為晝夜插值權重 [0.0..1.0]
+    let day_factor = ((sky_factor - 0.05) / 0.95).clamp(0.0, 1.0);
+    let current_sky = night_sky.mix(&day_sky, day_factor);
+
+    // 依據眼部天空暴露度 (sky_light >= 12 視為完全開闊天空，< 12 向地底黑暗洞穴平滑過渡)
+    // 徹底解耦 block_light：火把僅照亮方塊幾何，不得照亮天體大氣或將地底洞穴霧氣變為藍天
+    let sky_exposure = (sky_light / 12.0).clamp(0.0, 1.0);
+    let dark_ambient_color = bevy::color::LinearRgba::gray(min_ambient_light);
+    let mixed = dark_ambient_color.mix(&current_sky, sky_exposure);
+    Color::from(mixed)
+}
+
 // 🚀 動態環境迷霧 + 遠剪裁面剛性對齊系統（純粹眼部位置感知）
 fn update_fog_color(
     world_manager: Res<crate::world::WorldManager>,
@@ -812,18 +833,7 @@ fn update_fog_color(
         translation.z.floor() as i32,
     );
     let sky_light = world_manager.get_sky_light_global(eye_pos) as f32;
-    let block_light = world_manager.get_block_light_global(eye_pos) as f32;
-    let eye_light = (sky_light * cycle.sky_factor).max(block_light);
-
-    // 線性映射：眼部光照 0−15 → 地底深灰 → 蔚藍/暗夜天空
-    let t = eye_light / 15.0;
-    let day_sky = bevy::color::LinearRgba::new(0.5, 0.8, 1.0, 1.0);
-    let night_sky = bevy::color::LinearRgba::new(0.01, 0.02, 0.08, 1.0);
-    let current_sky = night_sky.mix(&day_sky, cycle.sky_factor);
-    
-    let dark_ambient_color = bevy::color::LinearRgba::gray(config.min_ambient_light);
-    let mixed = dark_ambient_color.mix(&current_sky, t);
-    let final_color = Color::from(mixed);
+    let final_color = calculate_sky_and_fog_color(sky_light, cycle.sky_factor, config.min_ambient_light);
 
     clear_color.0 = final_color;
 
@@ -1297,6 +1307,39 @@ mod tests {
         // 基準走速 4.3 * (1.0 - 1.0 * 0.25) = 4.3 * 0.75 = 3.225
         let vel = world.get::<crate::phys::components::Velocity>(entity).unwrap();
         assert!((vel.z - (-3.225)).abs() < 0.05, "100% 負重時移速應減緩 25% (4.3 -> ~3.225)，當前: {}", vel.z);
+    }
+
+    #[test]
+    fn test_sky_and_fog_color_decoupled_from_torches() {
+        let min_ambient = 0.0;
+
+        // 1. 夜晚開闊地表 (sky_light = 15.0, sky_factor = 0.05)
+        // 應維持深邃藏青夜空底色，絕不受玩家眼部或地面有無火把影響
+        let night_surface_col = calculate_sky_and_fog_color(15.0, 0.05, min_ambient);
+        let night_lin = night_surface_col.to_linear();
+        assert!(night_lin.blue >= 0.07, "夜晚地表天空應呈現藏藍色，當前藍色通道: {}", night_lin.blue);
+        assert!(night_lin.red < 0.05 && night_lin.green < 0.05);
+
+        // 2. 地底洞穴無天空光 (sky_light = 0.0，無論白天或黑夜)
+        // 應呈現純粹地底黑霧 (0.0, 0.0, 0.0)，火把不得把洞穴遠景渲染成藍天
+        let cave_col_day = calculate_sky_and_fog_color(0.0, 1.0, min_ambient);
+        let cave_lin_day = cave_col_day.to_linear();
+        assert_eq!(cave_lin_day.red, 0.0);
+        assert_eq!(cave_lin_day.green, 0.0);
+        assert_eq!(cave_lin_day.blue, 0.0);
+
+        let cave_col_night = calculate_sky_and_fog_color(0.0, 0.05, min_ambient);
+        let cave_lin_night = cave_col_night.to_linear();
+        assert_eq!(cave_lin_night.red, 0.0);
+        assert_eq!(cave_lin_night.green, 0.0);
+        assert_eq!(cave_lin_night.blue, 0.0);
+
+        // 3. 白天開闊地表 (sky_light = 15.0, sky_factor = 1.0)
+        let day_surface_col = calculate_sky_and_fog_color(15.0, 1.0, min_ambient);
+        let day_lin = day_surface_col.to_linear();
+        assert!((day_lin.red - 0.5).abs() < 0.01);
+        assert!((day_lin.green - 0.8).abs() < 0.01);
+        assert!((day_lin.blue - 1.0).abs() < 0.01);
     }
 }
 
