@@ -1117,6 +1117,88 @@ pub fn build_single_voxel_mesh(block: BlockType) -> Mesh {
     mesh
 }
 
+/// 構建多體素複合動態網格 (Compound Voxel Mesh)
+/// 用於實體化倒木物理 (Falling Trees)、動態殘骸與剛體載具，支援內部接觸面剔除以維持頂級效能。
+pub fn build_compound_voxel_mesh(blocks: &[(IVec3, BlockType)]) -> Mesh {
+    let mut bucket: MeshData = (Vec::new(), Vec::new(), Vec::new());
+    let block_map: std::collections::HashMap<IVec3, BlockType> = blocks.iter().copied().collect();
+
+    for &(local_pos, block) in blocks {
+        if block == BlockType::Air {
+            continue;
+        }
+
+        for d in 0..3usize {
+            let (u, v) = match d {
+                0 => (1, 2), // d=0 (X-face): u=Y, v=Z
+                1 => (0, 2), // d=1 (Y-face): u=X, v=Z
+                _ => (0, 1), // d=2 (Z-face): u=X, v=Y
+            };
+
+            for normal_val in [1i32, -1i32] {
+                let mut dir = [0i32; 3];
+                dir[d] = normal_val;
+                let neighbor_pos = local_pos + IVec3::from_array(dir);
+
+                // 內部相鄰面剔除：若相鄰方塊為實心不透明方塊，則不繪製接觸面
+                if let Some(&n_block) = block_map.get(&neighbor_pos) {
+                    if n_block.is_opaque() && block.is_opaque() {
+                        continue;
+                    }
+                }
+
+                let normal_vec = match d {
+                    0 => [normal_val as f32, 0.0, 0.0],
+                    1 => [0.0, normal_val as f32, 0.0],
+                    2 => [0.0, 0.0, normal_val as f32],
+                    _ => [0.0, 0.0, 0.0],
+                };
+
+                let tex_layer = get_texture_layer(block, d, normal_val);
+                let sky_lights = [15, 15, 15, 15];
+                let block_lights = [0, 0, 0, 0];
+
+                let mut x = [local_pos.x, local_pos.y, local_pos.z];
+                x[d] += if normal_val > 0 { 1 } else { 0 };
+
+                let mut du = [0i32; 3]; du[u] = 1;
+                let mut dv = [0i32; 3]; dv[v] = 1;
+
+                let v1 = [x[0] as f32, x[1] as f32, x[2] as f32];
+                let v2 = [(x[0] + du[0]) as f32, (x[1] + du[1]) as f32, (x[2] + du[2]) as f32];
+                let v3 = [(x[0] + du[0] + dv[0]) as f32, (x[1] + du[1] + dv[1]) as f32, (x[2] + du[2] + dv[2]) as f32];
+                let v4 = [(x[0] + dv[0]) as f32, (x[1] + dv[1]) as f32, (x[2] + dv[2]) as f32];
+
+                let mut rev = normal_val < 0;
+                if d == 1 {
+                    rev = !rev;
+                }
+
+                push_quad(
+                    &mut bucket,
+                    v1, v2, v3, v4,
+                    normal_vec,
+                    [1.0, 1.0, 1.0, 1.0],
+                    tex_layer,
+                    sky_lights,
+                    block_lights,
+                    0,
+                    1, 1,
+                    rev, d,
+                );
+            }
+        }
+    }
+
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let positions = vec![[0.0, 0.0, 0.0]; bucket.0.len()];
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(ATTRIBUTE_PACKED_DATA, bucket.0);
+    mesh.insert_attribute(ATTRIBUTE_FLOW_VECTOR, bucket.2);
+    mesh.insert_indices(Indices::U32(bucket.1));
+    mesh
+}
+
 /// 構建單一火把的 UI 預覽網格（雙面渲染以杜絕任何角度背面剔除漏面）
 fn push_single_torch_mesh(bucket: &mut MeshData, block: BlockType) {
     let sky_lights = [15, 15, 15, 15];
@@ -1431,6 +1513,20 @@ mod tests {
         // 絕不可被暴力合併為單一 2x1 quad (4 頂點)，以杜絕 T-Junction 斷層與接縫撕裂！
         let top_faces: Vec<_> = out.0.iter().filter(|&&packed| ((packed >> 16) & 0x07) == 2).collect();
         assert_eq!(top_faces.len(), 8, "非均勻光照梯度下頂面必須保持 2 個獨立 1x1 quad (8 頂點)，當前: {}", top_faces.len());
+    }
+
+    #[test]
+    fn test_build_compound_voxel_mesh_culls_internal_faces() {
+        // 兩個上下相鄰的 OakLog：y=0 與 y=1
+        let blocks = vec![
+            (IVec3::new(16, 0, 16), BlockType::OakLog),
+            (IVec3::new(16, 1, 16), BlockType::OakLog),
+        ];
+        let mesh = build_compound_voxel_mesh(&blocks);
+        // 單一原木有 24 頂點 (6 面 * 4)，兩個相鄰原木內部接觸面被剔除 2 面，應剩餘 10 面 = 40 頂點
+        assert_eq!(mesh.count_vertices(), 40, "複合網格應正確剔除兩原木接觸的內部面");
+        let indices = mesh.indices().expect("Indices must exist");
+        assert_eq!(indices.len(), 60, "10 面 * 2 三角形 * 3 索引 = 60");
     }
 }
 

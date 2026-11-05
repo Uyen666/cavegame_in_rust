@@ -68,6 +68,7 @@ impl Plugin for WorldPlugin {
                     systems::fluid_tick_system,
                     systems::update_day_night_cycle,
                     torch::torch_burn_tick_system,
+                    tree::update_falling_trees,
                 ).run_if(in_state(crate::GameState::InGame))
             );
     }

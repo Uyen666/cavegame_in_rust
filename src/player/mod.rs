@@ -519,6 +519,8 @@ fn player_interaction(
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
     mut q_player: Query<(&Transform, &mut Player, &mut Inventory, Option<&mut PlayerVitals>)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    gt: Res<crate::render::textures::GameTextures>,
     cursor_just_locked: Res<CursorJustLocked>,
 ) {
     let Ok(window) = q_windows.get_single() else { return; };
@@ -644,6 +646,8 @@ fn player_interaction(
                                 &registry,
                                 block_pos,
                                 can_harvest,
+                                Some(player_transform.translation),
+                                if gt.ready { Some((&mut *meshes, gt.material.clone())) } else { None },
                             );
                         }
 
