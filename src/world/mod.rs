@@ -10,6 +10,7 @@ pub mod registry;
 pub mod tree;
 pub mod torch;
 pub mod collapse;
+pub mod soil;
 use bevy::prelude::*;
 use bevy::utils::{HashMap, HashSet};
 use bevy::tasks::Task;
@@ -69,6 +70,7 @@ impl Plugin for WorldPlugin {
                     systems::update_day_night_cycle,
                     torch::torch_burn_tick_system,
                     tree::update_falling_trees,
+                    collapse::update_precursor_collapses,
                 ).run_if(in_state(crate::GameState::InGame))
             );
     }

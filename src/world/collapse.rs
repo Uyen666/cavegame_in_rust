@@ -72,19 +72,28 @@ pub fn is_roof_supported(world: &WorldManager, roof_pos: IVec3) -> bool {
     false
 }
 
-/// 採礦地質穩定性檢測與坍塌結算核心
+/// 地質坍塌預警前兆組件 (Precursor Collapse & Stress Yield Delay)
+/// 當採礦破壞頂板受力平衡時，岩層進入塑性變形與剪切屈服階段 (約 1.2 秒)，
+/// 期間頂板持續飄落石塵粒子作為前兆警示，給予玩家反應逃生窗口。
+#[derive(Component, Debug, Clone)]
+pub struct PrecursorCollapse {
+    pub collapsing_blocks: Vec<IVec3>,
+    pub danger_center: IVec3,
+    pub timer: f32,
+    pub dust_timer: f32,
+}
+
+/// 採礦地質穩定性檢測與前兆警報生成
 pub fn handle_mining_collapse(
-    world: &mut WorldManager,
+    world: &WorldManager,
     commands: &mut Commands,
     particle_mgr: &mut ParticleManager,
-    mut vitals: Option<&mut PlayerVitals>,
-    player_pos: Vec3,
     mined_pos: IVec3,
     mined_block: BlockType,
-) {
+) -> Option<Entity> {
     // 僅在地底深處開採岩石或礦石時觸發地質應力失穩
     if mined_pos.y > CAVEIN_MAX_Y || (!is_cavein_prone(mined_block) && mined_block != BlockType::Dirt) {
-        return;
+        return None;
     }
 
     let mut collapsing_blocks = Vec::new();
@@ -108,16 +117,50 @@ pub fn handle_mining_collapse(
     }
 
     if collapsing_blocks.is_empty() {
+        return None;
+    }
+
+    // 由下至上排序
+    collapsing_blocks.sort_by_key(|pos| pos.y);
+
+    // 噴射初階微裂落塵粒子
+    let dust_color = Color::srgb_u8(130, 120, 110);
+    for &c_pos in &collapsing_blocks {
+        particle_mgr.spawn_debris(c_pos.as_vec3() + Vec3::new(0.5, 0.0, 0.5), dust_color, 4);
+    }
+
+    println!("【地質預警】岩層承受巨大剪應力，頂板岩石開始破裂剝落！1.2 秒內可能發生大面積坍塌，請立即撤離！");
+
+    let entity = commands.spawn(PrecursorCollapse {
+        collapsing_blocks,
+        danger_center: mined_pos,
+        timer: 1.2,
+        dust_timer: 0.15,
+    }).id();
+
+    Some(entity)
+}
+
+/// 執行實際坍塌物理結算：清除頂板方塊、生成墜落碎石、觸發安息角滑坡並對危險區內生物結算重擊傷害
+pub fn execute_collapse(
+    world: &mut WorldManager,
+    commands: &mut Commands,
+    particle_mgr: &mut ParticleManager,
+    collapsing_blocks: &[IVec3],
+    danger_center: IVec3,
+    mut player_data: Option<(Vec3, &mut PlayerVitals)>,
+) {
+    if collapsing_blocks.is_empty() {
         return;
     }
 
-    // 由下至上觸發坍塌落石
-    collapsing_blocks.sort_by_key(|pos| pos.y);
+    let mut sorted_blocks = collapsing_blocks.to_vec();
+    sorted_blocks.sort_by_key(|pos| pos.y);
 
     let dust_color = Color::srgb_u8(130, 120, 110);
     let rubble_color = Color::srgb_u8(110, 100, 90);
 
-    for &c_pos in &collapsing_blocks {
+    for &c_pos in &sorted_blocks {
         // 頂板崩解為空氣
         world.set_block_global(c_pos, BlockType::Air, commands);
         particle_mgr.spawn_debris(c_pos.as_vec3() + 0.5, dust_color, 14);
@@ -133,23 +176,77 @@ pub fn handle_mining_collapse(
             // 坍塌碎石堆積為碎石堆 (Gravel)
             world.set_block_global(landing_pos, BlockType::Gravel, commands);
             crate::world::fluid::wake_up_fluids_in_radius(world, landing_pos);
+            // 觸發自然安息角滑坡檢查 (Angle of Repose)
+            crate::world::soil::update_soil_physics_at(world, commands, particle_mgr, landing_pos);
             particle_mgr.spawn_debris(landing_pos.as_vec3() + 0.5, rubble_color, 8);
         }
     }
 
-    // 結算玩家受創判定：若玩家處於坍塌垂直投影區內，承受碎石衝擊傷害
-    let is_in_danger_zone = (player_pos.x - mined_pos.x as f32).abs() <= 2.8
-        && (player_pos.z - mined_pos.z as f32).abs() <= 2.8
-        && player_pos.y >= (mined_pos.y - 2) as f32
-        && player_pos.y <= (mined_pos.y + 4) as f32;
+    // 結算玩家受創判定：若玩家仍處於坍塌垂直投影區內，承受碎石衝擊傷害
+    if let Some((player_pos, ref mut vitals)) = player_data {
+        let is_in_danger_zone = (player_pos.x - danger_center.x as f32).abs() <= 2.8
+            && (player_pos.z - danger_center.z as f32).abs() <= 2.8
+            && player_pos.y >= (danger_center.y - 2) as f32
+            && player_pos.y <= (danger_center.y + 5) as f32;
 
-    if is_in_danger_zone {
-        if let Some(ref mut v) = vitals {
-            let damage = (collapsing_blocks.len() as f32 * 8.0).clamp(15.0, 70.0);
-            v.health = (v.health - damage).max(0.0);
+        if is_in_danger_zone {
+            let damage = (sorted_blocks.len() as f32 * 8.0).clamp(15.0, 70.0);
+            vitals.health = (vitals.health - damage).max(0.0);
             println!(
-                "【地質警報】礦坑頂板缺乏木支架支護，引發局部地質坍塌落石！受到 {:.1} 點落石重擊傷害！剩餘生命: {:.1}",
-                damage, v.health
+                "【地質坍塌】礦坑頂板徹底崩塌！受到 {:.1} 點落石重擊傷害！剩餘生命: {:.1}",
+                damage, vitals.health
+            );
+        }
+    }
+}
+
+/// 地質坍塌應力屈服計時與前兆落塵粒子系統
+pub fn update_precursor_collapses(
+    mut commands: Commands,
+    mut world: ResMut<WorldManager>,
+    mut particle_mgr: ResMut<ParticleManager>,
+    time: Res<Time>,
+    mut q_collapses: Query<(Entity, &mut PrecursorCollapse)>,
+    mut q_player: Query<(&Transform, Option<&mut PlayerVitals>), With<crate::player::Player>>,
+) {
+    let delta = time.delta_seconds();
+    let dust_color = Color::srgb_u8(130, 120, 110);
+
+    let mut ready_to_collapse = Vec::new();
+
+    for (entity, mut precursor) in q_collapses.iter_mut() {
+        precursor.timer -= delta;
+        precursor.dust_timer -= delta;
+
+        // 預警期間週期性飄落微細石屑粒子
+        if precursor.dust_timer <= 0.0 && precursor.timer > 0.0 {
+            precursor.dust_timer = 0.15;
+            for &c_pos in &precursor.collapsing_blocks {
+                particle_mgr.spawn_debris(c_pos.as_vec3() + Vec3::new(0.5, 0.0, 0.5), dust_color, 2);
+            }
+        }
+
+        // 應力屈服極限到達，引發徹底坍塌
+        if precursor.timer <= 0.0 {
+            commands.entity(entity).despawn();
+            ready_to_collapse.push((precursor.collapsing_blocks.clone(), precursor.danger_center));
+        }
+    }
+
+    if !ready_to_collapse.is_empty() {
+        let mut player_opt = q_player.get_single_mut().ok();
+        for (blocks, center) in ready_to_collapse {
+            let player_data = match player_opt {
+                Some((ref tf, Some(ref mut vitals))) => Some((tf.translation, &mut **vitals)),
+                _ => None,
+            };
+            execute_collapse(
+                &mut world,
+                &mut commands,
+                &mut particle_mgr,
+                &blocks,
+                center,
+                player_data,
             );
         }
     }
@@ -195,18 +292,14 @@ mod tests {
         let mut commands = Commands::new(&mut queue, &ecs_world);
 
         let roof_pos = IVec3::new(10, 45, 10);
-        // 頂板下方為空氣 (懸空)
         world.set_block_global(roof_pos, BlockType::Stone, &mut commands);
         world.set_block_global(roof_pos + IVec3::NEG_Y, BlockType::Air, &mut commands);
 
-        // 未設置支架且四周無岩壁時：未受支護
         assert!(!is_roof_supported(&world, roof_pos), "無岩壁無木支架時應判定為失穩");
 
-        // 在水平 3 格處放置 OakLog 木支架
         let beam_pos = IVec3::new(13, 44, 10);
         world.set_block_global(beam_pos, BlockType::OakLog, &mut commands);
 
-        // 再次檢驗：已獲木支架安全支護！
         assert!(is_roof_supported(&world, roof_pos), "木支架半徑內應獲安全支護");
     }
 
@@ -219,7 +312,6 @@ mod tests {
         world.set_block_global(roof_pos, BlockType::Stone, &mut commands);
         world.set_block_global(roof_pos + IVec3::NEG_Y, BlockType::Air, &mut commands);
 
-        // 在相鄰 1 格建立垂直實心岩壁 (wall_top 與 wall_below 均實心)
         let wall_x = 11;
         world.set_block_global(IVec3::new(wall_x, 45, 10), BlockType::Stone, &mut commands);
         world.set_block_global(IVec3::new(wall_x, 44, 10), BlockType::Stone, &mut commands);
@@ -228,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deep_mining_collapse_triggers_and_deals_damage() {
+    fn test_precursor_collapse_spawns_on_deep_mining() {
         let (mut world, ecs_world, mut queue) = create_test_world();
         let mut commands = Commands::new(&mut queue, &ecs_world);
         let mut particle_mgr = ParticleManager::default();
@@ -243,24 +335,82 @@ mod tests {
             }
         }
 
-        // 開採中央方塊 (10, 41, 10)
         let mined_pos = IVec3::new(10, 41, 10);
-        let player_pos = Vec3::new(10.0, 41.0, 10.0);
-        let mut vitals = PlayerVitals::default();
-
-        handle_mining_collapse(
-            &mut world,
+        let entity_opt = handle_mining_collapse(
+            &world,
             &mut commands,
             &mut particle_mgr,
-            Some(&mut vitals),
-            player_pos,
             mined_pos,
             BlockType::Stone,
         );
 
-        // 驗證頂板中央發生坍塌 (轉為空氣，碎石落於地面)
-        assert_eq!(world.get_block_global(IVec3::new(10, 43, 10)), BlockType::Air, "失穩頂板應坍塌為空氣");
+        assert!(entity_opt.is_some(), "深層開採無支護頂板應生成 PrecursorCollapse 預警實體");
+    }
+
+    #[test]
+    fn test_execute_collapse_places_gravel_and_damages_player_in_danger_zone() {
+        let (mut world, ecs_world, mut queue) = create_test_world();
+        let mut commands = Commands::new(&mut queue, &ecs_world);
+        let mut particle_mgr = ParticleManager::default();
+
+        for x in 8..=12 {
+            for z in 8..=12 {
+                world.set_block_global(IVec3::new(x, 40, z), BlockType::Stone, &mut commands);
+                world.set_block_global(IVec3::new(x, 41, z), BlockType::Air, &mut commands);
+                world.set_block_global(IVec3::new(x, 42, z), BlockType::Air, &mut commands);
+                world.set_block_global(IVec3::new(x, 43, z), BlockType::Stone, &mut commands);
+            }
+        }
+
+        let collapsing_blocks = vec![IVec3::new(10, 43, 10)];
+        let danger_center = IVec3::new(10, 41, 10);
+        let player_pos = Vec3::new(10.0, 41.0, 10.0);
+        let mut vitals = PlayerVitals::default();
+
+        execute_collapse(
+            &mut world,
+            &mut commands,
+            &mut particle_mgr,
+            &collapsing_blocks,
+            danger_center,
+            Some((player_pos, &mut vitals)),
+        );
+
+        assert_eq!(world.get_block_global(IVec3::new(10, 43, 10)), BlockType::Air, "坍塌頂板應崩解為空氣");
         assert_eq!(world.get_block_global(IVec3::new(10, 41, 10)), BlockType::Gravel, "碎石應落於底部地面");
         assert!(vitals.health < 100.0, "處於坍塌下方的玩家應受到落石重擊傷害");
+    }
+
+    #[test]
+    fn test_execute_collapse_spares_escaped_player() {
+        let (mut world, ecs_world, mut queue) = create_test_world();
+        let mut commands = Commands::new(&mut queue, &ecs_world);
+        let mut particle_mgr = ParticleManager::default();
+
+        for x in 8..=12 {
+            for z in 8..=12 {
+                world.set_block_global(IVec3::new(x, 40, z), BlockType::Stone, &mut commands);
+                world.set_block_global(IVec3::new(x, 41, z), BlockType::Air, &mut commands);
+                world.set_block_global(IVec3::new(x, 42, z), BlockType::Air, &mut commands);
+                world.set_block_global(IVec3::new(x, 43, z), BlockType::Stone, &mut commands);
+            }
+        }
+
+        let collapsing_blocks = vec![IVec3::new(10, 43, 10)];
+        let danger_center = IVec3::new(10, 41, 10);
+        // 玩家聽到預警聲並看見落塵後，在 1.2 秒內成功逃離至 10 格外安全區域
+        let player_pos = Vec3::new(20.0, 41.0, 20.0);
+        let mut vitals = PlayerVitals::default();
+
+        execute_collapse(
+            &mut world,
+            &mut commands,
+            &mut particle_mgr,
+            &collapsing_blocks,
+            danger_center,
+            Some((player_pos, &mut vitals)),
+        );
+
+        assert_eq!(vitals.health, 100.0, "成功逃離危險區的玩家不應受到傷害");
     }
 }

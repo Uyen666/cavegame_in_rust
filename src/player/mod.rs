@@ -1,4 +1,4 @@
-use bevy::prelude::*;
+﻿use bevy::prelude::*;
 use bevy::input::mouse::MouseMotion;
 use bevy::window::{CursorGrabMode, PrimaryWindow};
 use std::f32::consts::FRAC_PI_2;
@@ -653,13 +653,19 @@ fn player_interaction(
 
                         // 🚀 地質結構穩定度與礦坑坍塌物理：若在深層挖掘，檢查頂板跨度支護
                         crate::world::collapse::handle_mining_collapse(
+                            &world,
+                            &mut commands,
+                            &mut particle_mgr,
+                            block_pos,
+                            old_block,
+                        );
+
+                        // 🚀 鬆散土壤自然滑坡與重力喚醒 (Sand / Gravel Angle of Repose)
+                        crate::world::soil::wake_up_soils_in_radius(
                             &mut world,
                             &mut commands,
                             &mut particle_mgr,
-                            maybe_vitals.as_deref_mut(),
-                            player_transform.translation,
                             block_pos,
-                            old_block,
                         );
 
                         inventory.damage_selected_tool(1);
@@ -721,6 +727,16 @@ fn player_interaction(
                                         if current_block != BlockType::Air {
                                             world.set_block_global(place_pos, current_block, &mut commands);
                                             crate::world::fluid::wake_up_fluids_in_radius(&mut world, place_pos);
+
+                                            // 🚀 鬆散土壤放置時即時結算垂直重力與安息角滑坡
+                                            if crate::world::soil::is_loose_soil(current_block) {
+                                                crate::world::soil::update_soil_physics_at(
+                                                    &mut world,
+                                                    &mut commands,
+                                                    &mut particle_mgr,
+                                                    place_pos,
+                                                );
+                                            }
 
                                             if current_block.is_torch() {
                                                 torch_burn_mgr.register(place_pos, crate::world::torch::DEFAULT_TORCH_LIFETIME);
