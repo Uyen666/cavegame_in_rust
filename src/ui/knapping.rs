@@ -48,6 +48,15 @@ pub struct KnappingGridButton {
     pub col: usize,
 }
 
+#[derive(Component)]
+pub struct KnappingButtonText {
+    pub row: usize,
+    pub col: usize,
+}
+
+#[derive(Component)]
+pub struct KnappingProgressTextNode;
+
 pub struct KnappingPlugin;
 
 impl Plugin for KnappingPlugin {
@@ -77,7 +86,7 @@ pub fn setup_knapping_ui(mut commands: Commands) {
                 position_type: PositionType::Absolute,
                 ..default()
             },
-            background_color: BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.65)),
+            background_color: BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.70)),
             visibility: Visibility::Hidden,
             ..default()
         },
@@ -86,7 +95,7 @@ pub fn setup_knapping_ui(mut commands: Commands) {
         // 主面板
         root.spawn(NodeBundle {
             style: Style {
-                width: Val::Px(360.0),
+                width: Val::Px(370.0),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 padding: UiRect::all(Val::Px(16.0)),
@@ -94,28 +103,41 @@ pub fn setup_knapping_ui(mut commands: Commands) {
                 ..default()
             },
             background_color: BackgroundColor(Color::srgb(0.14, 0.15, 0.17)),
-            border_color: BorderColor(Color::srgb(0.35, 0.38, 0.42)),
+            border_color: BorderColor(Color::srgb(0.40, 0.44, 0.48)),
             ..default()
         }).with_children(|panel| {
             // 標題
             panel.spawn(TextBundle::from_section(
-                "【原始擊石切削 (Knapping)】",
+                "FLINT KNAPPING",
                 TextStyle {
-                    font_size: 18.0,
-                    color: Color::srgb(0.9, 0.85, 0.7),
+                    font_size: 20.0,
+                    color: Color::srgb(0.95, 0.88, 0.65),
                     ..default()
                 },
-            ).with_style(Style { margin: UiRect::bottom(Val::Px(6.0)), ..default() }));
+            ).with_style(Style { margin: UiRect::bottom(Val::Px(4.0)), ..default() }));
 
-            // 副標題 / 提示
+            // 清楚指引
             panel.spawn(TextBundle::from_section(
-                "手持雙燧石敲除邊緣石片，打磨出斧刃！",
+                "Click marked flakes (x) to shape an Axe Head!",
                 TextStyle {
                     font_size: 13.0,
-                    color: Color::srgb(0.7, 0.72, 0.75),
+                    color: Color::srgb(0.75, 0.78, 0.82),
                     ..default()
                 },
-            ).with_style(Style { margin: UiRect::bottom(Val::Px(14.0)), ..default() }));
+            ).with_style(Style { margin: UiRect::bottom(Val::Px(4.0)), ..default() }));
+
+            // 進度動態指示列
+            panel.spawn((
+                TextBundle::from_section(
+                    "Progress: 0 / 11 Flakes Chipped",
+                    TextStyle {
+                        font_size: 13.0,
+                        color: Color::srgb(0.45, 0.85, 0.95),
+                        ..default()
+                    },
+                ).with_style(Style { margin: UiRect::bottom(Val::Px(12.0)), ..default() }),
+                KnappingProgressTextNode,
+            ));
 
             // 5x5 石塊切削格點容器
             panel.spawn(NodeBundle {
@@ -130,7 +152,7 @@ pub fn setup_knapping_ui(mut commands: Commands) {
                     ..default()
                 },
                 background_color: BackgroundColor(Color::srgb(0.08, 0.09, 0.10)),
-                border_color: BorderColor(Color::srgb(0.25, 0.27, 0.30)),
+                border_color: BorderColor(Color::srgb(0.28, 0.30, 0.34)),
                 ..default()
             }).with_children(|grid_container| {
                 for r in 0..5 {
@@ -145,6 +167,14 @@ pub fn setup_knapping_ui(mut commands: Commands) {
                         ..default()
                     }).with_children(|row_node| {
                         for c in 0..5 {
+                            let is_blade = FLINT_AXE_HEAD_PATTERN[r][c];
+                            let initial_border = if is_blade {
+                                Color::srgb(0.38, 0.58, 0.75) // 斧刃主體為高亮鋼青色邊框
+                            } else {
+                                Color::srgb(0.65, 0.35, 0.32) // 待敲除石片為微暗紅標記邊框
+                            };
+                            let initial_symbol = if is_blade { "" } else { "x" };
+
                             row_node.spawn((
                                 ButtonBundle {
                                     style: Style {
@@ -156,11 +186,23 @@ pub fn setup_knapping_ui(mut commands: Commands) {
                                         ..default()
                                     },
                                     background_color: BackgroundColor(Color::srgb(0.30, 0.32, 0.36)),
-                                    border_color: BorderColor(Color::srgb(0.45, 0.48, 0.52)),
+                                    border_color: BorderColor(initial_border),
                                     ..default()
                                 },
                                 KnappingGridButton { row: r, col: c },
-                            ));
+                            )).with_children(|btn| {
+                                btn.spawn((
+                                    TextBundle::from_section(
+                                        initial_symbol,
+                                        TextStyle {
+                                            font_size: 15.0,
+                                            color: Color::srgba(0.85, 0.45, 0.40, 0.9),
+                                            ..default()
+                                        },
+                                    ),
+                                    KnappingButtonText { row: r, col: c },
+                                ));
+                            });
                         }
                     });
                 }
@@ -168,7 +210,7 @@ pub fn setup_knapping_ui(mut commands: Commands) {
 
             // 底部操作提示
             panel.spawn(TextBundle::from_section(
-                "點擊石塊敲除 | 按 Esc 退出",
+                "[LMB] Chip Flake   |   [Esc] Cancel",
                 TextStyle {
                     font_size: 12.0,
                     color: Color::srgb(0.55, 0.58, 0.62),
@@ -284,19 +326,57 @@ pub fn handle_knapping_clicks(
 pub fn update_knapping_ui(
     state: Res<KnappingState>,
     mut q_buttons: Query<(&KnappingGridButton, &mut BackgroundColor, &mut BorderColor)>,
+    mut q_btn_texts: Query<(&KnappingButtonText, &mut Text), Without<KnappingProgressTextNode>>,
+    mut q_progress_text: Query<&mut Text, With<KnappingProgressTextNode>>,
 ) {
     if !state.is_open {
         return;
     }
 
+    // 計算敲除進度
+    let chipped_correct = (0..5).flat_map(|r| (0..5).map(move |c| (r, c)))
+        .filter(|&(r, c)| !FLINT_AXE_HEAD_PATTERN[r][c] && !state.grid[r][c])
+        .count();
+
+    let chipped_ruined = (0..5).flat_map(|r| (0..5).map(move |c| (r, c)))
+        .any(|(r, c)| FLINT_AXE_HEAD_PATTERN[r][c] && !state.grid[r][c]);
+
+    if let Ok(mut prog_text) = q_progress_text.get_single_mut() {
+        if chipped_ruined {
+            prog_text.sections[0].value = "Ruined! Core blade chipped! Press Esc to cancel".to_string();
+            prog_text.sections[0].style.color = Color::srgb(0.95, 0.35, 0.30);
+        } else if chipped_correct == 11 {
+            prog_text.sections[0].value = "Pattern Complete! Flint Axe Head formed!".to_string();
+            prog_text.sections[0].style.color = Color::srgb(0.95, 0.85, 0.35);
+        } else {
+            prog_text.sections[0].value = format!("Progress: {} / 11 Flakes Chipped", chipped_correct);
+            prog_text.sections[0].style.color = Color::srgb(0.45, 0.85, 0.95);
+        }
+    }
+
     for (btn, mut bg, mut border) in q_buttons.iter_mut() {
         let (r, c) = (btn.row, btn.col);
+        let is_blade = FLINT_AXE_HEAD_PATTERN[r][c];
         if state.grid[r][c] {
             bg.0 = Color::srgb(0.30, 0.32, 0.36);
-            border.0 = BorderColor(Color::srgb(0.48, 0.52, 0.56)).0;
+            border.0 = if is_blade {
+                BorderColor(Color::srgb(0.38, 0.58, 0.75)).0
+            } else {
+                BorderColor(Color::srgb(0.65, 0.35, 0.32)).0
+            };
         } else {
             bg.0 = Color::srgba(0.08, 0.08, 0.09, 0.25);
             border.0 = BorderColor(Color::srgba(0.18, 0.20, 0.22, 0.3)).0;
+        }
+    }
+
+    for (node, mut text) in q_btn_texts.iter_mut() {
+        let (r, c) = (node.row, node.col);
+        let is_blade = FLINT_AXE_HEAD_PATTERN[r][c];
+        if state.grid[r][c] {
+            text.sections[0].value = if is_blade { "".to_string() } else { "x".to_string() };
+        } else {
+            text.sections[0].value = "".to_string();
         }
     }
 }

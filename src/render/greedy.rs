@@ -1144,51 +1144,41 @@ pub fn build_item_drop_mesh(item_type: crate::item::ItemType, sky_light: u8, blo
     };
 
     let mut bucket = empty_mesh();
-    for d in 0..3usize {
-        let (u, v) = match d {
-            0 => (1, 2),
-            1 => (0, 2),
-            _ => (0, 1),
-        };
+    // 🚀 2D 物品掉落物：僅生成頂面 (+Y) 與底面 (-Y) 雙面 Quad，徹底消滅側面 4 邊的貼圖拉伸與鋸齒肋骨階梯！
+    let d = 1usize;
+    let (u, v) = (0, 2);
 
-        for normal_val in [1i32, -1i32] {
-            let normal_vec = match d {
-                0 => [normal_val as f32, 0.0, 0.0],
-                1 => [0.0, normal_val as f32, 0.0],
-                2 => [0.0, 0.0, normal_val as f32],
-                _ => [0.0, 0.0, 0.0],
-            };
+    for normal_val in [1i32, -1i32] {
+        let normal_vec = [0.0, normal_val as f32, 0.0];
+        let sky_lights = [sky_light, sky_light, sky_light, sky_light];
+        let block_lights = [block_light, block_light, block_light, block_light];
 
-            let sky_lights = [sky_light, sky_light, sky_light, sky_light];
-            let block_lights = [block_light, block_light, block_light, block_light];
+        let mut x = [0i32; 3];
+        x[d] = if normal_val > 0 { 1 } else { 0 };
 
-            let mut x = [0i32; 3];
-            x[d] = if normal_val > 0 { 1 } else { 0 };
+        let mut du = [0i32; 3]; du[u] = 1;
+        let mut dv = [0i32; 3]; dv[v] = 1;
 
-            let mut du = [0i32; 3]; du[u] = 1;
-            let mut dv = [0i32; 3]; dv[v] = 1;
+        let v1 = [x[0] as f32, x[1] as f32, x[2] as f32];
+        let v2 = [(x[0] + du[0]) as f32, (x[1] + du[1]) as f32, (x[2] + du[2]) as f32];
+        let v3 = [(x[0] + du[0] + dv[0]) as f32, (x[1] + du[1] + dv[1]) as f32, (x[2] + du[2] + dv[2]) as f32];
+        let v4 = [(x[0] + dv[0]) as f32, (x[1] + dv[1]) as f32, (x[2] + dv[2]) as f32];
 
-            let v1 = [x[0] as f32, x[1] as f32, x[2] as f32];
-            let v2 = [(x[0] + du[0]) as f32, (x[1] + du[1]) as f32, (x[2] + du[2]) as f32];
-            let v3 = [(x[0] + du[0] + dv[0]) as f32, (x[1] + du[1] + dv[1]) as f32, (x[2] + du[2] + dv[2]) as f32];
-            let v4 = [(x[0] + dv[0]) as f32, (x[1] + dv[1]) as f32, (x[2] + dv[2]) as f32];
+        let mut rev = normal_val < 0;
+        if d == 1 { rev = !rev; }
 
-            let mut rev = normal_val < 0;
-            if d == 1 { rev = !rev; }
-
-            push_quad(
-                &mut bucket,
-                v1, v2, v3, v4,
-                normal_vec,
-                [1.0, 1.0, 1.0, 1.0],
-                tex_layer,
-                sky_lights,
-                block_lights,
-                0,
-                1, 1,
-                rev, d,
-            );
-        }
+        push_quad(
+            &mut bucket,
+            v1, v2, v3, v4,
+            normal_vec,
+            [1.0, 1.0, 1.0, 1.0],
+            tex_layer,
+            sky_lights,
+            block_lights,
+            0,
+            1, 1,
+            rev, d,
+        );
     }
 
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());

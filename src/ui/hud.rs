@@ -216,6 +216,8 @@ pub fn setup_item_icons(
         let paths = [
             format!("assets/minecraft/textures/item/{}.png", item_name),
             format!("assets/minecraft/textures/items/{}.png", item_name),
+            format!("assets/minecraft/textures/block/{}.png", item_name),
+            format!("assets/minecraft/textures/blocks/{}.png", item_name),
         ];
         for path in paths {
             if let Ok(mut zf) = archive.by_name(&path) {
@@ -322,6 +324,19 @@ pub fn setup_item_icons(
     icon_map.insert(ItemType::WoodenShovel, get_icon(&mut zip_archive, &mut images, "wooden_shovel", pickaxe_fallback.clone()));
     icon_map.insert(ItemType::StoneShovel, get_icon(&mut zip_archive, &mut images, "stone_shovel", pickaxe_fallback.clone()));
     icon_map.insert(ItemType::IronShovel, get_icon(&mut zip_archive, &mut images, "iron_shovel", pickaxe_fallback.clone()));
+
+    // 🚀 方塊類物品 2D 圖示註冊 (全數從 resource_pack.zip/textures/block/ 載入)
+    icon_map.insert(ItemType::Stone, get_icon(&mut zip_archive, &mut images, "stone", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::Dirt, get_icon(&mut zip_archive, &mut images, "dirt", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::Grass, get_icon(&mut zip_archive, &mut images, "grass_block_side", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::OakLog, get_icon(&mut zip_archive, &mut images, "oak_log", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::OakLeaves, get_icon(&mut zip_archive, &mut images, "oak_leaves", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::Sand, get_icon(&mut zip_archive, &mut images, "sand", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::Gravel, get_icon(&mut zip_archive, &mut images, "gravel", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::CoalOre, get_icon(&mut zip_archive, &mut images, "coal_ore", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::IronOre, get_icon(&mut zip_archive, &mut images, "iron_ore", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::Glass, get_icon(&mut zip_archive, &mut images, "glass", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::Torch, get_icon(&mut zip_archive, &mut images, "torch", pickaxe_fallback.clone()));
 
     commands.insert_resource(ItemIconRegistry {
         icons: icon_map,
