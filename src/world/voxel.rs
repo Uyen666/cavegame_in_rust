@@ -3,7 +3,7 @@ use super::registry::{
     BLOCK_DEFINITIONS, BlockDefinition, ToolTier, ToolType, SoundCategory, DropTable, BlockTextureMapping
 };
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum BlockType {
     Air = 0,

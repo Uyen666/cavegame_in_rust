@@ -14,7 +14,7 @@ impl Plugin for UiPlugin {
         app.add_plugins(debug::DebugUiPlugin)
            .add_plugins(inventory::InventoryUiPlugin)
            .add_plugins(knapping::KnappingPlugin)
-           .add_systems(Startup, (hud::setup_ui_3d_preview, hud::setup_item_icons))
+           .add_systems(Startup, (hud::setup_ui_3d_preview, hud::setup_item_icons).chain())
            .add_systems(OnEnter(GameState::MainMenu), main_menu::setup_main_menu)
            .add_systems(OnExit(GameState::MainMenu), main_menu::cleanup_main_menu)
            

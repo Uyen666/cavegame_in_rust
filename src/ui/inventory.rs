@@ -39,6 +39,15 @@ pub struct SlotIconNode {
 #[derive(Component)]
 pub struct CarriedItemTextNode;
 
+#[derive(Component)]
+pub struct FloatingCarriedItemNode;
+
+#[derive(Component)]
+pub struct FloatingCarriedIconNode;
+
+#[derive(Component)]
+pub struct FloatingCarriedCountNode;
+
 pub fn setup_inventory_screen(mut commands: Commands) {
     // 全螢幕遮罩根節點 (預設隱藏)
     commands.spawn((
@@ -166,6 +175,60 @@ pub fn setup_inventory_screen(mut commands: Commands) {
                 ..default()
             }));
         });
+
+        // 🚀 游標跟手浮動物品節點 (跟隨滑鼠游標絕對座標移動)
+        root.spawn((
+            NodeBundle {
+                style: Style {
+                    width: Val::Px(36.0),
+                    height: Val::Px(36.0),
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Px(0.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                focus_policy: bevy::ui::FocusPolicy::Pass,
+                z_index: ZIndex::Global(100),
+                visibility: Visibility::Hidden,
+                ..default()
+            },
+            FloatingCarriedItemNode,
+        )).with_children(|carried_node| {
+            // 跟手 3D/2D 圖示
+            carried_node.spawn((
+                ImageBundle {
+                    style: Style {
+                        width: Val::Px(32.0),
+                        height: Val::Px(32.0),
+                        ..default()
+                    },
+                    focus_policy: bevy::ui::FocusPolicy::Pass,
+                    image: UiImage::default(),
+                    ..default()
+                },
+                FloatingCarriedIconNode,
+            ));
+
+            // 跟手數量數字 (右下角)
+            carried_node.spawn((
+                TextBundle::from_section(
+                    "",
+                    TextStyle {
+                        font_size: 13.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ).with_style(Style {
+                    position_type: PositionType::Absolute,
+                    bottom: Val::Px(0.0),
+                    right: Val::Px(2.0),
+                    ..default()
+                }),
+                FloatingCarriedCountNode,
+            ));
+        });
     });
 }
 
@@ -187,12 +250,12 @@ fn spawn_slot_button(parent: &mut ChildBuilder, slot_index: usize) {
         },
         InventorySlotButton { slot_index },
     )).with_children(|slot| {
-        // 物品 2D 圖標 (Icon)
+        // 物品圖標 (Icon: 方塊為 3D 等角預覽，材料為 2D)
         slot.spawn((
             ImageBundle {
                 style: Style {
-                    width: Val::Px(28.0),
-                    height: Val::Px(28.0),
+                    width: Val::Px(32.0),
+                    height: Val::Px(32.0),
                     position_type: PositionType::Absolute,
                     ..default()
                 },
@@ -335,12 +398,16 @@ pub fn update_inventory_ui(
     q_player: Query<&Inventory>,
     registry: Res<ItemRegistry>,
     icon_reg: Option<Res<crate::ui::hud::ItemIconRegistry>>,
-    mut q_icons: Query<(&SlotIconNode, &mut UiImage, &mut Visibility)>,
-    mut q_item_texts: Query<(&SlotItemTextNode, &mut Text), (Without<SlotCountTextNode>, Without<CarriedItemTextNode>)>,
-    mut q_count_texts: Query<(&SlotCountTextNode, &mut Text), (Without<SlotItemTextNode>, Without<CarriedItemTextNode>)>,
-    mut q_dur_bars: Query<(&SlotDurabilityBarNode, &mut Style, &mut BackgroundColor, &mut Visibility), (Without<SlotIconNode>, Without<SlotItemTextNode>)>,
-    mut q_carried_text: Query<&mut Text, (With<CarriedItemTextNode>, Without<SlotItemTextNode>, Without<SlotCountTextNode>)>,
+    q_windows: Query<&Window, With<PrimaryWindow>>,
+    mut q_icons: Query<(&SlotIconNode, &mut UiImage, &mut Visibility), Without<FloatingCarriedIconNode>>,
+    mut q_item_texts: Query<(&SlotItemTextNode, &mut Text), (Without<SlotCountTextNode>, Without<CarriedItemTextNode>, Without<FloatingCarriedCountNode>)>,
+    mut q_count_texts: Query<(&SlotCountTextNode, &mut Text), (Without<SlotItemTextNode>, Without<CarriedItemTextNode>, Without<FloatingCarriedCountNode>)>,
+    mut q_dur_bars: Query<(&SlotDurabilityBarNode, &mut Style, &mut BackgroundColor, &mut Visibility), (Without<SlotIconNode>, Without<SlotItemTextNode>, Without<FloatingCarriedItemNode>)>,
+    mut q_carried_text: Query<&mut Text, (With<CarriedItemTextNode>, Without<SlotItemTextNode>, Without<SlotCountTextNode>, Without<FloatingCarriedCountNode>)>,
     q_hovered_slots: Query<(&InventorySlotButton, &Interaction)>,
+    mut q_floating_node: Query<(&mut Style, &mut Visibility), (With<FloatingCarriedItemNode>, Without<SlotDurabilityBarNode>)>,
+    mut q_floating_icon: Query<&mut UiImage, (With<FloatingCarriedIconNode>, Without<SlotIconNode>)>,
+    mut q_floating_count: Query<&mut Text, (With<FloatingCarriedCountNode>, Without<SlotItemTextNode>, Without<SlotCountTextNode>, Without<CarriedItemTextNode>)>,
 ) {
     if !state.is_open {
         return;
@@ -462,6 +529,42 @@ pub fn update_inventory_ui(
         }
         *vis = Visibility::Hidden;
     }
+
+    // 6. 🚀 游標跟手浮動物品更新 (緊跟滑鼠游標絕對座標移動)
+    if let Ok((mut float_style, mut float_vis)) = q_floating_node.get_single_mut() {
+        if let Some(ref carried) = inventory.carried_item {
+            let cursor_pos = q_windows.get_single().ok().and_then(|w| w.cursor_position());
+            if let Some(pos) = cursor_pos {
+                float_style.left = Val::Px(pos.x - 18.0);
+                float_style.top = Val::Px(pos.y - 18.0);
+                *float_vis = Visibility::Inherited;
+
+                if let Ok(mut icon_img) = q_floating_icon.get_single_mut() {
+                    if let Some(ref reg) = icon_reg {
+                        if let Some(icon_handle) = reg.icons.get(&carried.item_type) {
+                            icon_img.texture = icon_handle.clone();
+                            icon_img.color = Color::WHITE;
+                        } else {
+                            icon_img.texture = reg.fallback.clone();
+                            icon_img.color = Color::WHITE;
+                        }
+                    }
+                }
+
+                if let Ok(mut count_text) = q_floating_count.get_single_mut() {
+                    if carried.count > 1 {
+                        count_text.sections[0].value = format!("{}", carried.count);
+                    } else {
+                        count_text.sections[0].value = "".to_string();
+                    }
+                }
+            } else {
+                *float_vis = Visibility::Hidden;
+            }
+        } else {
+            *float_vis = Visibility::Hidden;
+        }
+    }
 }
 
 pub struct InventoryUiPlugin;
@@ -478,5 +581,38 @@ impl Plugin for InventoryUiPlugin {
                     update_inventory_ui,
                 ).run_if(in_state(GameState::InGame)),
             );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::item::{ItemStack, ItemType};
+
+    #[test]
+    fn test_all_11_preview_blocks_have_item_types() {
+        for &block in crate::ui::hud::PREVIEW_BLOCKS {
+            let item = ItemType::from_block(block);
+            assert!(item.is_some(), "所有預覽方塊 {:?} 必須具有對應的 ItemType", block);
+        }
+    }
+
+    #[test]
+    fn test_carried_item_return_and_slot_swap() {
+        let registry = ItemRegistry::default();
+        let mut inv = Inventory::new(36);
+        inv.set_slot(0, Some(ItemStack::new(ItemType::Dirt, 32, &registry)));
+
+        // 點擊 slot 0 拿起物品
+        inv.click_slot(0, &registry);
+        assert!(inv.slot(0).is_none(), "點擊後原格子應被清空");
+        let carried = inv.carried_item.as_ref().expect("游標應手持拿起的物品");
+        assert_eq!(carried.item_type, ItemType::Dirt);
+        assert_eq!(carried.count, 32);
+
+        // 關閉背包時自動歸還
+        inv.return_carried_item(&registry);
+        assert!(inv.carried_item.is_none(), "歸還後游標手持應為 None");
+        assert_eq!(inv.slot(0).as_ref().map(|s| s.count), Some(32), "物品應歸還至第 0 格");
     }
 }

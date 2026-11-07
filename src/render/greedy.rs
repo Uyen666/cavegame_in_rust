@@ -565,33 +565,45 @@ fn generate_greedy_mesh(
         let mask_len = (CHUNK_SIZE * CHUNK_SIZE) as usize;
         let mut mask = vec![None::<FaceInfo>; mask_len];
 
-        for slice in -1..chunk_size_i {
-            let mut n = 0usize;
-            for j in 0..chunk_size_i {
-                for i in 0..chunk_size_i {
-                    let mut x = [0i32; 3];
-                    x[d] = slice;
-                    x[u] = i;
-                    x[v] = j;
+        // 🚀 雙向獨立法線切面掃描 (Two-Way Directional Slice Pass)：
+        // 分別處理 normal_dir = +1 與 -1，使樹葉 (OakLeaves) 能享有正統 Fancy Leaves 茂密內部渲染，杜絕空心穿透！
+        for normal_dir in [1i32, -1i32] {
+            for slice in -1..chunk_size_i {
+                let mut n = 0usize;
+                for j in 0..chunk_size_i {
+                    for i in 0..chunk_size_i {
+                        let mut x = [0i32; 3];
+                        x[d] = slice;
+                        x[u] = i;
+                        x[v] = j;
 
-                    let gp0 = chunk_pos * chunk_size_i + IVec3::new(x[0], x[1], x[2]);
-                    let gp1 = chunk_pos * chunk_size_i + IVec3::new(x[0] + q[0], x[1] + q[1], x[2] + q[2]);
-                    
-                    let b0 = world.get_block_global(gp0);
-                    let b1 = world.get_block_global(gp1);
+                        let gp0 = chunk_pos * chunk_size_i + IVec3::new(x[0], x[1], x[2]);
+                        let gp1 = chunk_pos * chunk_size_i + IVec3::new(x[0] + q[0], x[1] + q[1], x[2] + q[2]);
+                        
+                        let b0 = world.get_block_global(gp0);
+                        let b1 = world.get_block_global(gp1);
 
-                    let (gp_air, block, normal) = {
-                        let b0_draws_towards_b1 = (b0 != BlockType::Air && !b0.is_torch()) && (b1 == BlockType::Air || b1.is_torch() || !b1.is_opaque()) && !(b0 == b1 && !b0.is_opaque());
-                        let b1_draws_towards_b0 = (b1 != BlockType::Air && !b1.is_torch()) && (b0 == BlockType::Air || b0.is_torch() || !b0.is_opaque()) && !(b0 == b1 && !b0.is_opaque());
-
-                        if b0_draws_towards_b1 && slice >= 0 {
-                            (gp1, b0, 1)
-                        } else if b1_draws_towards_b0 && slice < chunk_size_i - 1 {
-                            (gp0, b1, -1)
+                        let (gp_air, block, normal) = if normal_dir == 1 {
+                            // b0 朝向 b1 繪製 (+1 面)
+                            let draws = (b0 != BlockType::Air && !b0.is_torch())
+                                && (b1 == BlockType::Air || b1.is_torch() || !b1.is_opaque() || (b0 == BlockType::OakLeaves && b1 == BlockType::OakLeaves))
+                                && !(b0 == b1 && b0 == BlockType::Glass);
+                            if draws && slice >= 0 {
+                                (if b1 == BlockType::OakLeaves { gp0 } else { gp1 }, b0, 1)
+                            } else {
+                                (IVec3::ZERO, BlockType::Air, 0)
+                            }
                         } else {
-                            (IVec3::ZERO, BlockType::Air, 0)
-                        }
-                    };
+                            // b1 朝向 b0 繪製 (-1 面)
+                            let draws = (b1 != BlockType::Air && !b1.is_torch())
+                                && (b0 == BlockType::Air || b0.is_torch() || !b0.is_opaque() || (b0 == BlockType::OakLeaves && b1 == BlockType::OakLeaves))
+                                && !(b0 == b1 && b0 == BlockType::Glass);
+                            if draws && slice < chunk_size_i - 1 {
+                                (if b0 == BlockType::OakLeaves { gp1 } else { gp0 }, b1, -1)
+                            } else {
+                                (IVec3::ZERO, BlockType::Air, 0)
+                            }
+                        };
 
                     if block != BlockType::Air {
                         let tex_layer = get_texture_layer(block, d, normal);
@@ -745,6 +757,7 @@ fn generate_greedy_mesh(
             }
         }
     }
+}
 
     // 🚀 生成火把的獨立幾何體 (Slim Torch Model)
     for z in 0..32 {
@@ -1610,6 +1623,41 @@ mod tests {
         assert_eq!(mesh.count_vertices(), 40, "複合網格應正確剔除兩原木接觸的內部面");
         let indices = mesh.indices().expect("Indices must exist");
         assert_eq!(indices.len(), 60, "10 面 * 2 三角形 * 3 索引 = 60");
+    }
+
+    #[test]
+    fn test_fancy_leaves_preserves_faces_between_adjacent_leaves() {
+        let chunk_pos = IVec3::new(0, 0, 0);
+        let mut blocks = [const { None }; 27];
+        let fluids = [const { None }; 27];
+        let lights = [const { None }; 27];
+        let center_idx = 13;
+
+        let mut block_buf = crate::world::generator::ChunkBuffer { blocks: [BlockType::Air; 32768] };
+        // 在 y=10 放置 2 個相鄰的樹葉方塊 (x=10, z=10) 與 (x=11, z=10)
+        let idx0 = crate::utils::math::voxel_pos_to_index(10, 10, 10);
+        let idx1 = crate::utils::math::voxel_pos_to_index(11, 10, 10);
+        block_buf.blocks[idx0] = BlockType::OakLeaves;
+        block_buf.blocks[idx1] = BlockType::OakLeaves;
+        blocks[center_idx] = Some(std::sync::Arc::new(block_buf));
+
+        let input_data = ChunkMeshInputData {
+            chunk_pos,
+            blocks,
+            fluids,
+            lights,
+            surface_heights: Some(Box::new([100; 1156])),
+        };
+
+        let mut out = (Vec::new(), Vec::new(), Vec::new());
+        generate_greedy_mesh(Entity::PLACEHOLDER, chunk_pos, &input_data, false, &mut out, true);
+
+        // 驗證貪婪網格生成：
+        // 外部面（+Y, -Y, +Z, -Z）各被貪婪合併為 2x1 quad（共 4 個 quad = 16 頂點）
+        // 兩端外側面（-X, +X）各為 1x1 quad（共 2 個 quad = 8 頂點）
+        // 樹葉交界內部面（+X 朝右，-X 朝左）完整保留雙向面片（共 2 個 quad = 8 頂點）
+        // 總計 8 個 quad = 32 個頂點 (若被舊版內部剔除則僅剩 6 個 quad = 24 頂點)
+        assert_eq!(out.0.len(), 32, "Fancy Leaves 必須在相鄰樹葉之間保留雙向面片 (包含外圍合併共 32 頂點)");
     }
 }
 

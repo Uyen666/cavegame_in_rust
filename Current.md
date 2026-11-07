@@ -324,3 +324,21 @@ src/
 - **8/8 通用 Entity 物理組件化**: 將原先綁定於 Player 的運動學、流體感測與 Swept AABB 碰撞消解解耦，封裝為獨立的 PhysicsPlugin。透過 RigidBody、AabbCollider、Velocity 等元件，實現支援多軸同步消解、Safewalk 防跌落與旁觀者模式切換之通用 ECS 物理架構。
 
 - **8/8 重大 Bug 熱修復**: 修正了 greedy.rs 流體網格打包資料（Packed Data）的 Bit Shifts 偏差與溢位，徹底消滅了水體渲染產生的 GPU 頂點爆炸尖刺；並重構了 WorldManager::set_fluid_global 的 Chunk 邊界連動髒污標記機制，確保流體動態即時烘焙；同時擴增了 FluidSensor 的全範圍 AABB 掃描，還原了精確的流體浮力互動。
+
+- **10/2 樹冠正統 Fancy Leaves 濃密渲染、背包全方塊 3D 等軸預覽統一與游標跟手拖拽系統 (Fancy Leaves, Unified 3D Isometric Inventory & Cursor-Following Dragging)**:
+  - **樹冠正統 Fancy Leaves 雙向切面掃描 (Two-Way Directional Slice Pass)**:
+    - 徹底根治樹葉在開啟 Alpha Discard 後內部被貪婪網格粗暴剔除導致的「空心薄殼」問題；
+    - 在 `src/render/greedy.rs` 將切片掃描重構為 `for normal_dir in [1i32, -1i32]` 雙向獨立掃描：當相鄰兩個方塊均為樹葉 (`OakLeaves`) 時，+1 與 -1 側均生成獨立面片，透過鏤空孔隙層層疊疊展示內部深邃繁茂枝葉，還原 Minecraft 原版 Fancy Graphics 視覺效果；
+    - 同時維持玻璃內部相鄰面的剔除 (`b0 == b1 && b0 == Glass`) 與非樹葉固體方塊的面剔除，效能與視覺兼具。
+  - **大背包與 Hotbar 全面統一 3D 等角等軸立體方塊展示 (Unified 3D Isometric Block Previews)**:
+    - 在 `src/ui/hud.rs` 啟動階段為遊戲中全部 11 種方塊（Stone, Dirt, Grass, OakLog, OakLeaves, Sand, Gravel, CoalOre, IronOre, Glass, Torch）配置等角 3D 離屏渲染攝影棚 (`Block3dPreviewRegistry`)；
+    - 透過 `.chain()` 依序傳入 `setup_item_icons`，將 11 種方塊的 3D 渲染圖注入 `ItemIconRegistry.icons`；
+    - 大背包（Inventory）36 格自動享有與 Hotbar 完全一致的精美 3D 等角方塊，格子圖標升級為 32x32 滿幅顯示，同時自動隱藏粗糙英文簡寫文字；材料與工具則維持官方 2D 圖示。
+  - **滑鼠拖拽即時跟手系統 (Real-time Cursor-Following Dragging)**:
+    - 實裝 `FloatingCarriedItemNode`，包含 `FloatingCarriedIconNode` 與 `FloatingCarriedCountNode`，層級為 `ZIndex::Global(100)`；
+    - 在 `update_inventory_ui` 中即時取得 `window.cursor_position()`，手持物品時無延遲將 3D/2D 圖示與數量文字精確定位至游標尖端 (`pos.x - 18.0, pos.y - 18.0`)；
+    - 全節點配置 `FocusPolicy::Pass`，滑鼠點擊判定無阻礙穿透至底層背包格子按鈕，達成流暢跟手拖拽與精準放置交互；手持為空或關閉背包時自動隱藏並歸還。
+  - **單元測試全數驗證通過**:
+    - 新增 `test_fancy_leaves_preserves_faces_between_adjacent_leaves`（驗證相鄰樹葉保留雙向內部面片與外圍貪婪合併）；
+    - 新增 `test_all_11_preview_blocks_have_item_types` 與 `test_carried_item_return_and_slot_swap`；
+    - 全專案 59 項單元測試 100% 通過，`cargo check` 0 警告、0 錯誤。

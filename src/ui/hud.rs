@@ -100,6 +100,25 @@ pub struct UiPreviewMesh {
     pub current_block: BlockType,
 }
 
+pub const PREVIEW_BLOCKS: &[BlockType] = &[
+    BlockType::Stone,
+    BlockType::Dirt,
+    BlockType::Grass,
+    BlockType::OakLog,
+    BlockType::OakLeaves,
+    BlockType::Sand,
+    BlockType::Gravel,
+    BlockType::CoalOre,
+    BlockType::IronOre,
+    BlockType::Glass,
+    BlockType::Torch,
+];
+
+#[derive(Resource, Default)]
+pub struct Block3dPreviewRegistry {
+    pub map: std::collections::HashMap<BlockType, Handle<Image>>,
+}
+
 #[derive(Resource)]
 pub struct Ui3dPreviewImages(pub Vec<Handle<Image>>);
 
@@ -116,6 +135,7 @@ pub fn setup_ui_3d_preview(
     let layer = RenderLayers::layer(1);
     let mut image_handles = Vec::new();
 
+    // 1. 保留原本 Hotbar 9 格動態離屏預覽
     for i in 0..9 {
         let size = Extent3d { width: 128, height: 128, depth_or_array_layers: 1 };
         let mut image = Image {
@@ -170,6 +190,59 @@ pub fn setup_ui_3d_preview(
         ));
     }
 
+    // 2. 🚀 為全遊戲 11 種方塊建立靜態 3D 等角預覽攝影棚 (供大背包與游標手持展示)
+    let mut block_preview_map = std::collections::HashMap::new();
+    for (idx, &block) in PREVIEW_BLOCKS.iter().enumerate() {
+        let size = Extent3d { width: 128, height: 128, depth_or_array_layers: 1 };
+        let mut image = Image {
+            texture_descriptor: TextureDescriptor {
+                label: Some("Block 3D Static Render Target"),
+                size,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Bgra8UnormSrgb,
+                mip_level_count: 1,
+                sample_count: 1,
+                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            },
+            ..default()
+        };
+        image.resize(size);
+        let image_handle = images.add(image);
+        block_preview_map.insert(block, image_handle.clone());
+
+        let offset_x = (10 + idx) as f32 * 10.0;
+
+        commands.spawn((
+            Camera3dBundle {
+                camera: Camera {
+                    order: -1,
+                    target: RenderTarget::Image(image_handle),
+                    clear_color: ClearColorConfig::Custom(Color::NONE),
+                    ..default()
+                },
+                projection: Projection::Orthographic(OrthographicProjection {
+                    scale: 0.65,
+                    scaling_mode: bevy::render::camera::ScalingMode::FixedVertical(2.5),
+                    ..default()
+                }),
+                transform: Transform::from_xyz(1.8 + offset_x, 1.8, 1.8).looking_at(Vec3::new(0.5 + offset_x, 0.5, 0.5), Vec3::Y),
+                ..default()
+            },
+            layer.clone(),
+        ));
+
+        commands.spawn((
+            MaterialMeshBundle {
+                mesh: meshes.add(crate::render::greedy::build_single_voxel_mesh(block)),
+                material: textures.material.clone(),
+                transform: Transform::from_xyz(offset_x, 0.0, 0.0),
+                ..default()
+            },
+            layer.clone(),
+        ));
+    }
+
     // Directional Light
     commands.spawn((
         DirectionalLightBundle {
@@ -185,6 +258,7 @@ pub fn setup_ui_3d_preview(
     ));
 
     commands.insert_resource(Ui3dPreviewImages(image_handles));
+    commands.insert_resource(Block3dPreviewRegistry { map: block_preview_map });
 }
 
 #[derive(Resource, Default)]
@@ -196,6 +270,7 @@ pub struct ItemIconRegistry {
 pub fn setup_item_icons(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
+    block_previews: Res<Block3dPreviewRegistry>,
 ) {
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
     use bevy::render::texture::{ImageSampler, ImageSamplerDescriptor, ImageAddressMode, ImageFilterMode};
@@ -325,18 +400,14 @@ pub fn setup_item_icons(
     icon_map.insert(ItemType::StoneShovel, get_icon(&mut zip_archive, &mut images, "stone_shovel", pickaxe_fallback.clone()));
     icon_map.insert(ItemType::IronShovel, get_icon(&mut zip_archive, &mut images, "iron_shovel", pickaxe_fallback.clone()));
 
-    // 🚀 方塊類物品 2D 圖示註冊 (全數從 resource_pack.zip/textures/block/ 載入)
-    icon_map.insert(ItemType::Stone, get_icon(&mut zip_archive, &mut images, "stone", pickaxe_fallback.clone()));
-    icon_map.insert(ItemType::Dirt, get_icon(&mut zip_archive, &mut images, "dirt", pickaxe_fallback.clone()));
-    icon_map.insert(ItemType::Grass, get_icon(&mut zip_archive, &mut images, "grass_block_side", pickaxe_fallback.clone()));
-    icon_map.insert(ItemType::OakLog, get_icon(&mut zip_archive, &mut images, "oak_log", pickaxe_fallback.clone()));
-    icon_map.insert(ItemType::OakLeaves, get_icon(&mut zip_archive, &mut images, "oak_leaves", pickaxe_fallback.clone()));
-    icon_map.insert(ItemType::Sand, get_icon(&mut zip_archive, &mut images, "sand", pickaxe_fallback.clone()));
-    icon_map.insert(ItemType::Gravel, get_icon(&mut zip_archive, &mut images, "gravel", pickaxe_fallback.clone()));
-    icon_map.insert(ItemType::CoalOre, get_icon(&mut zip_archive, &mut images, "coal_ore", pickaxe_fallback.clone()));
-    icon_map.insert(ItemType::IronOre, get_icon(&mut zip_archive, &mut images, "iron_ore", pickaxe_fallback.clone()));
-    icon_map.insert(ItemType::Glass, get_icon(&mut zip_archive, &mut images, "glass", pickaxe_fallback.clone()));
-    icon_map.insert(ItemType::Torch, get_icon(&mut zip_archive, &mut images, "torch", pickaxe_fallback.clone()));
+    // 🚀 方塊類物品優先注入等角 3D 渲染圖，使背包與 Hotbar 達到極致立體統一
+    for &block in PREVIEW_BLOCKS {
+        if let Some(handle) = block_previews.map.get(&block) {
+            if let Some(item) = ItemType::from_block(block) {
+                icon_map.insert(item, handle.clone());
+            }
+        }
+    }
 
     commands.insert_resource(ItemIconRegistry {
         icons: icon_map,
