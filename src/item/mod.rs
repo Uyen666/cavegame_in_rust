@@ -481,10 +481,8 @@ pub fn spawn_item_drop(
     let mesh = meshes.add(crate::render::greedy::build_single_voxel_mesh(block));
     let random_yaw = ((pos.x * 37.0 + pos.z * 19.0 + pos.y * 11.0).sin() * 3.14159).abs();
     commands.spawn((
-        MaterialMeshBundle {
-            mesh,
-            material,
-            transform: Transform::from_translation(pos).with_scale(scale),
+        SpatialBundle {
+            transform: Transform::from_translation(pos),
             ..default()
         },
         ItemDrop {
@@ -497,7 +495,16 @@ pub fn spawn_item_drop(
             roll_angle: 0.0,
             current_voxel: IVec3::splat(i32::MIN), // 強制首幀立即採樣世界真實光照
         },
-    )).id()
+        mesh.clone(),
+    )).with_children(|parent| {
+        // 透過 -0.5 * scale 局部偏移將體素模型 [0, 1] 原點置中，使所有旋轉與翻滾皆以物品物理質心為軸心！
+        parent.spawn(MaterialMeshBundle {
+            mesh,
+            material,
+            transform: Transform::from_translation(-0.5 * scale).with_scale(scale),
+            ..default()
+        });
+    }).id()
 }
 
 pub fn update_item_drops(
@@ -556,13 +563,20 @@ pub fn update_item_drops(
         // 3. 水體浮力與阻力 (Fluid Physics / Dropz Buoyancy)
         let is_in_water = world.get_fluid_global(cur_voxel) > 0;
         if is_in_water {
+            drop.on_ground = false;
             // 水中阻力減速
             drop.velocity *= (1.0 - 3.0 * dt).max(0.0);
             let is_buoyant = matches!(drop.item_stack.item_type, ItemType::Stick | ItemType::OakLog | ItemType::OakLeaves);
             if is_buoyant {
-                // 木質浮力：迅速浮向水面
-                drop.velocity.y += 18.0 * dt;
-                drop.velocity.y = drop.velocity.y.min(1.5);
+                // 木質浮力：浮向水面
+                let voxel_above = cur_voxel + IVec3::Y;
+                let is_water_surface = world.get_fluid_global(voxel_above) == 0;
+                if is_water_surface && transform.translation.y >= cur_voxel.y as f32 + 0.85 {
+                    drop.velocity.y = (cur_voxel.y as f32 + 0.85 - transform.translation.y) * 3.0;
+                } else {
+                    drop.velocity.y += 18.0 * dt;
+                    drop.velocity.y = drop.velocity.y.min(1.5);
+                }
             } else {
                 // 重物緩慢沉底
                 drop.velocity.y -= 4.0 * dt;
@@ -574,13 +588,13 @@ pub fn update_item_drops(
             drop.velocity.y = drop.velocity.y.max(-20.0);
         }
 
-        // 4. 全向 3D 體素 AABB 碰撞與防穿牆 (Voxel AABB Wall Rebound & Ground Collision)
+        // 4. 全向 3D 體素 AABB 碰撞與地面檢測 (Voxel AABB Wall Rebound & Ground Collision)
         // (a) X 軸水平碰撞
         if drop.velocity.x.abs() > 0.001 {
             let next_x = transform.translation.x + drop.velocity.x * dt;
             let check_x_voxel = IVec3::new(
                 (if drop.velocity.x > 0.0 { next_x + radius } else { next_x - radius }).floor() as i32,
-                (transform.translation.y).floor() as i32,
+                transform.translation.y.floor() as i32,
                 transform.translation.z.floor() as i32,
             );
             if world.get_block_global(check_x_voxel).is_solid() {
@@ -595,7 +609,7 @@ pub fn update_item_drops(
             let next_z = transform.translation.z + drop.velocity.z * dt;
             let check_z_voxel = IVec3::new(
                 transform.translation.x.floor() as i32,
-                (transform.translation.y).floor() as i32,
+                transform.translation.y.floor() as i32,
                 (if drop.velocity.z > 0.0 { next_z + radius } else { next_z - radius }).floor() as i32,
             );
             if world.get_block_global(check_z_voxel).is_solid() {
@@ -605,40 +619,81 @@ pub fn update_item_drops(
             }
         }
 
-        // (c) Y 軸垂直地面碰撞
-        let next_y = transform.translation.y + drop.velocity.y * dt;
-        let foot_voxel = IVec3::new(
-            transform.translation.x.floor() as i32,
-            (next_y - half_h).floor() as i32,
-            transform.translation.z.floor() as i32,
-        );
-        let block_below = world.get_block_global(foot_voxel);
-        if block_below.is_solid() {
-            let floor_y = foot_voxel.y as f32 + 1.0;
-            transform.translation.y = floor_y + half_h;
-            if drop.velocity.y < -3.5 {
-                drop.velocity.y = -drop.velocity.y * 0.22; // 著地小彈跳
-            } else {
+        // (c) Y 軸垂直地面碰撞與著地穩定維持 (Stable Ground Resting)
+        if drop.on_ground {
+            // 已在地面：探測腳底下方支撐體素 (向下探測 0.05 格，防止邊界浮點數向下取整跳變)
+            let support_voxel = IVec3::new(
+                transform.translation.x.floor() as i32,
+                (transform.translation.y - half_h - 0.05).floor() as i32,
+                transform.translation.z.floor() as i32,
+            );
+            let support_block = world.get_block_global(support_voxel);
+            if support_block.is_solid() {
+                let floor_y = support_voxel.y as f32 + 1.0;
+                transform.translation.y = floor_y + half_h;
                 drop.velocity.y = 0.0;
-                drop.on_ground = true;
+                drop.velocity.x *= 0.65;
+                drop.velocity.z *= 0.65;
+                if drop.velocity.length_squared() < 0.001 {
+                    drop.velocity = Vec3::ZERO;
+                }
+            } else {
+                drop.on_ground = false;
             }
-            drop.velocity.x *= 0.65;
-            drop.velocity.z *= 0.65;
         } else {
-            transform.translation.y = next_y;
-            drop.on_ground = false;
-        }
-
-        if drop.on_ground {
-            drop.velocity.x *= 0.7;
-            drop.velocity.z *= 0.7;
-            if drop.velocity.length_squared() < 0.001 {
-                drop.velocity = Vec3::ZERO;
+            let next_y = transform.translation.y + drop.velocity.y * dt;
+            let foot_voxel = IVec3::new(
+                transform.translation.x.floor() as i32,
+                (next_y - half_h).floor() as i32,
+                transform.translation.z.floor() as i32,
+            );
+            let block_below = world.get_block_global(foot_voxel);
+            if block_below.is_solid() {
+                let floor_y = foot_voxel.y as f32 + 1.0;
+                transform.translation.y = floor_y + half_h;
+                if drop.velocity.y < -3.5 {
+                    drop.velocity.y = -drop.velocity.y * 0.22; // 著地小彈跳
+                } else {
+                    drop.velocity.y = 0.0;
+                    drop.on_ground = true;
+                }
+                drop.velocity.x *= 0.65;
+                drop.velocity.z *= 0.65;
+            } else {
+                transform.translation.y = next_y;
             }
         }
 
-        // 5. 寫實平躺伏地視覺 (Dropz Flat Resting)
-        if drop.on_ground {
+        // 5. 磁吸拾取 (半徑 1.8 格)
+        let mut being_magnetized = false;
+        if !player.is_spectator && drop.pickup_delay <= 0.0 {
+            let dist = transform.translation.distance(player_head);
+            if dist <= 1.8 {
+                being_magnetized = true;
+                drop.on_ground = false; // 喚醒吸附
+                let dir = (player_head - transform.translation).normalize_or_zero();
+                let move_dist = (9.0 * dt).min(dist);
+                transform.translation += dir * move_dist;
+
+                let current_dist = transform.translation.distance(player_head);
+                if current_dist <= 0.45 {
+                    if let Some(overflow) = inventory.add_item(drop.item_stack.clone(), &registry) {
+                        drop.item_stack = overflow;
+                    } else {
+                        // 全數拾取完畢
+                        let color = crate::render::particles::get_block_debris_color(
+                            drop.item_stack.item_type.to_block().unwrap_or(BlockType::OakLog)
+                        );
+                        particle_mgr.spawn_debris(transform.translation, color, 4);
+                        commands.entity(entity).despawn_recursive();
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // 6. 寫實平躺伏地視覺 (Dropz Flat Resting)
+        if drop.on_ground && !being_magnetized {
             if is_stick {
                 // 木棒橫臥平躺於地面，不再豎直自轉
                 let flat_rot = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
@@ -995,6 +1050,23 @@ mod tests {
         let block_trans = world.get::<Transform>(block_ent).unwrap();
         assert!(block_drop.on_ground, "方塊著地後應穩固休止");
         assert!((block_trans.translation.y - 1.14).abs() < 0.01, "方塊坐落高度應為 1.14 (floor 1.0 + half_h 0.14)");
+
+        // 🔥 關鍵防線：連續推進 30 個 tick (模擬 60Hz 運行 0.5 秒)，嚴格驗證 on_ground 恆定為 true，絕不出現邊界跳變或雙重虛影 (Zero-Flicker Ground Stability)
+        for tick in 0..30 {
+            let mut time = world.resource_mut::<Time>();
+            time.advance_by(std::time::Duration::from_millis(16));
+            schedule.run(&mut world);
+
+            let s_drop = world.get::<ItemDrop>(stick_ent).unwrap();
+            let b_drop = world.get::<ItemDrop>(block_ent).unwrap();
+            let s_trans = world.get::<Transform>(stick_ent).unwrap();
+            let b_trans = world.get::<Transform>(block_ent).unwrap();
+
+            assert!(s_drop.on_ground, "第 {} tick 木棒應穩定伏地，絕不允許閃爍/跳變為空中翻滾狀態 (導致虛影)", tick);
+            assert!(b_drop.on_ground, "第 {} tick 方塊應穩定就坐，絕不允許閃爍/跳變為空中翻滾狀態 (導致虛影)", tick);
+            assert!((s_trans.translation.y - 1.04).abs() < 0.001, "木棒伏地高度應精準維持 1.04，不可上下抖動");
+            assert!((b_trans.translation.y - 1.14).abs() < 0.001, "方塊伏地高度應精準維持 1.14，不可上下抖動");
+        }
     }
 
     #[test]
