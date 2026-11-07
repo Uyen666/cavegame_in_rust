@@ -1,10 +1,32 @@
+# Rust / Cargo
 /target
+Cargo.lock.bak
+**/*.rs.bk
+
+# Game saves & runtime logs
 /saves
-/.vscode
 *.log
+crash.log
+panic.log
 expanded.rs
+
+# Editor & IDE configs
+/.vscode
+/.idea
+*.swp
+*.swo
+*~
+
+# Agent & workspace artifacts
+/.gemini
+/.antigravity
+
+# OS generated files
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Environment and secrets
 *.env
 *.env.*
 *.secret

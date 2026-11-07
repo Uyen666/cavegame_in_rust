@@ -74,12 +74,16 @@ impl ItemType {
     }
 }
 
+pub const DROP_ITEM_ID_COAL: u16 = 100;
+pub const DROP_ITEM_ID_IRON_INGOT: u16 = 101;
+pub const DROP_ITEM_ID_STICK: u16 = 102;
+
 pub fn get_block_drop(block: BlockType) -> Option<ItemType> {
     match block.drop_table() {
         DropTable::None => None,
         DropTable::ItemDrop { item_id, .. } => match item_id {
-            100 => Some(ItemType::Coal),
-            102 => Some(ItemType::Stick),
+            DROP_ITEM_ID_COAL => Some(ItemType::Coal),
+            DROP_ITEM_ID_STICK => Some(ItemType::Stick),
             _ => None,
         },
         _ => match block {

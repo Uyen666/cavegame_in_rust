@@ -1,4 +1,4 @@
-﻿use bevy::prelude::*;
+use bevy::prelude::*;
 use bevy::input::mouse::MouseMotion;
 use bevy::window::{CursorGrabMode, PrimaryWindow};
 use std::f32::consts::FRAC_PI_2;
@@ -106,6 +106,22 @@ pub struct Player {
     pub mining_target: Option<IVec3>, // 🚀 當前採掘方塊座標
     pub mining_progress: f32,          // 🚀 採掘進度 (0.0 ~ 1.0)
     pub mining_hit_timer: f32,         // 🚀 碎屑噴濺計時器
+}
+
+impl Player {
+    #[inline]
+    pub fn reset_mining(&mut self) {
+        self.mining_target = None;
+        self.mining_progress = 0.0;
+        self.mining_hit_timer = 0.0;
+    }
+
+    #[inline]
+    pub fn start_mining(&mut self, pos: IVec3) {
+        self.mining_target = Some(pos);
+        self.mining_progress = 0.0;
+        self.mining_hit_timer = 0.0;
+    }
 }
 
 impl Default for Player {
@@ -506,6 +522,47 @@ pub fn player_move(
     }
 }
 
+#[inline]
+fn resolve_torch_placement(normal: IVec3) -> BlockType {
+    if normal == IVec3::Y {
+        BlockType::Torch
+    } else if normal == IVec3::X {
+        BlockType::TorchWallW
+    } else if normal == IVec3::NEG_X {
+        BlockType::TorchWallE
+    } else if normal == IVec3::Z {
+        BlockType::TorchWallN
+    } else if normal == IVec3::NEG_Z {
+        BlockType::TorchWallS
+    } else {
+        BlockType::Air
+    }
+}
+
+#[inline]
+fn enqueue_fluid_neighbors(world: &mut WorldManager, pos: IVec3) {
+    world.fluid_queue.push_back(pos);
+    for dir in [IVec3::Y, IVec3::NEG_Y, IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
+        world.fluid_queue.push_back(pos + dir);
+    }
+}
+
+fn handle_flint_spark_crafting(
+    spark_pos: Vec3,
+    inventory: &mut Inventory,
+    registry: &ItemRegistry,
+    particle_mgr: &mut crate::render::particles::ParticleManager,
+) {
+    particle_mgr.spawn_debris(spark_pos, Color::srgb_u8(255, 190, 40), 6);
+    if inventory.consume_item(ItemType::Stick, 1) {
+        if inventory.consume_item(ItemType::Coal, 1) {
+            inventory.add_item(ItemStack::new(ItemType::Torch, 4, registry), registry);
+            particle_mgr.spawn_debris(spark_pos, Color::srgb_u8(255, 120, 20), 14);
+        } else {
+            inventory.add_item(ItemStack::new(ItemType::Stick, 1, registry), registry);
+        }
+    }
+}
 
 fn player_interaction(
     mut commands: Commands,
@@ -538,9 +595,7 @@ fn player_interaction(
     let key_f = kbd_keys.just_pressed(KeyCode::KeyF);
 
     if !left_holding && !right && !key_f {
-        player.mining_target = None;
-        player.mining_progress = 0.0;
-        player.mining_hit_timer = 0.0;
+        player.reset_mining();
         return;
     }
 
@@ -574,15 +629,11 @@ fn player_interaction(
                     if let Some(drop_item) = get_block_drop(old_block) {
                         inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
                     }
-                    player.mining_target = None;
-                    player.mining_progress = 0.0;
-                    player.mining_hit_timer = 0.0;
+                    player.reset_mining();
                 } else {
                     // 🚀 具備硬度方塊：累積採掘進度
                     if player.mining_target != Some(block_pos) {
-                        player.mining_target = Some(block_pos);
-                        player.mining_progress = 0.0;
-                        player.mining_hit_timer = 0.0;
+                        player.start_mining(block_pos);
                     }
 
                     let mut speed_multiplier = 1.0;
@@ -669,9 +720,7 @@ fn player_interaction(
                         );
 
                         inventory.damage_selected_tool(1);
-                        player.mining_target = None;
-                        player.mining_progress = 0.0;
-                        player.mining_hit_timer = 0.0;
+                        player.reset_mining();
                     }
                 }
             } else if right {
@@ -705,24 +754,11 @@ fn player_interaction(
                             if let Some(def) = registry.get(selected_item.item_type) {
                                 if let ItemKind::Block(base_block) = def.kind {
                                     if selected_item.count > 0 {
-                                        let mut current_block = base_block;
-                                        if base_block == BlockType::Torch {
-                                            let diff = hit.normal;
-                                            if diff == IVec3::Y {
-                                                current_block = BlockType::Torch;
-                                            } else if diff == IVec3::X {
-                                                current_block = BlockType::TorchWallW;
-                                            } else if diff == IVec3::NEG_X {
-                                                current_block = BlockType::TorchWallE;
-                                            } else if diff == IVec3::Z {
-                                                current_block = BlockType::TorchWallN;
-                                            } else if diff == IVec3::NEG_Z {
-                                                current_block = BlockType::TorchWallS;
-                                            } else if diff == IVec3::NEG_Y {
-                                                // cannot place torch on ceiling
-                                                current_block = BlockType::Air;
-                                            }
-                                        }
+                                        let current_block = if base_block == BlockType::Torch {
+                                            resolve_torch_placement(hit.normal)
+                                        } else {
+                                            base_block
+                                        };
 
                                         if current_block != BlockType::Air {
                                             world.set_block_global(place_pos, current_block, &mut commands);
@@ -747,20 +783,12 @@ fn player_interaction(
                                         }
                                     }
                                 } else if selected_item.item_type == ItemType::Flint {
-                                    // 🚀 燧石擊打火花與火把引燃合成
-                                    let spark_pos = hit.adjacent_pos.as_vec3() + 0.5;
-                                    particle_mgr.spawn_debris(spark_pos, Color::srgb_u8(255, 190, 40), 6);
-
-                                    // 若背包擁有 Stick 與 Coal，點火合成 4 支火把！
-                                    if inventory.consume_item(ItemType::Stick, 1) {
-                                        if inventory.consume_item(ItemType::Coal, 1) {
-                                            inventory.add_item(ItemStack::new(ItemType::Torch, 4, &registry), &registry);
-                                            particle_mgr.spawn_debris(spark_pos, Color::srgb_u8(255, 120, 20), 14);
-                                        } else {
-                                            // 煤炭不足時返還 Stick
-                                            inventory.add_item(ItemStack::new(ItemType::Stick, 1, &registry), &registry);
-                                        }
-                                    }
+                                    handle_flint_spark_crafting(
+                                        hit.adjacent_pos.as_vec3() + 0.5,
+                                        &mut inventory,
+                                        &registry,
+                                        &mut particle_mgr,
+                                    );
                                 }
                             }
                         }
@@ -770,26 +798,18 @@ fn player_interaction(
                 println!("🚀 [Fluid Debug] F Key Pressed! Detecting raycast...");
                 if world.get_fluid_global(place_pos) > 0 {
                     world.set_fluid_global(place_pos, 0);
-                    world.fluid_queue.push_back(place_pos);
-                    for dir in [IVec3::Y, IVec3::NEG_Y, IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
-                        world.fluid_queue.push_back(place_pos + dir);
-                    }
+                    enqueue_fluid_neighbors(&mut world, place_pos);
                     println!("🌊 [Fluid Debug] Removed water at: {:?}", place_pos);
                 } else {
                     world.set_fluid_global(place_pos, crate::config::MAX_FLUID_LEVEL | 0x80);
-                    world.fluid_queue.push_back(place_pos);
-                    for dir in [IVec3::Y, IVec3::NEG_Y, IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
-                        world.fluid_queue.push_back(place_pos + dir);
-                    }
+                    enqueue_fluid_neighbors(&mut world, place_pos);
                     println!("🌊 [Fluid Debug] Successfully spawned water source at global pos: {:?}", place_pos);
                 }
             }
         }
 
         if !hit_any_target {
-            player.mining_target = None;
-            player.mining_progress = 0.0;
-            player.mining_hit_timer = 0.0;
+            player.reset_mining();
 
             if right {
                 let p_feet = IVec3::new(

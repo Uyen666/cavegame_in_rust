@@ -43,6 +43,7 @@ src/
     ├── generator.rs(工業級無狀態二階段地形管線：地形雕刻與 Fbm 噪音)
     ├── lighting.rs (光照子系統：天空光泛洪、方塊光與阻斷 BFS 重算)
     ├── registry.rs (數據驅動註冊表：BlockDefinition, BlockRegistry, BLOCK_DEFINITIONS 靜態無鎖表與 SixFaces 貼圖映射)
+    ├── soil.rs     (鬆散土壤垂直重力與安息角滑坡物理)
     ├── storage.rs  (手寫 RLE 壓縮與非同步硬碟讀寫，持久化存檔)
     ├── torch.rs    (火把 180s 燃盡熄滅生命週期、Phase 5a BFS 光源消除與黑煙碎屑)
     ├── tree.rs     (樹木 Timber 連鎖砍伐、葉落掉枝與空手樹幹重力滑落物理)

@@ -17,12 +17,11 @@ pub struct FallingTree {
     pub leaf_offsets: Vec<Vec3>,
 }
 
-/// 工業級樹木連鎖倒塌系統 (Timber Universal Tree Felling & Dynamic Topple System)
+/// 工業級樹木連鎖倒塌與重力滑落系統 (Tree Felling & Gravity System)
 /// 當原木被破壞時觸發：
 /// 1. 若使用斧頭 (can_harvest == true)：觸發 Timber 連鎖倒塌，整棵樹幹全數收穫為原木，樹冠崩解並掉落樹枝；
-/// 2. 若空手/非斧頭 (can_harvest == false)：整棵樹同樣連鎖倒塌（杜絕浮空樹木/重複滑落 bug），
-///    保底提供 1 塊原木與樹枝以利初期生存起步，其餘樹幹碎裂為木屑粒子。
-/// 3. 若提供視效資源 (visual_assets)，將整棵樹打包為單一複合網格實體，並生成 FallingTree 進行物理傾倒動畫！
+///    若提供視效資源 (visual_assets)，將整棵樹打包為單一複合網格實體，並生成 FallingTree 進行物理傾倒動畫！
+/// 2. 若空手/非斧頭 (can_harvest == false)：觸發重力滑落，無原木掉落，上方樹幹在重力作用下整齊下落 1 格，杜絕浮空樹木！
 pub fn handle_tree_break(
     world: &mut WorldManager,
     commands: &mut Commands,
@@ -65,130 +64,133 @@ pub fn handle_tree_break(
         }
     }
 
-    // 2. 收集受影響的樹葉 (以所有原木為中心廣域搜尋)
-    let mut leaves_to_decay = Vec::new();
-    let mut visited_leaves = HashSet::new();
-    for &lpos in &visited_logs {
-        for dy in -2..=3 {
-            for dx in -3..=3 {
-                for dz in -3..=3 {
-                    let leaf_pos = lpos + IVec3::new(dx, dy, dz);
-                    if !visited_leaves.contains(&leaf_pos) {
-                        visited_leaves.insert(leaf_pos);
-                        if world.get_block_global(leaf_pos) == BlockType::OakLeaves {
-                            leaves_to_decay.push(leaf_pos);
+    if can_harvest {
+        // ── 持斧採伐：連鎖倒塌收穫 (Timber Cascade) 與倒木傾倒動畫 ──
+        // 2. 收集受影響的樹葉 (以所有原木為中心廣域搜尋)
+        let mut leaves_to_decay = Vec::new();
+        let mut visited_leaves = HashSet::new();
+        for &lpos in &visited_logs {
+            for dy in -2..=3 {
+                for dx in -3..=3 {
+                    for dz in -3..=3 {
+                        let leaf_pos = lpos + IVec3::new(dx, dy, dz);
+                        if !visited_leaves.contains(&leaf_pos) {
+                            visited_leaves.insert(leaf_pos);
+                            if world.get_block_global(leaf_pos) == BlockType::OakLeaves {
+                                leaves_to_decay.push(leaf_pos);
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    let log_color = get_block_debris_color(BlockType::OakLog);
-    let leaf_color = get_block_debris_color(BlockType::OakLeaves);
+        let log_color = get_block_debris_color(BlockType::OakLog);
+        let leaf_color = get_block_debris_color(BlockType::OakLeaves);
 
-    // 3. 準備實體化倒木 (Falling Tree Entity) 之複合網格數據
-    let log_offsets: Vec<Vec3> = logs_to_process.iter().map(|&p| (p - broken_pos).as_vec3()).collect();
-    let leaf_offsets: Vec<Vec3> = leaves_to_decay.iter().map(|&p| (p - broken_pos).as_vec3()).collect();
+        // 3. 準備實體化倒木 (Falling Tree Entity) 之複合網格數據
+        let log_offsets: Vec<Vec3> = logs_to_process.iter().map(|&p| (p - broken_pos).as_vec3()).collect();
+        let leaf_offsets: Vec<Vec3> = leaves_to_decay.iter().map(|&p| (p - broken_pos).as_vec3()).collect();
 
-    if let Some((ref mut meshes, ref material)) = visual_assets {
-        let mut mesh_blocks = Vec::with_capacity(logs_to_process.len() + leaves_to_decay.len());
-        for &lpos in &logs_to_process {
-            let rel = lpos - broken_pos;
-            let local_p = rel + IVec3::new(16, 0, 16);
-            if local_p.x >= 0 && local_p.x <= 32 && local_p.y >= 0 && local_p.y <= 32 && local_p.z >= 0 && local_p.z <= 32 {
-                mesh_blocks.push((local_p, BlockType::OakLog));
+        if let Some((ref mut meshes, ref material)) = visual_assets {
+            let mut mesh_blocks = Vec::with_capacity(logs_to_process.len() + leaves_to_decay.len());
+            for &lpos in &logs_to_process {
+                let rel = lpos - broken_pos;
+                let local_p = rel + IVec3::new(16, 0, 16);
+                if local_p.x >= 0 && local_p.x <= 32 && local_p.y >= 0 && local_p.y <= 32 && local_p.z >= 0 && local_p.z <= 32 {
+                    mesh_blocks.push((local_p, BlockType::OakLog));
+                }
             }
-        }
-        for &leaf_pos in &leaves_to_decay {
-            let rel = leaf_pos - broken_pos;
-            let local_p = rel + IVec3::new(16, 0, 16);
-            if local_p.x >= 0 && local_p.x <= 32 && local_p.y >= 0 && local_p.y <= 32 && local_p.z >= 0 && local_p.z <= 32 {
-                mesh_blocks.push((local_p, BlockType::OakLeaves));
+            for &leaf_pos in &leaves_to_decay {
+                let rel = leaf_pos - broken_pos;
+                let local_p = rel + IVec3::new(16, 0, 16);
+                if local_p.x >= 0 && local_p.x <= 32 && local_p.y >= 0 && local_p.y <= 32 && local_p.z >= 0 && local_p.z <= 32 {
+                    mesh_blocks.push((local_p, BlockType::OakLeaves));
+                }
             }
-        }
 
-        if !mesh_blocks.is_empty() {
-            let compound_mesh = crate::render::greedy::build_compound_voxel_mesh(&mesh_blocks);
-            let mesh_handle = meshes.add(compound_mesh);
+            if !mesh_blocks.is_empty() {
+                let compound_mesh = crate::render::greedy::build_compound_voxel_mesh(&mesh_blocks);
+                let mesh_handle = meshes.add(compound_mesh);
 
-            // 計算樹木傾倒軸向：背離玩家劈砍方向傾倒
-            let push_dir = if let Some(p_pos) = player_pos {
-                let diff = broken_pos.as_vec3() - p_pos;
-                let xz = Vec3::new(diff.x, 0.0, diff.z);
-                if xz.length_squared() > 0.001 {
-                    xz.normalize()
+                // 計算樹木傾倒軸向：背離玩家劈砍方向傾倒
+                let push_dir = if let Some(p_pos) = player_pos {
+                    let diff = broken_pos.as_vec3() - p_pos;
+                    let xz = Vec3::new(diff.x, 0.0, diff.z);
+                    if xz.length_squared() > 0.001 {
+                        xz.normalize()
+                    } else {
+                        Vec3::new(0.0, 0.0, 1.0)
+                    }
                 } else {
                     Vec3::new(0.0, 0.0, 1.0)
+                };
+                let mut fall_axis = Vec3::Y.cross(push_dir);
+                if fall_axis.length_squared() > 0.001 {
+                    fall_axis = fall_axis.normalize();
+                } else {
+                    fall_axis = Vec3::X;
                 }
-            } else {
-                Vec3::new(0.0, 0.0, 1.0)
-            };
-            let mut fall_axis = Vec3::Y.cross(push_dir);
-            if fall_axis.length_squared() > 0.001 {
-                fall_axis = fall_axis.normalize();
-            } else {
-                fall_axis = Vec3::X;
-            }
 
-            let pivot = broken_pos.as_vec3() + Vec3::new(0.5, 0.5, 0.5);
-            commands.spawn((
-                SpatialBundle {
-                    transform: Transform::from_translation(pivot),
-                    ..default()
-                },
-                FallingTree {
-                    pivot,
-                    fall_axis,
-                    angle: 0.05, // 初始微傾角
-                    angular_velocity: 0.4,
-                    lifetime: 0.0,
-                    log_offsets: log_offsets.clone(),
-                    leaf_offsets: leaf_offsets.clone(),
-                },
-            )).with_children(|parent| {
-                parent.spawn(MaterialMeshBundle {
-                    mesh: mesh_handle,
-                    material: material.clone(),
-                    transform: Transform::from_translation(Vec3::new(-16.0, 0.0, -16.0)),
-                    ..default()
+                let pivot = broken_pos.as_vec3() + Vec3::new(0.5, 0.5, 0.5);
+                commands.spawn((
+                    SpatialBundle {
+                        transform: Transform::from_translation(pivot),
+                        ..default()
+                    },
+                    FallingTree {
+                        pivot,
+                        fall_axis,
+                        angle: 0.05, // 初始微傾角
+                        angular_velocity: 0.4,
+                        lifetime: 0.0,
+                        log_offsets: log_offsets.clone(),
+                        leaf_offsets: leaf_offsets.clone(),
+                    },
+                )).with_children(|parent| {
+                    // 注意：FallingTree 的子網格因 compound_voxel_mesh 以 (16, 0, 16) 為中心構建，
+                    // 故此處需施加 (-16, 0, -16) 局部平移使旋轉軸心精確對齊父實體的 pivot 座標。
+                    parent.spawn(MaterialMeshBundle {
+                        mesh: mesh_handle,
+                        material: material.clone(),
+                        transform: Transform::from_translation(Vec3::new(-16.0, 0.0, -16.0)),
+                        ..default()
+                    });
                 });
-            });
+            }
         }
-    }
 
-    // 4. 原木處理（世界體素層立即清除，絕不留浮空方塊）
-    if can_harvest {
-        // ── 持斧採伐：連鎖收穫上方所有連通原木 ──
+        // 4. 原木處理（世界體素層立即清除，全數收穫）
         for log_pos in logs_to_process {
             world.set_block_global(log_pos, BlockType::Air, commands);
             particle_mgr.spawn_debris(log_pos.as_vec3() + 0.5, log_color, 4);
             inventory.add_item(ItemStack::new(ItemType::OakLog, 1, registry), registry);
             inventory.damage_selected_tool(1);
         }
+
+        // 5. 樹冠崩解與掉落樹枝（世界體素層立即清除）
+        for (idx, leaf_pos) in leaves_to_decay.into_iter().enumerate() {
+            world.set_block_global(leaf_pos, BlockType::Air, commands);
+            particle_mgr.spawn_debris(leaf_pos.as_vec3() + 0.5, leaf_color, 2);
+
+            // 每 3 片樹葉掉落 1 根木棒 (Stick)，提供基礎木質素材
+            if idx % 3 == 0 {
+                inventory.add_item(ItemStack::new(ItemType::Stick, 1, registry), registry);
+            }
+        }
     } else {
-        // ── 徒手/非斧頭破壞：辛苦砍斷樹幹使整棵樹倒塌 ──
-        // 保證獲得 1 塊原木掉落（初期拓荒起步，杜絕無木材卡關死局）
-        inventory.add_item(ItemStack::new(ItemType::OakLog, 1, registry), registry);
-
-        // 上方其餘原木全數清除
+        // ── 徒手/非斧頭破壞：重力滑落 (Tree Gravity Fall) ──
+        // 嚴格落實工具門檻：不掉落任何原木，上方原木在重力作用下整齊下落 1 格
+        logs_to_process.sort_by_key(|p| p.y);
         for log_pos in logs_to_process {
-            world.set_block_global(log_pos, BlockType::Air, commands);
-            particle_mgr.spawn_debris(log_pos.as_vec3() + 0.5, log_color, 6);
+            let target_pos = log_pos - IVec3::Y;
+            if world.get_block_global(target_pos) == BlockType::Air || target_pos == broken_pos {
+                world.set_block_global(log_pos, BlockType::Air, commands);
+                world.set_block_global(target_pos, BlockType::OakLog, commands);
+            }
         }
-        // 破壞點噴發木屑反饋
-        particle_mgr.spawn_debris(broken_pos.as_vec3() + 0.5, log_color, 8);
-    }
-
-    // 5. 樹冠崩解與掉落樹枝（世界體素層立即清除）
-    for (idx, leaf_pos) in leaves_to_decay.into_iter().enumerate() {
-        world.set_block_global(leaf_pos, BlockType::Air, commands);
-        particle_mgr.spawn_debris(leaf_pos.as_vec3() + 0.5, leaf_color, 2);
-
-        // 每 3 片樹葉掉落 1 根木棒 (Stick)，提供基礎木質素材
-        if idx % 3 == 0 {
-            inventory.add_item(ItemStack::new(ItemType::Stick, 1, registry), registry);
-        }
+        let log_color = get_block_debris_color(BlockType::OakLog);
+        particle_mgr.spawn_debris(broken_pos.as_vec3() + 0.5, log_color, 6);
     }
 }
 
@@ -299,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tree_barehand_felling_topple() {
+    fn test_tree_barehand_gravity_fall() {
         let mut world_manager = WorldManager::default();
         let ecs_world = BevyWorld::new();
         let mut queue = CommandQueue::default();
@@ -338,17 +340,14 @@ mod tests {
             None,
         );
 
-        // 樹木應全數倒塌消散，絕無殘留浮空方塊
-        assert_eq!(world_manager.get_block_global(IVec3::new(5, 1, 5)), BlockType::Air, "被破壞處應為 Air");
-        assert_eq!(world_manager.get_block_global(IVec3::new(5, 2, 5)), BlockType::Air, "上方樹幹應全數倒塌消除");
-        assert_eq!(world_manager.get_block_global(IVec3::new(5, 3, 5)), BlockType::Air, "上方樹幹應全數倒塌消除");
-        assert_eq!(world_manager.get_block_global(IVec3::new(5, 4, 5)), BlockType::Air, "樹葉應全數凋零消除");
+        // 原本 y=2 的原木應掉落至 y=1，原本 y=3 的原木應掉落至 y=2，y=3 變為 Air
+        assert_eq!(world_manager.get_block_global(IVec3::new(5, 1, 5)), BlockType::OakLog, "樹木重力：上方原木應下落至 y=1");
+        assert_eq!(world_manager.get_block_global(IVec3::new(5, 2, 5)), BlockType::OakLog, "樹木重力：上方原木應下落至 y=2");
+        assert_eq!(world_manager.get_block_global(IVec3::new(5, 3, 5)), BlockType::Air, "樹木重力：原頂端位置應變為 Air");
 
-        // 背包獲得 1 塊原木（初期生存起步保障）與樹枝
+        // 空手破壞底座嚴格不應獲得原木掉落
         let log_count: u16 = inv.slots.iter().flatten().filter(|s| s.item_type == ItemType::OakLog).map(|s| s.count).sum();
-        assert_eq!(log_count, 1, "空手打倒整棵樹應保底掉落 1 塊原木以利合成基礎工具");
-        let has_stick = inv.slots.iter().flatten().any(|s| s.item_type == ItemType::Stick);
-        assert!(has_stick, "樹葉凋零應掉落樹枝");
+        assert_eq!(log_count, 0, "空手打樹嚴格不應獲得任何原木掉落 (遵守 ToolTier::Wood 採伐門檻)");
     }
 
     #[test]
