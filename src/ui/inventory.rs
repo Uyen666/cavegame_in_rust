@@ -32,6 +32,11 @@ pub struct SlotDurabilityBarNode {
 }
 
 #[derive(Component)]
+pub struct SlotIconNode {
+    pub slot_index: usize,
+}
+
+#[derive(Component)]
 pub struct CarriedItemTextNode;
 
 pub fn setup_inventory_screen(mut commands: Commands) {
@@ -69,7 +74,7 @@ pub fn setup_inventory_screen(mut commands: Commands) {
         }).with_children(|panel| {
             // 標題列
             panel.spawn(TextBundle::from_section(
-                "INVENTORY (玩家背包)",
+                "INVENTORY",
                 TextStyle {
                     font_size: 18.0,
                     color: Color::srgb(0.9, 0.9, 0.95),
@@ -80,7 +85,7 @@ pub fn setup_inventory_screen(mut commands: Commands) {
             // 游標手持物品狀態指示列
             panel.spawn((
                 TextBundle::from_section(
-                    "手持游標: 空",
+                    "Carried: (Empty)",
                     TextStyle {
                         font_size: 13.0,
                         color: Color::srgb(0.7, 0.85, 1.0),
@@ -92,7 +97,7 @@ pub fn setup_inventory_screen(mut commands: Commands) {
 
             // ── 主儲存區 (27 格：Slots 9..35) ──
             panel.spawn(TextBundle::from_section(
-                "儲存區 (Main Storage)",
+                "MAIN STORAGE",
                 TextStyle {
                     font_size: 12.0,
                     color: Color::srgb(0.65, 0.65, 0.7),
@@ -123,7 +128,7 @@ pub fn setup_inventory_screen(mut commands: Commands) {
 
             // ── 快捷列 (9 格：Slots 0..8) ──
             panel.spawn(TextBundle::from_section(
-                "快捷列 (Hotbar)",
+                "HOTBAR",
                 TextStyle {
                     font_size: 12.0,
                     color: Color::srgb(0.65, 0.65, 0.7),
@@ -150,7 +155,7 @@ pub fn setup_inventory_screen(mut commands: Commands) {
 
             // 底部提示字樣
             panel.spawn(TextBundle::from_section(
-                "[E] 或 [ESC] 關閉背包   |   左鍵點擊槽位可拿起 / 放下 / 堆疊置換",
+                "[E] / [ESC] Close   |   [LMB] Pick / Place / Swap",
                 TextStyle {
                     font_size: 11.0,
                     color: Color::srgb(0.55, 0.55, 0.6),
@@ -182,7 +187,23 @@ fn spawn_slot_button(parent: &mut ChildBuilder, slot_index: usize) {
         },
         InventorySlotButton { slot_index },
     )).with_children(|slot| {
-        // 物品名稱字樣 (縮寫/全名)
+        // 物品 2D 圖標 (Icon)
+        slot.spawn((
+            ImageBundle {
+                style: Style {
+                    width: Val::Px(28.0),
+                    height: Val::Px(28.0),
+                    position_type: PositionType::Absolute,
+                    ..default()
+                },
+                image: UiImage::default(),
+                visibility: Visibility::Hidden,
+                ..default()
+            },
+            SlotIconNode { slot_index },
+        ));
+
+        // 物品名稱字樣 (縮寫/全名，無 Icon 時作為回退顯示)
         slot.spawn((
             TextBundle::from_section(
                 "",
@@ -311,12 +332,15 @@ pub fn handle_inventory_clicks(
 
 pub fn update_inventory_ui(
     state: Res<InventoryScreenState>,
-    q_player: Query<&Inventory, Changed<Inventory>>,
+    q_player: Query<&Inventory>,
     registry: Res<ItemRegistry>,
-    mut q_item_texts: Query<(&SlotItemTextNode, &mut Text), Without<SlotCountTextNode>>,
-    mut q_count_texts: Query<(&SlotCountTextNode, &mut Text), Without<SlotItemTextNode>>,
-    mut q_dur_bars: Query<(&SlotDurabilityBarNode, &mut Style, &mut BackgroundColor, &mut Visibility)>,
+    icon_reg: Option<Res<crate::ui::hud::ItemIconRegistry>>,
+    mut q_icons: Query<(&SlotIconNode, &mut UiImage, &mut Visibility)>,
+    mut q_item_texts: Query<(&SlotItemTextNode, &mut Text), (Without<SlotCountTextNode>, Without<CarriedItemTextNode>)>,
+    mut q_count_texts: Query<(&SlotCountTextNode, &mut Text), (Without<SlotItemTextNode>, Without<CarriedItemTextNode>)>,
+    mut q_dur_bars: Query<(&SlotDurabilityBarNode, &mut Style, &mut BackgroundColor, &mut Visibility), (Without<SlotIconNode>, Without<SlotItemTextNode>)>,
     mut q_carried_text: Query<&mut Text, (With<CarriedItemTextNode>, Without<SlotItemTextNode>, Without<SlotCountTextNode>)>,
+    q_hovered_slots: Query<(&InventorySlotButton, &Interaction)>,
 ) {
     if !state.is_open {
         return;
@@ -324,42 +348,83 @@ pub fn update_inventory_ui(
 
     let Ok(inventory) = q_player.get_single() else { return; };
 
-    // 1. 更新手持游標文字
+    // 1. 更新手持游標文字與 Hover 提示列
     if let Ok(mut carried_text) = q_carried_text.get_single_mut() {
         if let Some(ref carried) = inventory.carried_item {
             let name = registry.get(carried.item_type).map(|d| d.name).unwrap_or("Item");
-            carried_text.sections[0].value = format!("手持游標: {} x{}", name, carried.count);
+            carried_text.sections[0].value = format!("Carried: {} x{}", name, carried.count);
             carried_text.sections[0].style.color = Color::srgb(1.0, 0.9, 0.3);
         } else {
-            carried_text.sections[0].value = "手持游標: (空)".to_string();
-            carried_text.sections[0].style.color = Color::srgb(0.6, 0.65, 0.7);
+            // 游標未手持物品時，檢查是否有 Hover 的槽位
+            let mut hovered_item_info = None;
+            for (btn, interaction) in &q_hovered_slots {
+                if *interaction == Interaction::Hovered {
+                    if let Some(stack) = inventory.slot(btn.slot_index) {
+                        let name = registry.get(stack.item_type).map(|d| d.name).unwrap_or("Item");
+                        if let Some(dur) = stack.durability {
+                            if let Some(def) = registry.get(stack.item_type) {
+                                if let ItemKind::Tool { max_durability, .. } = def.kind {
+                                    hovered_item_info = Some(format!("Hover: {} ({}/{})", name, dur, max_durability));
+                                    break;
+                                }
+                            }
+                        }
+                        hovered_item_info = Some(format!("Hover: {} x{}", name, stack.count));
+                        break;
+                    }
+                }
+            }
+
+            if let Some(info) = hovered_item_info {
+                carried_text.sections[0].value = info;
+                carried_text.sections[0].style.color = Color::srgb(0.7, 0.85, 1.0);
+            } else {
+                carried_text.sections[0].value = "Carried: (Empty)".to_string();
+                carried_text.sections[0].style.color = Color::srgb(0.6, 0.65, 0.7);
+            }
         }
     }
 
-    // 2. 更新 36 格物品名稱
+    // 2. 更新 36 格圖標 (Icons)
+    for (node, mut icon_image, mut icon_vis) in &mut q_icons {
+        if let Some(stack) = inventory.slot(node.slot_index) {
+            if let Some(ref reg) = icon_reg {
+                if let Some(icon_handle) = reg.icons.get(&stack.item_type) {
+                    icon_image.texture = icon_handle.clone();
+                    icon_image.color = Color::WHITE;
+                    *icon_vis = Visibility::Inherited;
+                    continue;
+                }
+            }
+        }
+        *icon_vis = Visibility::Hidden;
+    }
+
+    // 3. 更新 36 格文字 (有 Icon 則隱藏文字；無 Icon 如方塊則顯示簡稱)
     for (node, mut text) in &mut q_item_texts {
         if let Some(stack) = inventory.slot(node.slot_index) {
-            let name = registry.get(stack.item_type).map(|d| d.name).unwrap_or("");
-            // 取簡稱以利 42px 方格美觀排版
-            let short_name = match stack.item_type {
-                crate::item::ItemType::IronPickaxe => "Iron\nPick",
-                crate::item::ItemType::StonePickaxe => "Stone\nPick",
-                crate::item::ItemType::WoodenPickaxe => "Wood\nPick",
-                crate::item::ItemType::IronShovel => "Iron\nShov",
-                crate::item::ItemType::StoneShovel => "Stone\nShov",
-                crate::item::ItemType::WoodenShovel => "Wood\nShov",
-                crate::item::ItemType::IronAxe => "Iron\nAxe",
-                crate::item::ItemType::StoneAxe => "Stone\nAxe",
-                crate::item::ItemType::WoodenAxe => "Wood\nAxe",
-                _ => name,
-            };
-            text.sections[0].value = short_name.to_string();
+            let has_icon = icon_reg.as_ref().map_or(false, |reg| reg.icons.contains_key(&stack.item_type));
+            if has_icon {
+                text.sections[0].value = "".to_string();
+            } else {
+                let name = registry.get(stack.item_type).map(|d| d.name).unwrap_or("");
+                let short_name = match stack.item_type {
+                    crate::item::ItemType::OakLog => "Log",
+                    crate::item::ItemType::OakLeaves => "Leaves",
+                    crate::item::ItemType::Grass => "Grass",
+                    crate::item::ItemType::Glass => "Glass",
+                    crate::item::ItemType::CoalOre => "Coal\nOre",
+                    crate::item::ItemType::IronOre => "Iron\nOre",
+                    _ => name,
+                };
+                text.sections[0].value = short_name.to_string();
+            }
         } else {
             text.sections[0].value = "".to_string();
         }
     }
 
-    // 3. 更新 36 格數量
+    // 4. 更新 36 格數量
     for (node, mut text) in &mut q_count_texts {
         if let Some(stack) = inventory.slot(node.slot_index) {
             if stack.count > 1 {
@@ -372,7 +437,7 @@ pub fn update_inventory_ui(
         }
     }
 
-    // 4. 更新耐久度條
+    // 5. 更新耐久度條
     for (node, mut style, mut bg, mut vis) in &mut q_dur_bars {
         if let Some(stack) = inventory.slot(node.slot_index) {
             if let Some(dur) = stack.durability {

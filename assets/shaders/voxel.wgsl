@@ -237,6 +237,9 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     }
 
     let tex_color = textureSample(array_texture, array_sampler, animated_uv, in.texture_index);
+    if env.is_fluid == 0u && tex_color.a < 0.1 {
+        discard;
+    }
     let final_light = max(in.sky_light * env.sky_factor, in.block_light);
     let light_ratio = final_light / 15.0;
     // 平滑感官光照衰減曲線 (Smooth Perceptual Lighting Falloff)：

@@ -198,6 +198,17 @@ src/
   - **3D 物理掉落物與 Q 鍵丟棄 (3D ItemDrop & Drop Keybind)**：實裝獨立 `ItemDrop` 實體，具備真實重力、固體地面碰撞、懸浮緩慢自轉、1.8m 磁吸入包與 300s 超時銷毀；玩家按 Q 鍵可手動丟棄選中槽位物品。
   - **全挖掘方塊全面實體化與開局鐵斧配發**：初始快捷列第 8 格配置鐵斧 (`IronAxe`)；全方塊挖掘破壞（草地、石頭、火把等）全面升級為 3D 物理掉落物 (`ItemDrop`)，採集彈射立體方塊並磁吸入包；未達工具等級採伐時提供直觀反饋提示。
 
+- **11/7 掉落物 Alpha Discard 鏤空、背包 UI 升級與初始燧石獲取閉環**:
+  - **著色器 Alpha Discard 剔除黑邊 (`voxel.wgsl`)**：在片元著色器加入 `if env.is_fluid == 0u && tex_color.a < 0.1 { discard; }`，徹底根除 2D 物品貼圖（木棒、燧石、斧頭）透明背景被繪製為黑色的重大破綻；
+  - **Dropz 級擬真平躺 1:1 比例 (`src/item/mod.rs`)**：木棒、燧石、各階斧頭與工具調整為自然平躺比例 (`Vec3::new(0.36, 0.08, 0.36)`)，伏地半高精確維持 0.04，長寬 1:1 正方無拉伸，掉落在草地上呈現真實自然的立體樹枝與工具外觀；
+  - **背包 UI 全面升級與消滅亂碼 (`src/ui/inventory.rs`)**：
+    - 全面採用現代遊戲英文標題與提示（`INVENTORY`, `MAIN STORAGE`, `HOTBAR`, `[E] / [ESC] Close`），徹底消滅 Bevy 缺字導致的豆腐塊 `` 亂碼；
+    - 36 格全面接入 `ItemIconRegistry` 物品 2D 圖示（Icon），無圖示方塊回退簡短名稱，右下角顯示堆疊數量，底部動態顯示綠/黃/紅耐久度進度條；
+    - 即時懸停（Hover Tooltip）與手持（Carried）資訊列，提示物品全名、數量與精確耐久度；
+  - **開局配備燧石與野外淘石機制 (`src/player/mod.rs`)**：
+    - 初始快捷列第 0 格配置燧石 4 塊 (`Flint x4`)，第 1 格配置木棒 4 根 (`Stick x4`)，玩家進遊戲第一時間即可實測右鍵 5x5 Knapping 切削工藝；
+    - 挖掘泥土（Dirt）與草地（Grass）具備 15% 機率翻找淘出燧石，水岸礫石（Gravel）100% 掉落燧石，徹底打通空手野外探索與燧石獲取鏈路。
+
 - **11/7 原始擊石切削系統 (Knapping) 與燧石斧組裝 (Flint Knapping & Tool Assembly)**:
   - **5x5 擊石切削工藝介面 (`src/ui/knapping.rs`)**：
     - 手持 2 塊燧石 (`ItemType::Flint >= 2`) 右鍵點擊開啟 5x5 Knapping UI；

@@ -164,16 +164,20 @@ fn setup_player(
     registry: Res<ItemRegistry>,
 ) {
     let mut inventory = Inventory::new(36);
-    inventory.set_slot(0, Some(ItemStack::new(ItemType::Stone, 64, &registry)));
-    inventory.set_slot(1, Some(ItemStack::new(ItemType::Dirt, 64, &registry)));
-    inventory.set_slot(2, Some(ItemStack::new(ItemType::Grass, 64, &registry)));
-    inventory.set_slot(3, Some(ItemStack::new(ItemType::OakLog, 64, &registry)));
-    inventory.set_slot(4, Some(ItemStack::new(ItemType::OakLeaves, 64, &registry)));
-    inventory.set_slot(5, Some(ItemStack::new(ItemType::Sand, 64, &registry)));
-    inventory.set_slot(6, Some(ItemStack::new(ItemType::Torch, 64, &registry)));
-    inventory.set_slot(7, Some(ItemStack::new(ItemType::IronAxe, 1, &registry)));
-    inventory.set_slot(8, Some(ItemStack::new(ItemType::IronPickaxe, 1, &registry)));
-    inventory.set_slot(9, Some(ItemStack::new(ItemType::Glass, 64, &registry)));
+    // 🚀 快捷列 (Hotbar 0..9)：開局直接配置燧石與木棍，打通 Knapping 切削測試與生存起步
+    inventory.set_slot(0, Some(ItemStack::new(ItemType::Flint, 4, &registry)));
+    inventory.set_slot(1, Some(ItemStack::new(ItemType::Stick, 4, &registry)));
+    inventory.set_slot(2, Some(ItemStack::new(ItemType::OakLog, 16, &registry)));
+    inventory.set_slot(3, Some(ItemStack::new(ItemType::Torch, 16, &registry)));
+    inventory.set_slot(4, Some(ItemStack::new(ItemType::Dirt, 64, &registry)));
+    inventory.set_slot(5, Some(ItemStack::new(ItemType::Stone, 64, &registry)));
+    inventory.set_slot(6, Some(ItemStack::new(ItemType::Sand, 64, &registry)));
+    inventory.set_slot(7, Some(ItemStack::new(ItemType::OakLeaves, 64, &registry)));
+    inventory.set_slot(8, Some(ItemStack::new(ItemType::Glass, 64, &registry)));
+
+    // 🚀 主存儲區 (Main Storage 9..35)：放置備用高階工具與建築建材
+    inventory.set_slot(9, Some(ItemStack::new(ItemType::IronAxe, 1, &registry)));
+    inventory.set_slot(10, Some(ItemStack::new(ItemType::IronPickaxe, 1, &registry)));
 
     commands.spawn((
         Player::default(),
@@ -826,6 +830,26 @@ fn player_interaction(
                                         );
                                     } else {
                                         inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
+                                    }
+                                }
+
+                                // 🚀 野外淘石機制：空手或鏟子挖掘泥土/草地時，有 15% 機率翻找出一顆燧石 (Flint)
+                                let flint_chance = ((block_pos.x.wrapping_mul(73) ^ block_pos.z.wrapping_mul(31) ^ block_pos.y) & 0xFF) as f32 / 255.0;
+                                if (old_block == BlockType::Dirt || old_block == BlockType::Grass) && flint_chance < 0.15 {
+                                    if gt.ready {
+                                        let flint_pos = block_pos.as_vec3() + Vec3::new(0.5, 0.5, 0.5);
+                                        let flint_vel = Vec3::new(0.5, 2.2, -0.5);
+                                        crate::item::spawn_item_drop(
+                                            &mut commands,
+                                            &mut *meshes,
+                                            gt.material.clone(),
+                                            ItemStack::new(ItemType::Flint, 1, &registry),
+                                            flint_pos,
+                                            flint_vel,
+                                            Some(&world),
+                                        );
+                                    } else {
+                                        inventory.add_item(ItemStack::new(ItemType::Flint, 1, &registry), &registry);
                                     }
                                 }
                             }
