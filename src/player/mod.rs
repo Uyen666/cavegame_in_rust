@@ -51,6 +51,7 @@ fn player_input_capture(
     mut q_player: Query<(&mut Player, &mut Inventory)>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
     inv_state: Option<Res<crate::ui::inventory::InventoryScreenState>>,
+    knapping_state: Option<Res<crate::ui::knapping::KnappingState>>,
 ) {
     if let Ok(window) = q_windows.get_single() {
         if window.cursor.grab_mode != CursorGrabMode::Locked {
@@ -59,6 +60,12 @@ fn player_input_capture(
     }
 
     if let Some(ref state) = inv_state {
+        if state.is_open {
+            return;
+        }
+    }
+
+    if let Some(ref state) = knapping_state {
         if state.is_open {
             return;
         }
@@ -211,6 +218,7 @@ fn toggle_grab_cursor(
     mouse_btn: Res<ButtonInput<MouseButton>>,
     mut focus_events: EventReader<bevy::window::WindowFocused>,
     inv_state: Option<Res<crate::ui::inventory::InventoryScreenState>>,
+    knapping_state: Option<Res<crate::ui::knapping::KnappingState>>,
     mut initial_grab_done: Local<bool>,
     mut cursor_just_locked: ResMut<CursorJustLocked>,
 ) {
@@ -244,9 +252,11 @@ fn toggle_grab_cursor(
     }
 
     let inv_is_open = inv_state.as_ref().map_or(false, |s| s.is_open);
+    let knapping_is_open = knapping_state.as_ref().map_or(false, |s| s.is_open);
+    let ui_is_open = inv_is_open || knapping_is_open;
 
     // 🚀 規則 2：聚焦時才置中鎖定 (開局首次聚焦就緒或重新獲得焦點時)
-    let should_focus_lock = (!*initial_grab_done || gained_focus) && !inv_is_open;
+    let should_focus_lock = (!*initial_grab_done || gained_focus) && !ui_is_open;
     if should_focus_lock && window.width() > 0.0 && window.height() > 0.0 {
         let center = Vec2::new(window.width() / 2.0, window.height() / 2.0);
         window.set_cursor_position(Some(center));
@@ -261,8 +271,8 @@ fn toggle_grab_cursor(
         *initial_grab_done = true;
     }
 
-    // 若背包開啟中，游標模式由背包 UI 系統全權託管
-    if inv_is_open {
+    // 若 UI（背包或 Knapping）開啟中，游標模式由 UI 系統全權託管
+    if ui_is_open {
         return;
     }
 
@@ -292,7 +302,14 @@ pub fn player_look(
     mut mouse_motion_events: EventReader<MouseMotion>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
     mut shake: Option<ResMut<ScreenShake>>,
+    knapping_state: Option<Res<crate::ui::knapping::KnappingState>>,
 ) {
+    if let Some(ref state) = knapping_state {
+        if state.is_open {
+            return;
+        }
+    }
+
     let Ok(window) = q_windows.get_single() else {
         return;
     };
@@ -600,13 +617,15 @@ fn player_interaction(
     mut particle_mgr: ResMut<crate::render::particles::ParticleManager>,
     mut torch_burn_mgr: ResMut<crate::world::TorchBurnManager>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
-    q_windows: Query<&Window, With<PrimaryWindow>>,
+    mut q_primary_window: Query<&mut Window, With<PrimaryWindow>>,
     mut q_player: Query<(&Transform, &mut Player, &mut Inventory, Option<&mut PlayerVitals>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     gt: Res<crate::render::textures::GameTextures>,
     cursor_just_locked: Res<CursorJustLocked>,
+    mut knapping_state: Option<ResMut<crate::ui::knapping::KnappingState>>,
+    mut q_knapping_root: Query<&mut Visibility, (With<crate::ui::knapping::KnappingRootNode>, Without<crate::ui::inventory::InventoryRootNode>)>,
 ) {
-    let Ok(window) = q_windows.get_single() else { return; };
+    let Ok(mut window) = q_primary_window.get_single_mut() else { return; };
     if window.cursor.grab_mode != CursorGrabMode::Locked || cursor_just_locked.0 { return; }
     
     let Ok((player_transform, mut player, mut inventory, mut maybe_vitals)) = q_player.get_single_mut() else { return; };
@@ -639,8 +658,48 @@ fn player_interaction(
                             drop_stack,
                             spawn_p,
                             throw_vel,
+                            Some(&world),
                         );
                     }
+                }
+            }
+        }
+    }
+
+    // 🚀 手持燧石斧刃 (Flint Axe Head) 右鍵組裝燧石斧 (Flint Axe) 或手持雙燧石開啟切削 (Knapping)
+    if right {
+        if let Some(selected) = inventory.selected_item().cloned() {
+            if selected.item_type == ItemType::FlintAxeHead {
+                if inventory.consume_item(ItemType::Stick, 1) {
+                    inventory.consume_selected(1);
+                    let axe = ItemStack::new_with_durability(ItemType::FlintAxe, 1, 45);
+                    if let Some(overflow) = inventory.add_item(axe, &registry) {
+                        println!("【組裝提示】背包已滿，溢出物品 {:?}", overflow);
+                    }
+                    if let Ok(cam_transform) = q_camera.get_single() {
+                        let forward = *cam_transform.forward();
+                        let spark_pos = cam_transform.translation() + forward * 0.8;
+                        particle_mgr.spawn_debris(spark_pos, Color::srgb(0.95, 0.85, 0.45), 14);
+                        particle_mgr.spawn_debris(spark_pos, Color::srgb(0.55, 0.40, 0.25), 8);
+                    }
+                    println!("【組裝成功】成功組裝 燧石斧 (Flint Axe)！耐久度: 45/45");
+                    println!("【採伐提示】現在你可以手持燧石斧砍伐樹木，觸發倒木物理與原木收穫！");
+                    return;
+                } else {
+                    println!("【組裝提示】缺少木棒 (Stick)！請破壞樹葉收集 1 根木棒來組裝燧石斧！");
+                    return;
+                }
+            } else if selected.item_type == ItemType::Flint && selected.count >= 2 {
+                if let Some(ref mut k_state) = knapping_state {
+                    k_state.is_open = true;
+                    k_state.reset_grid();
+                    if let Ok(mut vis) = q_knapping_root.get_single_mut() {
+                        *vis = Visibility::Inherited;
+                    }
+                    window.cursor.grab_mode = CursorGrabMode::None;
+                    window.cursor.visible = true;
+                    println!("【擊石切削】開啟 5x5 切削介面！點擊石塊邊緣敲除石片，打磨出燧石斧刃！");
+                    return;
                 }
             }
         }
@@ -690,6 +749,7 @@ fn player_interaction(
                                 ItemStack::new(drop_item, 1, &registry),
                                 drop_pos,
                                 drop_vel,
+                                Some(&world),
                             );
                         } else {
                             inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
@@ -762,6 +822,7 @@ fn player_interaction(
                                             ItemStack::new(drop_item, 1, &registry),
                                             drop_pos,
                                             drop_vel,
+                                            Some(&world),
                                         );
                                     } else {
                                         inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);

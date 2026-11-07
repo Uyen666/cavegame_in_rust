@@ -108,6 +108,7 @@ pub fn handle_tree_break(
                     ItemStack::new(ItemType::OakLog, 1, registry),
                     drop_pos,
                     drop_vel,
+                    Some(&*world),
                 );
             } else {
                 inventory.add_item(ItemStack::new(ItemType::OakLog, 1, registry), registry);
@@ -365,6 +366,7 @@ pub fn update_falling_trees(
                         ItemStack::new(ItemType::OakLog, 1, reg),
                         drop_pos,
                         drop_vel,
+                        world.as_deref(),
                     );
                 }
 
@@ -384,6 +386,7 @@ pub fn update_falling_trees(
                             ItemStack::new(ItemType::Stick, 1, reg),
                             drop_pos,
                             drop_vel,
+                            world.as_deref(),
                         );
                     }
                 }

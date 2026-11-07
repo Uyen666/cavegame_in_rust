@@ -199,8 +199,52 @@ pub fn setup_item_icons(
 ) {
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
     use bevy::render::texture::{ImageSampler, ImageSamplerDescriptor, ImageAddressMode, ImageFilterMode};
+    use std::fs::File;
+    use std::io::Read;
+    use zip::ZipArchive;
 
     let mut icon_map = std::collections::HashMap::new();
+
+    // 優先從官方資源包 assets/resource_pack.zip 中讀取原汁原味高解析 2D 材質
+    let mut zip_archive = File::open("assets/resource_pack.zip")
+        .ok()
+        .and_then(|f| ZipArchive::new(f).ok());
+
+    fn load_from_zip(archive: &mut ZipArchive<File>, images: &mut Assets<Image>, item_name: &str) -> Option<Handle<Image>> {
+        use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+        use bevy::render::texture::{ImageSampler, ImageSamplerDescriptor, ImageAddressMode, ImageFilterMode};
+        let paths = [
+            format!("assets/minecraft/textures/item/{}.png", item_name),
+            format!("assets/minecraft/textures/items/{}.png", item_name),
+        ];
+        for path in paths {
+            if let Ok(mut zf) = archive.by_name(&path) {
+                let mut bytes = Vec::new();
+                if zf.read_to_end(&mut bytes).is_ok() {
+                    if let Ok(dyn_img) = image::load_from_memory(&bytes) {
+                        let rgba = dyn_img.into_rgba8();
+                        let (w, h) = rgba.dimensions();
+                        let mut img = Image::new(
+                            Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                            TextureDimension::D2,
+                            rgba.into_raw(),
+                            TextureFormat::Rgba8UnormSrgb,
+                            bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD | bevy::render::render_asset::RenderAssetUsages::MAIN_WORLD,
+                        );
+                        img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                            address_mode_u: ImageAddressMode::ClampToEdge,
+                            address_mode_v: ImageAddressMode::ClampToEdge,
+                            mag_filter: ImageFilterMode::Nearest,
+                            min_filter: ImageFilterMode::Nearest,
+                            ..default()
+                        });
+                        return Some(images.add(img));
+                    }
+                }
+            }
+        }
+        None
+    }
 
     let mut create_icon = |generator: &dyn Fn(u32, u32) -> [u8; 4]| -> Handle<Image> {
         let size = 16;
@@ -228,82 +272,60 @@ pub fn setup_item_icons(
         images.add(img)
     };
 
-    // Pickaxe Icon (Iron / Wooden / Stone)
-    let pickaxe_handle = create_icon(&|x, y| {
+    // 程式化兜底圖標 (Fallback Icons)
+    let pickaxe_fallback = create_icon(&|x, y| {
         if (y == 2 && x >= 3 && x <= 12) || (y == 3 && x >= 2 && x <= 13) || (y == 4 && (x == 2 || x == 13)) {
-            [210, 215, 225, 255] // Metallic Silver Head
+            [210, 215, 225, 255]
         } else if x == y && x >= 4 && x <= 12 {
-            [140, 90, 45, 255] // Wooden Handle
-        } else {
-            [0, 0, 0, 0]
-        }
-    });
-
-    // Coal Icon
-    let coal_handle = create_icon(&|x, y| {
-        if x >= 5 && x <= 11 && y >= 5 && y <= 11 {
-            if x == 6 && y == 6 {
-                [90, 90, 100, 255]
-            } else {
-                [35, 35, 40, 255]
-            }
-        } else {
-            [0, 0, 0, 0]
-        }
-    });
-
-    // Iron Ingot Icon
-    let ingot_handle = create_icon(&|x, y| {
-        if x >= 4 && x <= 12 && y >= 6 && y <= 10 {
-            if y == 6 {
-                [230, 235, 245, 255]
-            } else {
-                [180, 185, 195, 255]
-            }
-        } else {
-            [0, 0, 0, 0]
-        }
-    });
-
-    // Stick Icon
-    let stick_handle = create_icon(&|x, y| {
-        if x + y == 15 && x >= 4 && x <= 11 {
             [140, 90, 45, 255]
         } else {
             [0, 0, 0, 0]
         }
     });
-
-    // Flint Icon (尖銳暗灰黑燧石)
-    let flint_handle = create_icon(&|x, y| {
-        if (x >= 5 && x <= 10 && y >= 6 && y <= 11) || (x == 7 && y == 5) || (x == 11 && y == 9) {
-            if x == 7 && y == 6 {
-                [115, 120, 130, 255]
-            } else {
-                [50, 55, 60, 255]
-            }
-        } else {
-            [0, 0, 0, 0]
-        }
+    let coal_fallback = create_icon(&|x, y| {
+        if x >= 5 && x <= 11 && y >= 5 && y <= 11 { [35, 35, 40, 255] } else { [0, 0, 0, 0] }
+    });
+    let ingot_fallback = create_icon(&|x, y| {
+        if x >= 4 && x <= 12 && y >= 6 && y <= 10 { [200, 205, 215, 255] } else { [0, 0, 0, 0] }
+    });
+    let stick_fallback = create_icon(&|x, y| {
+        if x + y == 15 && x >= 4 && x <= 11 { [140, 90, 45, 255] } else { [0, 0, 0, 0] }
+    });
+    let flint_fallback = create_icon(&|x, y| {
+        if (x >= 5 && x <= 10 && y >= 6 && y <= 11) || (x == 7 && y == 5) || (x == 11 && y == 9) { [50, 55, 60, 255] } else { [0, 0, 0, 0] }
     });
 
-    icon_map.insert(ItemType::IronPickaxe, pickaxe_handle.clone());
-    icon_map.insert(ItemType::WoodenPickaxe, pickaxe_handle.clone());
-    icon_map.insert(ItemType::StonePickaxe, pickaxe_handle.clone());
-    icon_map.insert(ItemType::WoodenShovel, pickaxe_handle.clone());
-    icon_map.insert(ItemType::StoneShovel, pickaxe_handle.clone());
-    icon_map.insert(ItemType::IronShovel, pickaxe_handle.clone());
-    icon_map.insert(ItemType::WoodenAxe, pickaxe_handle.clone());
-    icon_map.insert(ItemType::StoneAxe, pickaxe_handle.clone());
-    icon_map.insert(ItemType::IronAxe, pickaxe_handle.clone());
-    icon_map.insert(ItemType::Coal, coal_handle);
-    icon_map.insert(ItemType::IronIngot, ingot_handle);
-    icon_map.insert(ItemType::Stick, stick_handle);
-    icon_map.insert(ItemType::Flint, flint_handle);
+    let get_icon = |archive_opt: &mut Option<ZipArchive<File>>, images_res: &mut Assets<Image>, name: &str, fallback: Handle<Image>| -> Handle<Image> {
+        if let Some(ref mut archive) = archive_opt {
+            load_from_zip(archive, images_res, name).unwrap_or(fallback)
+        } else {
+            fallback
+        }
+    };
+
+    // 註冊所有工具與掉落物官方 2D 圖標
+    icon_map.insert(ItemType::Stick, get_icon(&mut zip_archive, &mut images, "stick", stick_fallback));
+    icon_map.insert(ItemType::Flint, get_icon(&mut zip_archive, &mut images, "flint", flint_fallback.clone()));
+    icon_map.insert(ItemType::FlintAxeHead, get_icon(&mut zip_archive, &mut images, "flint", flint_fallback));
+    icon_map.insert(ItemType::Coal, get_icon(&mut zip_archive, &mut images, "coal", coal_fallback));
+    icon_map.insert(ItemType::IronIngot, get_icon(&mut zip_archive, &mut images, "iron_ingot", ingot_fallback));
+
+    icon_map.insert(ItemType::WoodenAxe, get_icon(&mut zip_archive, &mut images, "wooden_axe", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::StoneAxe, get_icon(&mut zip_archive, &mut images, "stone_axe", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::FlintAxe, get_icon(&mut zip_archive, &mut images, "stone_axe", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::IronAxe, get_icon(&mut zip_archive, &mut images, "iron_axe", pickaxe_fallback.clone()));
+
+    icon_map.insert(ItemType::WoodenPickaxe, get_icon(&mut zip_archive, &mut images, "wooden_pickaxe", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::StonePickaxe, get_icon(&mut zip_archive, &mut images, "stone_pickaxe", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::IronPickaxe, get_icon(&mut zip_archive, &mut images, "iron_pickaxe", pickaxe_fallback.clone()));
+
+    icon_map.insert(ItemType::WoodenShovel, get_icon(&mut zip_archive, &mut images, "wooden_shovel", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::StoneShovel, get_icon(&mut zip_archive, &mut images, "stone_shovel", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::IronShovel, get_icon(&mut zip_archive, &mut images, "iron_shovel", pickaxe_fallback.clone()));
 
     commands.insert_resource(ItemIconRegistry {
         icons: icon_map,
-        fallback: pickaxe_handle,
+        fallback: pickaxe_fallback,
     });
 }
 

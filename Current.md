@@ -198,6 +198,24 @@ src/
   - **3D 物理掉落物與 Q 鍵丟棄 (3D ItemDrop & Drop Keybind)**：實裝獨立 `ItemDrop` 實體，具備真實重力、固體地面碰撞、懸浮緩慢自轉、1.8m 磁吸入包與 300s 超時銷毀；玩家按 Q 鍵可手動丟棄選中槽位物品。
   - **全挖掘方塊全面實體化與開局鐵斧配發**：初始快捷列第 8 格配置鐵斧 (`IronAxe`)；全方塊挖掘破壞（草地、石頭、火把等）全面升級為 3D 物理掉落物 (`ItemDrop`)，採集彈射立體方塊並磁吸入包；未達工具等級採伐時提供直觀反饋提示。
 
+- **11/7 原始擊石切削系統 (Knapping) 與燧石斧組裝 (Flint Knapping & Tool Assembly)**:
+  - **5x5 擊石切削工藝介面 (`src/ui/knapping.rs`)**：
+    - 手持 2 塊燧石 (`ItemType::Flint >= 2`) 右鍵點擊開啟 5x5 Knapping UI；
+    - 游標無縫解鎖釋放，背景相機視角凍結；
+    - 點擊四周石塊逐格敲除，噴發深灰石屑與微弱火花粒子反饋；
+    - 吻合經典斧刃配方 (`FLINT_AXE_HEAD_PATTERN`) 瞬間爆發金黃火花，扣除手持 2 塊燧石，產出「燧石斧刃 (`ItemType::FlintAxeHead`)」；
+    - 按 Esc 或切削完成時自動關閉介面並重新置中鎖定游標；
+  - **手持斧刃組裝燧石斧 (`src/player/mod.rs`)**：
+    - 手持 `FlintAxeHead` 右鍵點擊，消耗背包 1 根木棒 (`ItemType::Stick`)，成功組裝出具備木級採伐等級 (`ToolTier::Wood`)、耐久度 45 的「燧石斧 (`ItemType::FlintAxe`)」；
+    - 若缺少木棒則貼心打印引導提示；
+    - 徹底打通「空手打樹葉拿木棒 + 挖礫石拿燧石 -> 雙燧石敲出斧刃 -> 組裝燧石斧 -> 砍倒大樹收穫原木」的生存玩法第一閉環！
+  - **掉落物生成閃白與材質系統強化**：
+    - 修正掉落物生成瞬間全亮（15, 15）閃白問題：`spawn_item_drop` 接收世界指標並於生成瞬間直接採樣環境光；
+    - 擴充頂點打包位元（`0x1F`，支援 0..31 層紋理陣列）；
+    - 註冊木棒、燧石、煤炭、鐵錠、各階斧頭掉落物 3D 材質與 HUD / 背包 2D Icon（優先從 `resource_pack.zip` 動態讀取）；
+  - **單元測試全數通過**：
+    - 新增 `test_knapping_pattern_matching`、`test_flint_axe_and_head_registry`、`test_flint_axe_can_harvest_oak_log`，全專案 56 項測試 100% 通過。
+
 - **11/7 Dropz 級寫實物理掉落物系統 (Dropz Realistic Physics & Lighting Item Drops)**:
   - **物品物理屬性完全註冊表數據驅動 (Data-Driven Item Physics Registry)**：
     - 在 `ItemDefinition` 中引入 `physics: ItemPhysicsProperties`，徹底廢除硬編碼 match 判定；

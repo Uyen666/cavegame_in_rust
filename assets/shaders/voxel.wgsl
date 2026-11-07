@@ -55,7 +55,7 @@ fn vertex(
     if env.is_fluid == 1u {
         y_offset_down = f32((input.packed_data >> 19u) & 0x7u) / 8.0;
     } else {
-        tex_id = (input.packed_data >> 19u) & 0x0Fu;
+        tex_id = (input.packed_data >> 19u) & 0x1Fu;
     }
 
     let block_light_int = (input.packed_data >> 24u) & 0x0Fu;

@@ -25,6 +25,7 @@ pub enum ItemType {
     IronIngot = 101,
     Stick = 102,
     Flint = 103,
+    FlintAxeHead = 104,
 
     // Tools
     WoodenPickaxe = 200,
@@ -36,6 +37,7 @@ pub enum ItemType {
     WoodenAxe = 206,
     StoneAxe = 207,
     IronAxe = 208,
+    FlintAxe = 209,
 }
 
 impl ItemType {
@@ -162,6 +164,7 @@ impl ItemRegistry {
             ItemType::IronIngot => ("Iron Ingot", ItemKind::Material, 64, ItemPhysicsProperties { scale: Vec3::new(0.24, 0.12, 0.16), half_height: 0.06, flat_resting: true, ..default() }),
             ItemType::Stick => ("Stick", ItemKind::Material, 64, ItemPhysicsProperties { scale: Vec3::new(0.08, 0.35, 0.08), half_height: 0.04, flat_resting: true, buoyancy: 18.0, is_emissive: false }),
             ItemType::Flint => ("Flint", ItemKind::Material, 64, ItemPhysicsProperties { scale: Vec3::new(0.22, 0.15, 0.22), half_height: 0.08, ..default() }),
+            ItemType::FlintAxeHead => ("Flint Axe Head", ItemKind::Material, 16, ItemPhysicsProperties { scale: Vec3::new(0.24, 0.08, 0.24), half_height: 0.04, flat_resting: true, buoyancy: -4.0, is_emissive: false }),
 
             ItemType::WoodenPickaxe => ("Wooden Pickaxe", ItemKind::Tool { tool_type: ToolType::Pickaxe, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 59 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, buoyancy: 18.0, ..default() }),
             ItemType::StonePickaxe => ("Stone Pickaxe", ItemKind::Tool { tool_type: ToolType::Pickaxe, tier: ToolTier::Stone, efficiency: 4.0, max_durability: 131 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, ..default() }),
@@ -172,6 +175,7 @@ impl ItemRegistry {
             ItemType::WoodenAxe => ("Wooden Axe", ItemKind::Tool { tool_type: ToolType::Axe, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 59 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, buoyancy: 18.0, ..default() }),
             ItemType::StoneAxe => ("Stone Axe", ItemKind::Tool { tool_type: ToolType::Axe, tier: ToolTier::Stone, efficiency: 4.0, max_durability: 131 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, ..default() }),
             ItemType::IronAxe => ("Iron Axe", ItemKind::Tool { tool_type: ToolType::Axe, tier: ToolTier::Iron, efficiency: 6.0, max_durability: 250 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, ..default() }),
+            ItemType::FlintAxe => ("Flint Axe", ItemKind::Tool { tool_type: ToolType::Axe, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 45 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, buoyancy: 18.0, is_emissive: false }),
         };
         Some(ItemDefinition { id: item, name, kind, max_stack, physics })
     }
@@ -492,21 +496,31 @@ pub fn spawn_item_drop(
     stack: ItemStack,
     pos: Vec3,
     velocity: Vec3,
+    world: Option<&crate::world::WorldManager>,
 ) -> Entity {
     let registry = ItemRegistry;
     let def = registry.get(stack.item_type);
     let physics = def.map(|d| d.physics).unwrap_or_default();
-    let block = match def.map(|d| d.kind) {
-        Some(ItemKind::Block(b)) => b,
-        _ => match stack.item_type {
-            ItemType::Stick => BlockType::OakLog,
-            ItemType::Flint => BlockType::Stone,
-            ItemType::Coal => BlockType::CoalOre,
-            ItemType::IronIngot => BlockType::IronOre,
-            _ => stack.item_type.to_block().unwrap_or(BlockType::Stone),
-        },
+    
+    // 即時依據世界座標採樣生成點真實環境光，徹底根除生成瞬間極亮閃白！
+    let cur_voxel = IVec3::new(
+        pos.x.floor() as i32,
+        pos.y.floor() as i32,
+        pos.z.floor() as i32,
+    );
+    let (sky_light, block_light) = if let Some(wm) = world {
+        let sl = wm.get_sky_light_global(cur_voxel);
+        let bl = if physics.is_emissive {
+            15
+        } else {
+            wm.get_block_light_global(cur_voxel)
+        };
+        (sl, bl)
+    } else {
+        (15, 0)
     };
-    let mesh = meshes.add(crate::render::greedy::build_single_voxel_mesh(block));
+
+    let mesh = meshes.add(crate::render::greedy::build_item_drop_mesh(stack.item_type, sky_light, block_light));
     let random_yaw = ((pos.x * 37.0 + pos.z * 19.0 + pos.y * 11.0).sin() * 3.14159).abs();
     commands.spawn((
         SpatialBundle {
@@ -521,7 +535,7 @@ pub fn spawn_item_drop(
             on_ground: false,
             resting_yaw: random_yaw,
             roll_angle: 0.0,
-            current_voxel: IVec3::splat(i32::MIN), // 強制首幀立即採樣世界真實光照
+            current_voxel: cur_voxel, // 初始直接鎖定為當前體素座標，杜絕次幀無謂重算
         },
         mesh.clone(),
     )).with_children(|parent| {

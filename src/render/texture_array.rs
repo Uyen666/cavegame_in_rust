@@ -21,6 +21,13 @@ pub const TEXTURES: &[&str] = &[
     "iron_ore",          // 11
     "glass",             // 12
     "torch",             // 13
+    "stick",             // 14
+    "flint",             // 15
+    "coal",              // 16
+    "iron_ingot",        // 17
+    "wooden_axe",        // 18
+    "stone_axe",         // 19
+    "iron_axe",          // 20
 ];
 
 
@@ -32,26 +39,23 @@ pub fn load_texture_array_from_zip(zip_path: &str) -> Option<Image> {
     let texture_size = 16; // 強制為 16x16
     let mut layer_data = Vec::new();
     
-    let base_path1 = "assets/minecraft/textures/block/";
-    let base_path2 = "assets/minecraft/textures/blocks/"; // 舊版
+    let search_dirs = [
+        "assets/minecraft/textures/block/",
+        "assets/minecraft/textures/blocks/",
+        "assets/minecraft/textures/item/",
+        "assets/minecraft/textures/items/",
+    ];
     
     for tex_name in TEXTURES {
-        let path1 = format!("{}{}.png", base_path1, tex_name);
-        let path2 = format!("{}{}.png", base_path2, tex_name);
-        
         let mut img_bytes = Vec::new();
         let mut read_success = false;
         
-        if let Ok(mut zf) = archive.by_name(&path1) {
-            if zf.read_to_end(&mut img_bytes).is_ok() {
-                read_success = true;
-            }
-        }
-        
-        if !read_success {
-            if let Ok(mut zf) = archive.by_name(&path2) {
+        for dir in search_dirs {
+            let path = format!("{}{}.png", dir, tex_name);
+            if let Ok(mut zf) = archive.by_name(&path) {
                 if zf.read_to_end(&mut img_bytes).is_ok() {
                     read_success = true;
+                    break;
                 }
             }
         }

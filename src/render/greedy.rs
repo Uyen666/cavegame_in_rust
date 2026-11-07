@@ -108,7 +108,7 @@ fn push_quad(
 
         let packed: u32 = ((x & 0x3F) + (y & 0x3F) * 33 + (z & 0x3F) * 1089)
                         | ((face_id as u32 & 0x07) << 16)
-                        | ((tex_layer & 0x0F) << 19)
+                        | ((tex_layer & 0x1F) << 19)
                         | ((block_lights[i] as u32 & 0x0F) << 24)
                         | ((sky_light as u32 & 0x0F) << 28);
                         
@@ -1120,6 +1120,84 @@ pub fn build_single_voxel_mesh_with_light(block: BlockType, sky_light: u8, block
 #[inline(always)]
 pub fn build_single_voxel_mesh(block: BlockType) -> Mesh {
     build_single_voxel_mesh_with_light(block, 15, 15)
+}
+
+/// 構建 3D 物品掉落物網格 (Item Drop Mesh)
+/// 支援方塊多面紋理以及木棍、燧石、斧頭等獨立物品專屬材質層級 (Layer 14..=20)，
+/// 同時精準綁定初始環境光，消滅生成瞬間極亮閃白的破綻！
+pub fn build_item_drop_mesh(item_type: crate::item::ItemType, sky_light: u8, block_light: u8) -> Mesh {
+    use crate::item::ItemType;
+    if let Some(block) = item_type.to_block() {
+        return build_single_voxel_mesh_with_light(block, sky_light, block_light);
+    }
+
+    // 專屬物品材質映射 (TEXTURES index 14..=20)
+    let tex_layer = match item_type {
+        ItemType::Stick => 14,
+        ItemType::Flint | ItemType::FlintAxeHead => 15,
+        ItemType::Coal => 16,
+        ItemType::IronIngot => 17,
+        ItemType::WoodenAxe => 18,
+        ItemType::StoneAxe | ItemType::FlintAxe => 19,
+        ItemType::IronAxe => 20,
+        _ => 0, // Fallback Stone
+    };
+
+    let mut bucket = empty_mesh();
+    for d in 0..3usize {
+        let (u, v) = match d {
+            0 => (1, 2),
+            1 => (0, 2),
+            _ => (0, 1),
+        };
+
+        for normal_val in [1i32, -1i32] {
+            let normal_vec = match d {
+                0 => [normal_val as f32, 0.0, 0.0],
+                1 => [0.0, normal_val as f32, 0.0],
+                2 => [0.0, 0.0, normal_val as f32],
+                _ => [0.0, 0.0, 0.0],
+            };
+
+            let sky_lights = [sky_light, sky_light, sky_light, sky_light];
+            let block_lights = [block_light, block_light, block_light, block_light];
+
+            let mut x = [0i32; 3];
+            x[d] = if normal_val > 0 { 1 } else { 0 };
+
+            let mut du = [0i32; 3]; du[u] = 1;
+            let mut dv = [0i32; 3]; dv[v] = 1;
+
+            let v1 = [x[0] as f32, x[1] as f32, x[2] as f32];
+            let v2 = [(x[0] + du[0]) as f32, (x[1] + du[1]) as f32, (x[2] + du[2]) as f32];
+            let v3 = [(x[0] + du[0] + dv[0]) as f32, (x[1] + du[1] + dv[1]) as f32, (x[2] + du[2] + dv[2]) as f32];
+            let v4 = [(x[0] + dv[0]) as f32, (x[1] + dv[1]) as f32, (x[2] + dv[2]) as f32];
+
+            let mut rev = normal_val < 0;
+            if d == 1 { rev = !rev; }
+
+            push_quad(
+                &mut bucket,
+                v1, v2, v3, v4,
+                normal_vec,
+                [1.0, 1.0, 1.0, 1.0],
+                tex_layer,
+                sky_lights,
+                block_lights,
+                0,
+                1, 1,
+                rev, d,
+            );
+        }
+    }
+
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let positions = vec![[0.0, 0.0, 0.0]; bucket.0.len()];
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(ATTRIBUTE_PACKED_DATA, bucket.0);
+    mesh.insert_attribute(ATTRIBUTE_FLOW_VECTOR, bucket.2);
+    mesh.insert_indices(Indices::U32(bucket.1));
+    mesh
 }
 
 /// 動態更新單體體素網格頂點的光照數據 (Real-time Mesh Light Update)

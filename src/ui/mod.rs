@@ -3,6 +3,7 @@ pub mod hud;
 pub mod settings;
 pub mod debug;
 pub mod inventory;
+pub mod knapping;
 use bevy::prelude::*;
 use crate::GameState;
 
@@ -12,6 +13,7 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(debug::DebugUiPlugin)
            .add_plugins(inventory::InventoryUiPlugin)
+           .add_plugins(knapping::KnappingPlugin)
            .add_systems(Startup, (hud::setup_ui_3d_preview, hud::setup_item_icons))
            .add_systems(OnEnter(GameState::MainMenu), main_menu::setup_main_menu)
            .add_systems(OnExit(GameState::MainMenu), main_menu::cleanup_main_menu)
