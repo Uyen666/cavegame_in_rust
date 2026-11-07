@@ -17,6 +17,8 @@ pub struct FallingTree {
     pub angle: f32,
     pub angular_velocity: f32,
     pub lifetime: f32,
+    pub height: f32,
+    pub leaf_count: usize,
     pub log_offsets: Vec<Vec3>,
     pub leaf_offsets: Vec<Vec3>,
 }
@@ -89,12 +91,39 @@ pub fn handle_tree_break(
             }
         }
 
+        let is_actual_tree = !logs_to_process.is_empty() || !leaves_to_decay.is_empty();
+        if is_actual_tree {
+            // 連同被劈砍的那一格底座原木一併納入倒木軀幹中，整棵樹拔地而起傾倒！
+            logs_to_process.push(broken_pos);
+        } else {
+            // 孤立單塊原木（例如單獨立方體木塊，無樹幹或樹葉）：直接爆散生成單一原木掉落物或收穫至背包
+            if let Some((ref mut meshes, ref material)) = visual_assets {
+                let drop_pos = broken_pos.as_vec3() + Vec3::new(0.5, 0.5, 0.5);
+                let angle = (broken_pos.x.wrapping_mul(37) ^ broken_pos.z.wrapping_mul(17) ^ broken_pos.y) as f32;
+                let drop_vel = Vec3::new(angle.cos() * 1.2, 2.8, angle.sin() * 1.2);
+                spawn_item_drop(
+                    commands,
+                    meshes,
+                    material.clone(),
+                    ItemStack::new(ItemType::OakLog, 1, registry),
+                    drop_pos,
+                    drop_vel,
+                );
+            } else {
+                inventory.add_item(ItemStack::new(ItemType::OakLog, 1, registry), registry);
+            }
+            return;
+        }
+
+        let tree_height = logs_to_process.iter().map(|p| p.y - broken_pos.y + 1).max().unwrap_or(1).max(1) as f32;
         let log_color = get_block_debris_color(BlockType::OakLog);
         let leaf_color = get_block_debris_color(BlockType::OakLeaves);
 
         // 3. 準備實體化倒木 (Falling Tree Entity) 之複合網格數據
-        let log_offsets: Vec<Vec3> = logs_to_process.iter().map(|&p| (p - broken_pos).as_vec3()).collect();
-        let leaf_offsets: Vec<Vec3> = leaves_to_decay.iter().map(|&p| (p - broken_pos).as_vec3()).collect();
+        // 旋轉支點 pivot 設於底座接觸面：broken_pos 底面中心 (0.5, 0.0, 0.5)
+        // 偏移 offset 精確對齊該幾何中心：(p - broken_pos) + (0.0, 0.5, 0.0)
+        let log_offsets: Vec<Vec3> = logs_to_process.iter().map(|&p| (p - broken_pos).as_vec3() + Vec3::new(0.0, 0.5, 0.0)).collect();
+        let leaf_offsets: Vec<Vec3> = leaves_to_decay.iter().map(|&p| (p - broken_pos).as_vec3() + Vec3::new(0.0, 0.5, 0.0)).collect();
 
         let mut tree_entity_spawned = false;
         if let Some((ref mut meshes, ref material)) = visual_assets {
@@ -137,7 +166,7 @@ pub fn handle_tree_break(
                     fall_axis = Vec3::X;
                 }
 
-                let pivot = broken_pos.as_vec3() + Vec3::new(0.5, 0.5, 0.5);
+                let pivot = broken_pos.as_vec3() + Vec3::new(0.5, 0.0, 0.5);
                 commands.spawn((
                     SpatialBundle {
                         transform: Transform::from_translation(pivot),
@@ -146,21 +175,23 @@ pub fn handle_tree_break(
                     FallingTree {
                         pivot,
                         fall_axis,
-                        angle: 0.05, // 初始微傾角
-                        angular_velocity: 0.4,
+                        angle: 0.06, // 初始微傾角
+                        angular_velocity: (0.35 / tree_height.sqrt()).clamp(0.15, 0.5),
                         lifetime: 0.0,
+                        height: tree_height,
+                        leaf_count: leaves_to_decay.len(),
                         log_offsets: log_offsets.clone(),
                         leaf_offsets: leaf_offsets.clone(),
                     },
                 )).with_children(|parent| {
                     // 注意：FallingTree 的子網格因 compound_voxel_mesh 以 (16, 0, 16) 為中心構建，
-                    // 故此處需施加 (-16, 0, -16) 局部平移使旋轉軸心精確對齊父實體的 pivot 座標。
+                    // 底面中心為 (16.5, 0.0, 16.5)，故施加 (-16.5, 0.0, -16.5) 局部平移使旋轉軸心精確對齊父實體的 pivot 座標。
                     // 同時掛載 NoFrustumCulling，保證全自訂 Packed Shader 網格在任何視角與傾角下 100% 穩定可見！
                     parent.spawn((
                         MaterialMeshBundle {
                             mesh: mesh_handle,
                             material: material.clone(),
-                            transform: Transform::from_translation(Vec3::new(-16.0, 0.0, -16.0)),
+                            transform: Transform::from_translation(Vec3::new(-16.5, 0.0, -16.5)),
                             ..default()
                         },
                         NoFrustumCulling,
@@ -174,7 +205,9 @@ pub fn handle_tree_break(
         for log_pos in logs_to_process {
             world.set_block_global(log_pos, BlockType::Air, commands);
             particle_mgr.spawn_debris(log_pos.as_vec3() + 0.5, log_color, 4);
-            inventory.damage_selected_tool(1);
+            if log_pos != broken_pos {
+                inventory.damage_selected_tool(1);
+            }
             if !tree_entity_spawned {
                 inventory.add_item(ItemStack::new(ItemType::OakLog, 1, registry), registry);
             }
@@ -228,17 +261,26 @@ pub fn update_falling_trees(
     let dt = time.delta_seconds();
     for (entity, mut transform, mut tree) in q_trees.iter_mut() {
         tree.lifetime += dt;
-        // 重力力矩角加速度：tau = g * sin(theta)
-        let torque = 4.5 * tree.angle.max(0.08).sin() + 0.3;
+        // 剛體力學角加速度：alpha = (3g / 2L) * sin(theta)
+        // 樹高 L 越大，轉動慣量越大，角加速度越緩；矮樹倒伏俐落，參天巨木倒塌磅礡沉著
+        let h = tree.height.max(2.0);
+        let g = 9.8f32;
+        let base_accel = (1.5 * g) / h;
+        let torque = base_accel * tree.angle.max(0.08).sin() + (0.35 / h.sqrt());
         tree.angular_velocity += torque * dt;
+
+        // 樹冠空氣動力學阻尼 (葉面阻力與空氣阻抗)
+        let drag = (0.0025 * tree.leaf_count as f32).min(0.20);
+        tree.angular_velocity *= (1.0 - drag * dt).max(0.0);
+
         tree.angle += tree.angular_velocity * dt;
 
         let rot = Quat::from_axis_angle(tree.fall_axis, tree.angle);
         transform.rotation = rot;
 
         // 探測倒木是否碰撞固體地面 (Ray / Voxel Contact Detection)
-        // 倒塌至接近地面 (~84 度，即 ~1.46 rad) 或超時保護 (2.5 秒) 作為保底
-        let mut hit_ground = tree.angle >= std::f32::consts::FRAC_PI_2 * 0.93 || tree.lifetime > 2.5;
+        // 倒塌至接近地面 (~84 度，即 ~1.46 rad) 或超時保護 (3.5 秒) 作為保底
+        let mut hit_ground = tree.angle >= std::f32::consts::FRAC_PI_2 * 0.93 || tree.lifetime > 3.5;
 
         // 🔥 關鍵修復：唯有倒塌超過 45 度 (~0.80 rad) 且僅針對原木軀幹 (log_offsets) 進行實心障礙物/地面判定
         // 徹底杜絕高空樹冠在 10 度時因微小樹葉刮擦側邊山坡或相鄰樹木而提早原地爆炸
@@ -498,6 +540,8 @@ mod tests {
                 angle: 0.1,
                 angular_velocity: 1.0,
                 lifetime: 0.0,
+                height: 4.0,
+                leaf_count: 10,
                 log_offsets: vec![Vec3::new(0.0, 1.0, 0.0)],
                 leaf_offsets: vec![Vec3::new(0.0, 2.0, 0.0)],
             },
@@ -570,6 +614,8 @@ mod tests {
                 angle: 0.3,
                 angular_velocity: 1.5,
                 lifetime: 0.1,
+                height: 4.0,
+                leaf_count: 0,
                 log_offsets: vec![Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 2.0, 0.0)],
                 leaf_offsets: vec![Vec3::new(0.0, 3.0, 0.0)],
             },
@@ -624,6 +670,8 @@ mod tests {
                 angle: 1.45,
                 angular_velocity: 2.0,
                 lifetime: 1.0,
+                height: 4.0,
+                leaf_count: 0,
                 log_offsets: vec![Vec3::new(0.0, 1.0, 0.0)],
                 leaf_offsets: vec![],
             },
@@ -647,5 +695,68 @@ mod tests {
         // 但相機應收到轟鳴震顫 (trauma > 0)
         let shake = world.resource::<ScreenShake>();
         assert!(shake.trauma > 0.1, "近距離倒木撞地應對周遭玩家注入轟鳴震顫");
+    }
+
+    #[test]
+    fn test_falling_tree_angular_acceleration_scales_with_height() {
+        // 剛體力學驗證：矮樹 (h=3) vs 參天巨木 (h=12)
+        // 轉動慣量與高成正比，角加速度 alpha = (3g / 2L) * sin(theta)
+        // 矮樹角加速度應顯著大於巨木
+        let mut world = BevyWorld::new();
+        world.init_resource::<Time>();
+        world.init_resource::<ParticleManager>();
+
+        let short_tree = world.spawn((
+            SpatialBundle::default(),
+            FallingTree {
+                pivot: Vec3::ZERO,
+                fall_axis: Vec3::X,
+                angle: 0.2,
+                angular_velocity: 0.5,
+                lifetime: 0.0,
+                height: 3.0,
+                leaf_count: 5,
+                log_offsets: vec![Vec3::new(0.0, 1.0, 0.0)],
+                leaf_offsets: vec![],
+            },
+        )).id();
+
+        let tall_tree = world.spawn((
+            SpatialBundle::default(),
+            FallingTree {
+                pivot: Vec3::ZERO,
+                fall_axis: Vec3::X,
+                angle: 0.2,
+                angular_velocity: 0.5,
+                lifetime: 0.0,
+                height: 12.0,
+                leaf_count: 5,
+                log_offsets: vec![Vec3::new(0.0, 1.0, 0.0)],
+                leaf_offsets: vec![],
+            },
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(update_falling_trees);
+
+        {
+            let mut time = world.resource_mut::<Time>();
+            time.advance_by(std::time::Duration::from_millis(100));
+        }
+        schedule.run(&mut world);
+
+        let s_tree = world.get::<FallingTree>(short_tree).unwrap();
+        let t_tree = world.get::<FallingTree>(tall_tree).unwrap();
+
+        assert!(
+            s_tree.angular_velocity > t_tree.angular_velocity,
+            "矮樹角加速度應大於巨木 (矮樹: {}, 巨木: {})",
+            s_tree.angular_velocity,
+            t_tree.angular_velocity
+        );
+        assert!(
+            s_tree.angle > t_tree.angle,
+            "矮樹在同時間內傾倒角度應大於巨木"
+        );
     }
 }
