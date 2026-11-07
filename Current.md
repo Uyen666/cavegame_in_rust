@@ -198,6 +198,25 @@ src/
   - **3D 物理掉落物與 Q 鍵丟棄 (3D ItemDrop & Drop Keybind)**：實裝獨立 `ItemDrop` 實體，具備真實重力、固體地面碰撞、懸浮緩慢自轉、1.8m 磁吸入包與 300s 超時銷毀；玩家按 Q 鍵可手動丟棄選中槽位物品。
   - **全挖掘方塊全面實體化與開局鐵斧配發**：初始快捷列第 8 格配置鐵斧 (`IronAxe`)；全方塊挖掘破壞（草地、石頭、火把等）全面升級為 3D 物理掉落物 (`ItemDrop`)，採集彈射立體方塊並磁吸入包；未達工具等級採伐時提供直觀反饋提示。
 
+- **11/7 Dropz 級寫實物理掉落物系統 (Dropz Realistic Physics & Lighting Item Drops)**:
+  - **環境光動態採樣與網格頂點更新**：
+    - 徹底根除掉落物在黑夜自發光像 100W 燈泡的嚴重瑕疵（修復原先 `build_single_voxel_mesh` 將 `block_lights` 硬編碼為 15 的問題）；
+    - 掉落物跨越體素時自動向 `WorldManager` 採樣真實世界的 `sky_light` 與 `block_light`（火把自發光物品除外）；
+    - 在 `src/render/greedy.rs` 新增 `update_single_voxel_mesh_light`，直接透過位元遮罩覆寫頂點 packed data 高 8 位元，零內存分配極致高效；
+  - **寫實伏地平躺 (Dropz Flat Resting)**：
+    - 木棒 (`ItemType::Stick`) 落地後立即呈 90 度橫躺於地面（Y 軸貼合 1.04），方塊物品穩固坐落於地面（Y 軸貼合 1.14），停止自轉與浮空；
+    - 空中拋射與下落時呈現自然 3D 翻滾，著地後平穩停止；
+  - **全向 3D 體素 AABB 碰撞盒與彈壁消解**：
+    - 掉落物具備半徑 0.15m、高 0.08m~0.28m 的 3D AABB 碰撞盒；
+    - 嚴密檢測 X / Z 水平碰撞，遭遇土牆、岩壁時以 0.3 彈性係數反彈並減速，徹底杜絕旋轉穿模或半截卡進土牆內的視覺破綻；
+    - Y 軸地面碰撞偵測，高速撞地產生真實小彈跳，低速則穩固貼地；
+  - **水體浮力與阻力 (Fluid Physics / Buoyancy)**：
+    - 掉落物進入水體 (`world.get_fluid_global > 0`) 時套用水阻減速；
+    - 原木 (`OakLog`)、木棒 (`Stick`)、樹葉 (`OakLeaves`) 具備自然浮力（向上加速 18.0*dt），穩妥浮於水面；
+    - 石頭、礦石等重物則以緩慢速度下沉到底部；
+  - **平滑磁吸拾取**：
+    - 玩家靠近 1.8m 時喚醒平滑磁吸，滑順飛向玩家並納入背包；背包滿或拾取延遲冷卻中則保持伏地平躺。
+
 - **10/1 硬核真實生存四大里程碑系統 (Hardcore Realistic Survival 4-Step Milestone)**:
   - **第一步：樹木重力與採伐工具門檻 (Tree Felling & Gravity System)**:
     - `ToolTier::Wood` 斧頭採伐門檻：原木 (`OakLog`) 只有在手持斧頭時方可採收，空手敲擊不掉落原木；敲擊樹葉掉落木棒 (`ItemType::Stick`)；

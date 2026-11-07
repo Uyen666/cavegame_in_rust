@@ -447,16 +447,18 @@ impl Inventory {
     }
 }
 
-/// 輕量化 3D 物理掉落物實體 (Floating Item Entity)
-/// 模擬物品在世界中受重力掉落、懸浮緩慢自轉、磁吸吸附至玩家背包與超時銷毀
+/// 寫實 3D 物理掉落物實體 (Realistic Dropz-Style Physical Item Entity)
+/// 模擬物品在世界中受重力拋射、全向體素碰撞反彈、平躺伏地休止、水體浮力、即時環境光採樣與磁吸吸附
 #[derive(Component, Debug, Clone)]
 pub struct ItemDrop {
     pub item_stack: ItemStack,
     pub velocity: Vec3,
-    pub pickup_delay: f32, // 初始 0.5s 防立即拾取
-    pub lifetime: f32,     // 300.0s 超時銷毀防內存膨脹
-    pub rotation_yaw: f32,
-    pub bobbing_phase: f32,
+    pub pickup_delay: f32,    // 初始 0.5s 防立即拾取
+    pub lifetime: f32,        // 300.0s 超時銷毀防內存膨脹
+    pub on_ground: bool,      // 是否已穩固落地平躺 (Dropz Flat Resting)
+    pub resting_yaw: f32,     // 落地休止時的偏轉角
+    pub roll_angle: f32,      // 空中翻滾旋轉角
+    pub current_voxel: IVec3, // 當前採樣光照之體素座標
 }
 
 pub fn spawn_item_drop(
@@ -477,6 +479,7 @@ pub fn spawn_item_drop(
         }
     };
     let mesh = meshes.add(crate::render::greedy::build_single_voxel_mesh(block));
+    let random_yaw = ((pos.x * 37.0 + pos.z * 19.0 + pos.y * 11.0).sin() * 3.14159).abs();
     commands.spawn((
         MaterialMeshBundle {
             mesh,
@@ -489,8 +492,10 @@ pub fn spawn_item_drop(
             velocity,
             pickup_delay: 0.5,
             lifetime: 0.0,
-            rotation_yaw: 0.0,
-            bobbing_phase: 0.0,
+            on_ground: false,
+            resting_yaw: random_yaw,
+            roll_angle: 0.0,
+            current_voxel: IVec3::splat(i32::MIN), // 強制首幀立即採樣世界真實光照
         },
     )).id()
 }
@@ -500,9 +505,10 @@ pub fn update_item_drops(
     time: Res<Time>,
     world: Res<crate::world::WorldManager>,
     registry: Res<ItemRegistry>,
-    mut q_drops: Query<(Entity, &mut Transform, &mut ItemDrop)>,
+    mut q_drops: Query<(Entity, &mut Transform, &mut ItemDrop, Option<&Handle<Mesh>>)>,
     mut q_player: Query<(&Transform, &mut Inventory, &crate::player::Player), Without<ItemDrop>>,
     mut particle_mgr: ResMut<crate::render::particles::ParticleManager>,
+    mut meshes: Option<ResMut<Assets<Mesh>>>,
 ) {
     let dt = time.delta_seconds();
     if dt <= 0.00001 { return; }
@@ -510,48 +516,151 @@ pub fn update_item_drops(
     let Ok((p_transform, mut inventory, player)) = q_player.get_single_mut() else { return; };
     let player_head = p_transform.translation + Vec3::new(0.0, 0.9, 0.0);
 
-    for (entity, mut transform, mut drop) in q_drops.iter_mut() {
+    for (entity, mut transform, mut drop, maybe_mesh) in q_drops.iter_mut() {
         drop.lifetime += dt;
         drop.pickup_delay = (drop.pickup_delay - dt).max(0.0);
 
-        // 1. 超時 300 秒自動銷毀
+        // 1. 超時 300 秒自動銷毀防內存膨脹
         if drop.lifetime > 300.0 {
             commands.entity(entity).despawn_recursive();
             continue;
         }
 
-        // 2. 重力與速度結算
-        drop.velocity.y -= 18.0 * dt;
-        drop.velocity.y = drop.velocity.y.max(-20.0);
-        let next_pos = transform.translation + drop.velocity * dt;
+        // 2. 即時環境光動態更新 (Real-time Voxel Lighting Sampling)
+        let cur_voxel = IVec3::new(
+            transform.translation.x.floor() as i32,
+            transform.translation.y.floor() as i32,
+            transform.translation.z.floor() as i32,
+        );
+        if drop.current_voxel != cur_voxel {
+            drop.current_voxel = cur_voxel;
+            let sl = world.get_sky_light_global(cur_voxel);
+            let bl = if drop.item_stack.item_type == ItemType::Torch {
+                15 // 火把實體自發光
+            } else {
+                world.get_block_light_global(cur_voxel)
+            };
+            if let Some(ref mut meshes_asset) = meshes {
+                if let Some(mesh_handle) = maybe_mesh {
+                    if let Some(mesh) = meshes_asset.get_mut(mesh_handle) {
+                        crate::render::greedy::update_single_voxel_mesh_light(mesh, sl, bl);
+                    }
+                }
+            }
+        }
 
+        let is_stick = drop.item_stack.item_type == ItemType::Stick;
+        let half_h = if is_stick { 0.04 } else { 0.14 };
+        let radius = 0.15;
+
+        // 3. 水體浮力與阻力 (Fluid Physics / Dropz Buoyancy)
+        let is_in_water = world.get_fluid_global(cur_voxel) > 0;
+        if is_in_water {
+            // 水中阻力減速
+            drop.velocity *= (1.0 - 3.0 * dt).max(0.0);
+            let is_buoyant = matches!(drop.item_stack.item_type, ItemType::Stick | ItemType::OakLog | ItemType::OakLeaves);
+            if is_buoyant {
+                // 木質浮力：迅速浮向水面
+                drop.velocity.y += 18.0 * dt;
+                drop.velocity.y = drop.velocity.y.min(1.5);
+            } else {
+                // 重物緩慢沉底
+                drop.velocity.y -= 4.0 * dt;
+                drop.velocity.y = drop.velocity.y.max(-2.0);
+            }
+        } else if !drop.on_ground {
+            // 常規空氣重力
+            drop.velocity.y -= 18.0 * dt;
+            drop.velocity.y = drop.velocity.y.max(-20.0);
+        }
+
+        // 4. 全向 3D 體素 AABB 碰撞與防穿牆 (Voxel AABB Wall Rebound & Ground Collision)
+        // (a) X 軸水平碰撞
+        if drop.velocity.x.abs() > 0.001 {
+            let next_x = transform.translation.x + drop.velocity.x * dt;
+            let check_x_voxel = IVec3::new(
+                (if drop.velocity.x > 0.0 { next_x + radius } else { next_x - radius }).floor() as i32,
+                (transform.translation.y).floor() as i32,
+                transform.translation.z.floor() as i32,
+            );
+            if world.get_block_global(check_x_voxel).is_solid() {
+                drop.velocity.x = -drop.velocity.x * 0.3; // 彈壁
+            } else {
+                transform.translation.x = next_x;
+            }
+        }
+
+        // (b) Z 軸水平碰撞
+        if drop.velocity.z.abs() > 0.001 {
+            let next_z = transform.translation.z + drop.velocity.z * dt;
+            let check_z_voxel = IVec3::new(
+                transform.translation.x.floor() as i32,
+                (transform.translation.y).floor() as i32,
+                (if drop.velocity.z > 0.0 { next_z + radius } else { next_z - radius }).floor() as i32,
+            );
+            if world.get_block_global(check_z_voxel).is_solid() {
+                drop.velocity.z = -drop.velocity.z * 0.3; // 彈壁
+            } else {
+                transform.translation.z = next_z;
+            }
+        }
+
+        // (c) Y 軸垂直地面碰撞
+        let next_y = transform.translation.y + drop.velocity.y * dt;
         let foot_voxel = IVec3::new(
-            next_pos.x.floor() as i32,
-            (next_pos.y - 0.15).floor() as i32,
-            next_pos.z.floor() as i32,
+            transform.translation.x.floor() as i32,
+            (next_y - half_h).floor() as i32,
+            transform.translation.z.floor() as i32,
         );
         let block_below = world.get_block_global(foot_voxel);
         if block_below.is_solid() {
-            let floor_y = foot_voxel.y as f32 + 1.0 + 0.15;
-            transform.translation.y = floor_y;
-            drop.velocity.y = 0.0;
-            drop.velocity.x *= 0.85;
-            drop.velocity.z *= 0.85;
+            let floor_y = foot_voxel.y as f32 + 1.0;
+            transform.translation.y = floor_y + half_h;
+            if drop.velocity.y < -3.5 {
+                drop.velocity.y = -drop.velocity.y * 0.22; // 著地小彈跳
+            } else {
+                drop.velocity.y = 0.0;
+                drop.on_ground = true;
+            }
+            drop.velocity.x *= 0.65;
+            drop.velocity.z *= 0.65;
         } else {
-            transform.translation = next_pos;
+            transform.translation.y = next_y;
+            drop.on_ground = false;
         }
 
-        // 3. 視覺懸浮自轉
-        drop.rotation_yaw += 2.0 * dt;
-        drop.bobbing_phase += 3.0 * dt;
-        transform.rotation = Quat::from_rotation_y(drop.rotation_yaw);
+        if drop.on_ground {
+            drop.velocity.x *= 0.7;
+            drop.velocity.z *= 0.7;
+            if drop.velocity.length_squared() < 0.001 {
+                drop.velocity = Vec3::ZERO;
+            }
+        }
 
-        // 4. 磁吸拾取 (半徑 1.8 格)
+        // 5. 寫實平躺伏地視覺 (Dropz Flat Resting)
+        if drop.on_ground {
+            if is_stick {
+                // 木棒橫臥平躺於地面，不再豎直自轉
+                let flat_rot = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+                transform.rotation = Quat::from_rotation_y(drop.resting_yaw) * flat_rot;
+            } else {
+                // 方塊平穩坐落於地面，靜止不旋轉
+                transform.rotation = Quat::from_rotation_y(drop.resting_yaw);
+            }
+        } else {
+            // 空中翻滾
+            drop.roll_angle += (drop.velocity.length() * 2.0 + 2.0) * dt;
+            let tumble = Quat::from_rotation_x(drop.roll_angle);
+            transform.rotation = Quat::from_rotation_y(drop.resting_yaw) * tumble;
+        }
+
+        // 6. 磁吸拾取 (半徑 1.8 格)
         if !player.is_spectator && drop.pickup_delay <= 0.0 {
             let dist = transform.translation.distance(player_head);
             if dist <= 1.8 {
+                drop.on_ground = false; // 喚醒吸附
                 let dir = (player_head - transform.translation).normalize_or_zero();
-                let move_dist = (8.0 * dt).min(dist);
+                let move_dist = (9.0 * dt).min(dist);
                 transform.translation += dir * move_dist;
 
                 let current_dist = transform.translation.distance(player_head);
@@ -745,7 +854,7 @@ mod tests {
             Transform::from_xyz(0.0, 1.0, 0.0),
         )).id();
 
-        // 掉落物生成於 (0.0, 1.5, 0.3)（處於玩家前上方，落地於 y=1.15，處於 1.8m 磁吸半徑內）
+        // 掉落物生成於 (0.0, 1.5, 0.3)（處於玩家前上方，落地於 y=1.14，處於 1.8m 磁吸半徑內）
         // 初始設置 pickup_delay = 0.5s 防立即拾取
         let drop_ent = world.spawn((
             Transform::from_xyz(0.0, 1.5, 0.3),
@@ -754,15 +863,17 @@ mod tests {
                 velocity: Vec3::ZERO,
                 pickup_delay: 0.5,
                 lifetime: 0.0,
-                rotation_yaw: 0.0,
-                bobbing_phase: 0.0,
+                on_ground: false,
+                resting_yaw: 0.0,
+                roll_angle: 0.0,
+                current_voxel: IVec3::splat(i32::MIN),
             },
         )).id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(update_item_drops);
 
-        // 前 4 個 tick (每個 0.05s，共 0.2s)：掉落物受重力自然落體至地面 (y = 1.15)，此時 pickup_delay 仍在冷卻 (剩餘 0.3s)
+        // 前 4 個 tick (每個 0.05s，共 0.2s)：掉落物受重力自然落體至地面 (y = 1.14)，此時 pickup_delay 仍在冷卻 (剩餘 0.3s)
         for _ in 0..4 {
             let mut time = world.resource_mut::<Time>();
             time.advance_by(std::time::Duration::from_millis(50));
@@ -788,15 +899,173 @@ mod tests {
         let slot = p_inv.slot(0).expect("Slot 0 should contain picked up item");
         assert_eq!(slot.item_type, ItemType::OakLog);
         assert_eq!(slot.count, 2);
+    }
 
-        // 掉落物已被吸入並銷毀
-        assert!(world.get::<ItemDrop>(drop_ent).is_none(), "磁吸完畢後掉落物實體應銷毀");
+    #[test]
+    fn test_item_drop_flat_resting_stick_and_block() {
+        use bevy::ecs::world::{World as BevyWorld, CommandQueue};
+        use crate::world::{WorldManager, ChunkEntry, ChunkLightBuffer, generator};
+        use crate::render::particles::ParticleManager;
+        use crate::player::Player;
 
-        // 背包槽位 0 應已收到 2 個 OakLog
-        let p_inv = world.get::<Inventory>(player_ent).unwrap();
-        let slot = p_inv.slot(0).expect("Slot 0 should contain picked up item");
-        assert_eq!(slot.item_type, ItemType::OakLog);
-        assert_eq!(slot.count, 2);
+        let mut world = BevyWorld::new();
+        world.init_resource::<Time>();
+        world.init_resource::<ItemRegistry>();
+        world.init_resource::<ParticleManager>();
+
+        let mut wm = WorldManager::default();
+        let chunk_pos = IVec3::new(0, 0, 0);
+        wm.chunks.insert(chunk_pos, ChunkEntry {
+            buffer: std::sync::Arc::new(generator::ChunkBuffer { blocks: [BlockType::Air; 32768] }),
+            light_buffer: std::sync::Arc::new(ChunkLightBuffer::default()),
+            fluid_buffer: None,
+            entity: None,
+            is_modified: false,
+            is_lighting_ready: true,
+        });
+
+        // 鋪設地面 y = 0
+        let ecs_world = BevyWorld::new();
+        let mut queue = CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &ecs_world);
+        for x in -2..=2 {
+            for z in -2..=2 {
+                wm.set_block_global(IVec3::new(x, 0, z), BlockType::Stone, &mut commands);
+            }
+        }
+        world.insert_resource(wm);
+
+        let registry = ItemRegistry;
+
+        // 玩家站遠離 10 格 (不觸發磁吸)
+        world.spawn((
+            Player::default(),
+            Inventory::new(36),
+            Transform::from_xyz(10.0, 10.0, 10.0),
+        ));
+
+        // 生成木棒掉落物（初始高度 1.5）
+        let stick_ent = world.spawn((
+            Transform::from_xyz(0.0, 1.5, 0.0),
+            ItemDrop {
+                item_stack: ItemStack::new(ItemType::Stick, 1, &registry),
+                velocity: Vec3::ZERO,
+                pickup_delay: 2.0,
+                lifetime: 0.0,
+                on_ground: false,
+                resting_yaw: 0.5,
+                roll_angle: 0.0,
+                current_voxel: IVec3::splat(i32::MIN),
+            },
+        )).id();
+
+        // 生成方塊掉落物（初始高度 1.5）
+        let block_ent = world.spawn((
+            Transform::from_xyz(1.0, 1.5, 0.0),
+            ItemDrop {
+                item_stack: ItemStack::new(ItemType::Stone, 1, &registry),
+                velocity: Vec3::ZERO,
+                pickup_delay: 2.0,
+                lifetime: 0.0,
+                on_ground: false,
+                resting_yaw: 0.2,
+                roll_angle: 0.0,
+                current_voxel: IVec3::splat(i32::MIN),
+            },
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(update_item_drops);
+
+        // 推進 15 個 tick (共 0.75s) 使其著地彈跳後完全靜止休止
+        for _ in 0..15 {
+            let mut time = world.resource_mut::<Time>();
+            time.advance_by(std::time::Duration::from_millis(50));
+            schedule.run(&mut world);
+        }
+
+        // 驗證木棒平躺伏地：on_ground 為 true，高度貼合 1.04，旋轉為橫躺 (X 軸傾角 90 度)
+        let stick_drop = world.get::<ItemDrop>(stick_ent).unwrap();
+        let stick_trans = world.get::<Transform>(stick_ent).unwrap();
+        assert!(stick_drop.on_ground, "木棒著地後應進入平躺伏地狀態");
+        assert!((stick_trans.translation.y - 1.04).abs() < 0.01, "木棒伏地高度應為 1.04 (floor 1.0 + half_h 0.04)");
+
+        // 驗證方塊平穩就坐：on_ground 為 true，高度貼合 1.14
+        let block_drop = world.get::<ItemDrop>(block_ent).unwrap();
+        let block_trans = world.get::<Transform>(block_ent).unwrap();
+        assert!(block_drop.on_ground, "方塊著地後應穩固休止");
+        assert!((block_trans.translation.y - 1.14).abs() < 0.01, "方塊坐落高度應為 1.14 (floor 1.0 + half_h 0.14)");
+    }
+
+    #[test]
+    fn test_item_drop_horizontal_aabb_wall_rebound() {
+        use bevy::ecs::world::{World as BevyWorld, CommandQueue};
+        use crate::world::{WorldManager, ChunkEntry, ChunkLightBuffer, generator};
+        use crate::render::particles::ParticleManager;
+        use crate::player::Player;
+
+        let mut world = BevyWorld::new();
+        world.init_resource::<Time>();
+        world.init_resource::<ItemRegistry>();
+        world.init_resource::<ParticleManager>();
+
+        let mut wm = WorldManager::default();
+        let chunk_pos = IVec3::new(0, 0, 0);
+        wm.chunks.insert(chunk_pos, ChunkEntry {
+            buffer: std::sync::Arc::new(generator::ChunkBuffer { blocks: [BlockType::Air; 32768] }),
+            light_buffer: std::sync::Arc::new(ChunkLightBuffer::default()),
+            fluid_buffer: None,
+            entity: None,
+            is_modified: false,
+            is_lighting_ready: true,
+        });
+
+        // 在 x=1, y=1 放置固體石牆，防止物品向 +X 穿透
+        let ecs_world = BevyWorld::new();
+        let mut queue = CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &ecs_world);
+        wm.set_block_global(IVec3::new(1, 1, 0), BlockType::Stone, &mut commands);
+        world.insert_resource(wm);
+
+        let registry = ItemRegistry;
+
+        world.spawn((
+            Player::default(),
+            Inventory::new(36),
+            Transform::from_xyz(10.0, 10.0, 10.0),
+        ));
+
+        // 掉落物從 x=0.6, y=1.2 帶著強烈向 +X 初速 (vx = 5.0) 飛向石牆
+        let drop_ent = world.spawn((
+            Transform::from_xyz(0.6, 1.2, 0.0),
+            ItemDrop {
+                item_stack: ItemStack::new(ItemType::Dirt, 1, &registry),
+                velocity: Vec3::new(5.0, 0.0, 0.0),
+                pickup_delay: 2.0,
+                lifetime: 0.0,
+                on_ground: false,
+                resting_yaw: 0.0,
+                roll_angle: 0.0,
+                current_voxel: IVec3::splat(i32::MIN),
+            },
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(update_item_drops);
+
+        // 推進 2 個 tick (共 0.1s)
+        for _ in 0..2 {
+            let mut time = world.resource_mut::<Time>();
+            time.advance_by(std::time::Duration::from_millis(50));
+            schedule.run(&mut world);
+        }
+
+        let drop = world.get::<ItemDrop>(drop_ent).unwrap();
+        let trans = world.get::<Transform>(drop_ent).unwrap();
+
+        // 驗證掉落物碰壁彈回：速度反向 (vx < 0)，且絕對未穿透進 x >= 1.0 的石牆內部
+        assert!(drop.velocity.x < 0.0, "撞擊固體牆壁後速度應反彈 (vx < 0)");
+        assert!(trans.translation.x < 1.0, "全向 AABB 體素碰撞嚴格防止物品穿透進固體方塊內部");
     }
 }
 

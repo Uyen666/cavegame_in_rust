@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy::render::mesh::{Indices, MeshVertexAttribute};
+use bevy::render::mesh::{Indices, MeshVertexAttribute, VertexAttributeValues};
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{PrimitiveTopology, VertexFormat};
 use crate::world::{Chunk, BlockType, WorldManager};
@@ -1037,11 +1037,11 @@ fn generate_fluid_mesh(
     }
 }
 
-/// 構建用於 UI 物品欄（Hotbar / Inventory）等 3D 預覽的獨立體素網格。
+/// 構建用於 UI 物品欄（Hotbar / Inventory）與 3D 物理掉落物的獨立體素網格。
 ///
 /// 採用與區塊貪婪網格生成器完全一致的座標系、頂點位元壓縮（Packed Format）與頂點繞行法（Winding Order），
-/// 確保在 GPU 背面剔除（Backface Culling）與自訂 WGSL Shader 下各表面法線正確朝外且 UV 貼圖映射無瑕疵。
-pub fn build_single_voxel_mesh(block: BlockType) -> Mesh {
+/// 支援傳入自訂天空光（sky_light）與方塊光（block_light），使掉落物能真實融入世界環境光照。
+pub fn build_single_voxel_mesh_with_light(block: BlockType, sky_light: u8, block_light: u8) -> Mesh {
     let mut bucket = empty_mesh();
     if block == BlockType::Air {
         return Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
@@ -1068,8 +1068,8 @@ pub fn build_single_voxel_mesh(block: BlockType) -> Mesh {
                 };
 
                 let tex_layer = get_texture_layer(block, d, normal_val);
-                let sky_lights = [15, 15, 15, 15];
-                let block_lights = [15, 15, 15, 15]; // UI 預覽鎖定 15 級滿亮
+                let sky_lights = [sky_light, sky_light, sky_light, sky_light];
+                let block_lights = [block_light, block_light, block_light, block_light];
 
                 let mut x = [0i32; 3];
                 x[d] = if normal_val > 0 { 1 } else { 0 };
@@ -1115,6 +1115,21 @@ pub fn build_single_voxel_mesh(block: BlockType) -> Mesh {
     mesh.insert_attribute(ATTRIBUTE_FLOW_VECTOR, bucket.2);
     mesh.insert_indices(Indices::U32(bucket.1));
     mesh
+}
+
+#[inline(always)]
+pub fn build_single_voxel_mesh(block: BlockType) -> Mesh {
+    build_single_voxel_mesh_with_light(block, 15, 15)
+}
+
+/// 動態更新單體體素網格頂點的光照數據 (Real-time Mesh Light Update)
+pub fn update_single_voxel_mesh_light(mesh: &mut Mesh, sky_light: u8, block_light: u8) {
+    if let Some(VertexAttributeValues::Uint32(ref mut data)) = mesh.attribute_mut(ATTRIBUTE_PACKED_DATA) {
+        let light_mask = ((block_light as u32 & 0x0F) << 24) | ((sky_light as u32 & 0x0F) << 28);
+        for val in data.iter_mut() {
+            *val = (*val & 0x00FF_FFFF) | light_mask;
+        }
+    }
 }
 
 /// 構建多體素複合動態網格 (Compound Voxel Mesh)
