@@ -108,12 +108,35 @@ pub enum ItemKind {
     Material,
 }
 
+/// 物品物理與掉落物表現屬性 (Item Physical Properties)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ItemPhysicsProperties {
+    pub scale: Vec3,         // 3D 渲染比例
+    pub half_height: f32,    // 著地休止半高
+    pub flat_resting: bool,  // 著地時是否平躺 90 度橫臥 (如木棒、工具等)
+    pub buoyancy: f32,       // 水中浮力加速度 (> 0 浮起，如木質 +18.0；<= 0 下沉，如礦物 -4.0)
+    pub is_emissive: bool,   // 是否自體發光 (如火把，夜間不隨環境光變暗)
+}
+
+impl Default for ItemPhysicsProperties {
+    fn default() -> Self {
+        Self {
+            scale: Vec3::splat(0.28),
+            half_height: 0.14,
+            flat_resting: false,
+            buoyancy: -4.0,
+            is_emissive: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ItemDefinition {
     pub id: ItemType,
     pub name: &'static str,
     pub kind: ItemKind,
     pub max_stack: u16,
+    pub physics: ItemPhysicsProperties,
 }
 
 #[derive(Resource, Debug, Clone, Default)]
@@ -121,35 +144,36 @@ pub struct ItemRegistry;
 
 impl ItemRegistry {
     pub fn get(&self, item: ItemType) -> Option<ItemDefinition> {
-        match item {
-            ItemType::Air => None,
-            ItemType::Grass => Some(ItemDefinition { id: item, name: "Grass Block", kind: ItemKind::Block(BlockType::Grass), max_stack: 64 }),
-            ItemType::Stone => Some(ItemDefinition { id: item, name: "Stone", kind: ItemKind::Block(BlockType::Stone), max_stack: 64 }),
-            ItemType::Dirt => Some(ItemDefinition { id: item, name: "Dirt", kind: ItemKind::Block(BlockType::Dirt), max_stack: 64 }),
-            ItemType::OakLog => Some(ItemDefinition { id: item, name: "Oak Log", kind: ItemKind::Block(BlockType::OakLog), max_stack: 64 }),
-            ItemType::OakLeaves => Some(ItemDefinition { id: item, name: "Oak Leaves", kind: ItemKind::Block(BlockType::OakLeaves), max_stack: 64 }),
-            ItemType::Sand => Some(ItemDefinition { id: item, name: "Sand", kind: ItemKind::Block(BlockType::Sand), max_stack: 64 }),
-            ItemType::Gravel => Some(ItemDefinition { id: item, name: "Gravel", kind: ItemKind::Block(BlockType::Gravel), max_stack: 64 }),
-            ItemType::CoalOre => Some(ItemDefinition { id: item, name: "Coal Ore", kind: ItemKind::Block(BlockType::CoalOre), max_stack: 64 }),
-            ItemType::IronOre => Some(ItemDefinition { id: item, name: "Iron Ore", kind: ItemKind::Block(BlockType::IronOre), max_stack: 64 }),
-            ItemType::Glass => Some(ItemDefinition { id: item, name: "Glass", kind: ItemKind::Block(BlockType::Glass), max_stack: 64 }),
-            ItemType::Torch => Some(ItemDefinition { id: item, name: "Torch", kind: ItemKind::Block(BlockType::Torch), max_stack: 64 }),
+        let (name, kind, max_stack, physics) = match item {
+            ItemType::Air => return None,
+            ItemType::Grass => ("Grass Block", ItemKind::Block(BlockType::Grass), 64, ItemPhysicsProperties::default()),
+            ItemType::Stone => ("Stone", ItemKind::Block(BlockType::Stone), 64, ItemPhysicsProperties::default()),
+            ItemType::Dirt => ("Dirt", ItemKind::Block(BlockType::Dirt), 64, ItemPhysicsProperties::default()),
+            ItemType::OakLog => ("Oak Log", ItemKind::Block(BlockType::OakLog), 64, ItemPhysicsProperties { buoyancy: 18.0, ..default() }),
+            ItemType::OakLeaves => ("Oak Leaves", ItemKind::Block(BlockType::OakLeaves), 64, ItemPhysicsProperties { buoyancy: 18.0, ..default() }),
+            ItemType::Sand => ("Sand", ItemKind::Block(BlockType::Sand), 64, ItemPhysicsProperties::default()),
+            ItemType::Gravel => ("Gravel", ItemKind::Block(BlockType::Gravel), 64, ItemPhysicsProperties::default()),
+            ItemType::CoalOre => ("Coal Ore", ItemKind::Block(BlockType::CoalOre), 64, ItemPhysicsProperties::default()),
+            ItemType::IronOre => ("Iron Ore", ItemKind::Block(BlockType::IronOre), 64, ItemPhysicsProperties::default()),
+            ItemType::Glass => ("Glass", ItemKind::Block(BlockType::Glass), 64, ItemPhysicsProperties::default()),
+            ItemType::Torch => ("Torch", ItemKind::Block(BlockType::Torch), 64, ItemPhysicsProperties { is_emissive: true, ..default() }),
 
-            ItemType::Coal => Some(ItemDefinition { id: item, name: "Coal", kind: ItemKind::Material, max_stack: 64 }),
-            ItemType::IronIngot => Some(ItemDefinition { id: item, name: "Iron Ingot", kind: ItemKind::Material, max_stack: 64 }),
-            ItemType::Stick => Some(ItemDefinition { id: item, name: "Stick", kind: ItemKind::Material, max_stack: 64 }),
-            ItemType::Flint => Some(ItemDefinition { id: item, name: "Flint", kind: ItemKind::Material, max_stack: 64 }),
+            ItemType::Coal => ("Coal", ItemKind::Material, 64, ItemPhysicsProperties { scale: Vec3::splat(0.2), half_height: 0.10, ..default() }),
+            ItemType::IronIngot => ("Iron Ingot", ItemKind::Material, 64, ItemPhysicsProperties { scale: Vec3::new(0.24, 0.12, 0.16), half_height: 0.06, flat_resting: true, ..default() }),
+            ItemType::Stick => ("Stick", ItemKind::Material, 64, ItemPhysicsProperties { scale: Vec3::new(0.08, 0.35, 0.08), half_height: 0.04, flat_resting: true, buoyancy: 18.0, is_emissive: false }),
+            ItemType::Flint => ("Flint", ItemKind::Material, 64, ItemPhysicsProperties { scale: Vec3::new(0.22, 0.15, 0.22), half_height: 0.08, ..default() }),
 
-            ItemType::WoodenPickaxe => Some(ItemDefinition { id: item, name: "Wooden Pickaxe", kind: ItemKind::Tool { tool_type: ToolType::Pickaxe, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 59 }, max_stack: 1 }),
-            ItemType::StonePickaxe => Some(ItemDefinition { id: item, name: "Stone Pickaxe", kind: ItemKind::Tool { tool_type: ToolType::Pickaxe, tier: ToolTier::Stone, efficiency: 4.0, max_durability: 131 }, max_stack: 1 }),
-            ItemType::IronPickaxe => Some(ItemDefinition { id: item, name: "Iron Pickaxe", kind: ItemKind::Tool { tool_type: ToolType::Pickaxe, tier: ToolTier::Iron, efficiency: 6.0, max_durability: 250 }, max_stack: 1 }),
-            ItemType::WoodenShovel => Some(ItemDefinition { id: item, name: "Wooden Shovel", kind: ItemKind::Tool { tool_type: ToolType::Shovel, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 59 }, max_stack: 1 }),
-            ItemType::StoneShovel => Some(ItemDefinition { id: item, name: "Stone Shovel", kind: ItemKind::Tool { tool_type: ToolType::Shovel, tier: ToolTier::Stone, efficiency: 4.0, max_durability: 131 }, max_stack: 1 }),
-            ItemType::IronShovel => Some(ItemDefinition { id: item, name: "Iron Shovel", kind: ItemKind::Tool { tool_type: ToolType::Shovel, tier: ToolTier::Iron, efficiency: 6.0, max_durability: 250 }, max_stack: 1 }),
-            ItemType::WoodenAxe => Some(ItemDefinition { id: item, name: "Wooden Axe", kind: ItemKind::Tool { tool_type: ToolType::Axe, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 59 }, max_stack: 1 }),
-            ItemType::StoneAxe => Some(ItemDefinition { id: item, name: "Stone Axe", kind: ItemKind::Tool { tool_type: ToolType::Axe, tier: ToolTier::Stone, efficiency: 4.0, max_durability: 131 }, max_stack: 1 }),
-            ItemType::IronAxe => Some(ItemDefinition { id: item, name: "Iron Axe", kind: ItemKind::Tool { tool_type: ToolType::Axe, tier: ToolTier::Iron, efficiency: 6.0, max_durability: 250 }, max_stack: 1 }),
-        }
+            ItemType::WoodenPickaxe => ("Wooden Pickaxe", ItemKind::Tool { tool_type: ToolType::Pickaxe, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 59 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, buoyancy: 18.0, ..default() }),
+            ItemType::StonePickaxe => ("Stone Pickaxe", ItemKind::Tool { tool_type: ToolType::Pickaxe, tier: ToolTier::Stone, efficiency: 4.0, max_durability: 131 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, ..default() }),
+            ItemType::IronPickaxe => ("Iron Pickaxe", ItemKind::Tool { tool_type: ToolType::Pickaxe, tier: ToolTier::Iron, efficiency: 6.0, max_durability: 250 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, ..default() }),
+            ItemType::WoodenShovel => ("Wooden Shovel", ItemKind::Tool { tool_type: ToolType::Shovel, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 59 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, buoyancy: 18.0, ..default() }),
+            ItemType::StoneShovel => ("Stone Shovel", ItemKind::Tool { tool_type: ToolType::Shovel, tier: ToolTier::Stone, efficiency: 4.0, max_durability: 131 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, ..default() }),
+            ItemType::IronShovel => ("Iron Shovel", ItemKind::Tool { tool_type: ToolType::Shovel, tier: ToolTier::Iron, efficiency: 6.0, max_durability: 250 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, ..default() }),
+            ItemType::WoodenAxe => ("Wooden Axe", ItemKind::Tool { tool_type: ToolType::Axe, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 59 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, buoyancy: 18.0, ..default() }),
+            ItemType::StoneAxe => ("Stone Axe", ItemKind::Tool { tool_type: ToolType::Axe, tier: ToolTier::Stone, efficiency: 4.0, max_durability: 131 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, ..default() }),
+            ItemType::IronAxe => ("Iron Axe", ItemKind::Tool { tool_type: ToolType::Axe, tier: ToolTier::Iron, efficiency: 6.0, max_durability: 250 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.12, 0.35, 0.12), half_height: 0.06, flat_resting: true, ..default() }),
+        };
+        Some(ItemDefinition { id: item, name, kind, max_stack, physics })
     }
 }
 
@@ -469,14 +493,18 @@ pub fn spawn_item_drop(
     pos: Vec3,
     velocity: Vec3,
 ) -> Entity {
-    let (block, scale) = match stack.item_type {
-        ItemType::Stick => (BlockType::OakLog, Vec3::new(0.08, 0.35, 0.08)),
-        ItemType::Flint => (BlockType::Stone, Vec3::new(0.22, 0.15, 0.22)),
-        ItemType::Coal => (BlockType::CoalOre, Vec3::new(0.2, 0.2, 0.2)),
-        other => {
-            let b = other.to_block().unwrap_or(BlockType::Stone);
-            (b, Vec3::splat(0.28))
-        }
+    let registry = ItemRegistry;
+    let def = registry.get(stack.item_type);
+    let physics = def.map(|d| d.physics).unwrap_or_default();
+    let block = match def.map(|d| d.kind) {
+        Some(ItemKind::Block(b)) => b,
+        _ => match stack.item_type {
+            ItemType::Stick => BlockType::OakLog,
+            ItemType::Flint => BlockType::Stone,
+            ItemType::Coal => BlockType::CoalOre,
+            ItemType::IronIngot => BlockType::IronOre,
+            _ => stack.item_type.to_block().unwrap_or(BlockType::Stone),
+        },
     };
     let mesh = meshes.add(crate::render::greedy::build_single_voxel_mesh(block));
     let random_yaw = ((pos.x * 37.0 + pos.z * 19.0 + pos.y * 11.0).sin() * 3.14159).abs();
@@ -501,7 +529,7 @@ pub fn spawn_item_drop(
         parent.spawn(MaterialMeshBundle {
             mesh,
             material,
-            transform: Transform::from_translation(-0.5 * scale).with_scale(scale),
+            transform: Transform::from_translation(-0.5 * physics.scale).with_scale(physics.scale),
             ..default()
         });
     }).id()
@@ -533,6 +561,10 @@ pub fn update_item_drops(
             continue;
         }
 
+        let item_physics = registry.get(drop.item_stack.item_type).map(|d| d.physics).unwrap_or_default();
+        let half_h = item_physics.half_height;
+        let radius = 0.15;
+
         // 2. 即時環境光動態更新 (Real-time Voxel Lighting Sampling)
         let cur_voxel = IVec3::new(
             transform.translation.x.floor() as i32,
@@ -542,8 +574,8 @@ pub fn update_item_drops(
         if drop.current_voxel != cur_voxel {
             drop.current_voxel = cur_voxel;
             let sl = world.get_sky_light_global(cur_voxel);
-            let bl = if drop.item_stack.item_type == ItemType::Torch {
-                15 // 火把實體自發光
+            let bl = if item_physics.is_emissive {
+                15 // 註冊表配置為自發光物品 (如火把)
             } else {
                 world.get_block_light_global(cur_voxel)
             };
@@ -556,30 +588,25 @@ pub fn update_item_drops(
             }
         }
 
-        let is_stick = drop.item_stack.item_type == ItemType::Stick;
-        let half_h = if is_stick { 0.04 } else { 0.14 };
-        let radius = 0.15;
-
-        // 3. 水體浮力與阻力 (Fluid Physics / Dropz Buoyancy)
+        // 3. 水體浮力與阻力 (Fluid Physics / Buoyancy via Registry)
         let is_in_water = world.get_fluid_global(cur_voxel) > 0;
         if is_in_water {
             drop.on_ground = false;
             // 水中阻力減速
             drop.velocity *= (1.0 - 3.0 * dt).max(0.0);
-            let is_buoyant = matches!(drop.item_stack.item_type, ItemType::Stick | ItemType::OakLog | ItemType::OakLeaves);
-            if is_buoyant {
-                // 木質浮力：浮向水面
+            if item_physics.buoyancy > 0.0 {
+                // 具備向上浮力：浮向水面
                 let voxel_above = cur_voxel + IVec3::Y;
                 let is_water_surface = world.get_fluid_global(voxel_above) == 0;
                 if is_water_surface && transform.translation.y >= cur_voxel.y as f32 + 0.85 {
                     drop.velocity.y = (cur_voxel.y as f32 + 0.85 - transform.translation.y) * 3.0;
                 } else {
-                    drop.velocity.y += 18.0 * dt;
+                    drop.velocity.y += item_physics.buoyancy * dt;
                     drop.velocity.y = drop.velocity.y.min(1.5);
                 }
             } else {
-                // 重物緩慢沉底
-                drop.velocity.y -= 4.0 * dt;
+                // 重物（負浮力）沉底
+                drop.velocity.y += item_physics.buoyancy * dt;
                 drop.velocity.y = drop.velocity.y.max(-2.0);
             }
         } else if !drop.on_ground {
@@ -692,10 +719,10 @@ pub fn update_item_drops(
             }
         }
 
-        // 6. 寫實平躺伏地視覺 (Dropz Flat Resting)
+        // 6. 寫實平躺伏地視覺 (Dropz Flat Resting via Registry)
         if drop.on_ground && !being_magnetized {
-            if is_stick {
-                // 木棒橫臥平躺於地面，不再豎直自轉
+            if item_physics.flat_resting {
+                // 註冊表配置 flat_resting: 橫臥平躺於地面，不再豎直自轉
                 let flat_rot = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
                 transform.rotation = Quat::from_rotation_y(drop.resting_yaw) * flat_rot;
             } else {
@@ -707,31 +734,6 @@ pub fn update_item_drops(
             drop.roll_angle += (drop.velocity.length() * 2.0 + 2.0) * dt;
             let tumble = Quat::from_rotation_x(drop.roll_angle);
             transform.rotation = Quat::from_rotation_y(drop.resting_yaw) * tumble;
-        }
-
-        // 6. 磁吸拾取 (半徑 1.8 格)
-        if !player.is_spectator && drop.pickup_delay <= 0.0 {
-            let dist = transform.translation.distance(player_head);
-            if dist <= 1.8 {
-                drop.on_ground = false; // 喚醒吸附
-                let dir = (player_head - transform.translation).normalize_or_zero();
-                let move_dist = (9.0 * dt).min(dist);
-                transform.translation += dir * move_dist;
-
-                let current_dist = transform.translation.distance(player_head);
-                if current_dist <= 0.45 {
-                    if let Some(overflow) = inventory.add_item(drop.item_stack.clone(), &registry) {
-                        drop.item_stack = overflow;
-                    } else {
-                        // 全數拾取完畢
-                        let color = crate::render::particles::get_block_debris_color(
-                            drop.item_stack.item_type.to_block().unwrap_or(BlockType::OakLog)
-                        );
-                        particle_mgr.spawn_debris(transform.translation, color, 4);
-                        commands.entity(entity).despawn_recursive();
-                    }
-                }
-            }
         }
     }
 }
@@ -1138,6 +1140,30 @@ mod tests {
         // 驗證掉落物碰壁彈回：速度反向 (vx < 0)，且絕對未穿透進 x >= 1.0 的石牆內部
         assert!(drop.velocity.x < 0.0, "撞擊固體牆壁後速度應反彈 (vx < 0)");
         assert!(trans.translation.x < 1.0, "全向 AABB 體素碰撞嚴格防止物品穿透進固體方塊內部");
+    }
+
+    #[test]
+    fn test_item_physics_registry_properties() {
+        let registry = ItemRegistry;
+
+        // 驗證木質浮力與平躺註冊
+        let stick_def = registry.get(ItemType::Stick).expect("Stick definition exists");
+        assert_eq!(stick_def.physics.buoyancy, 18.0, "木棒應具備 +18.0 水中浮力");
+        assert!(stick_def.physics.flat_resting, "木棒應配置平躺橫臥姿勢");
+        assert_eq!(stick_def.physics.half_height, 0.04, "木棒橫臥半高應為 0.04");
+
+        let log_def = registry.get(ItemType::OakLog).expect("OakLog definition exists");
+        assert_eq!(log_def.physics.buoyancy, 18.0, "原木應具備浮力");
+        assert!(!log_def.physics.flat_resting, "原木方塊坐落不平躺");
+
+        // 驗證火把自發光註冊
+        let torch_def = registry.get(ItemType::Torch).expect("Torch definition exists");
+        assert!(torch_def.physics.is_emissive, "火把應註冊為自體發光物品");
+
+        // 驗證常規石頭沉底與無自發光
+        let stone_def = registry.get(ItemType::Stone).expect("Stone definition exists");
+        assert!(stone_def.physics.buoyancy < 0.0, "石頭應為負浮力沉底");
+        assert!(!stone_def.physics.is_emissive, "石頭不自發光");
     }
 }
 

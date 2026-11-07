@@ -199,13 +199,17 @@ src/
   - **全挖掘方塊全面實體化與開局鐵斧配發**：初始快捷列第 8 格配置鐵斧 (`IronAxe`)；全方塊挖掘破壞（草地、石頭、火把等）全面升級為 3D 物理掉落物 (`ItemDrop`)，採集彈射立體方塊並磁吸入包；未達工具等級採伐時提供直觀反饋提示。
 
 - **11/7 Dropz 級寫實物理掉落物系統 (Dropz Realistic Physics & Lighting Item Drops)**:
+  - **物品物理屬性完全註冊表數據驅動 (Data-Driven Item Physics Registry)**：
+    - 在 `ItemDefinition` 中引入 `physics: ItemPhysicsProperties`，徹底廢除硬編碼 match 判定；
+    - 支援每種物品/方塊自由配置 3D 渲染比例 (`scale`)、伏地高度 (`half_height`)、平躺姿態 (`flat_resting`)、水體浮力加速度 (`buoyancy`) 與夜間自體發光 (`is_emissive`)；
+    - `spawn_item_drop` 與 `update_item_drops` 全面切換為依賴註冊表，新增任何方塊或物品皆可自由設定是否在水上漂浮、落地橫躺或發光；
   - **環境光動態採樣與網格頂點更新**：
     - 徹底根除掉落物在黑夜自發光像 100W 燈泡的嚴重瑕疵（修復原先 `build_single_voxel_mesh` 將 `block_lights` 硬編碼為 15 的問題）；
-    - 掉落物跨越體素時自動向 `WorldManager` 採樣真實世界的 `sky_light` 與 `block_light`（火把自發光物品除外）；
+    - 掉落物跨越體素時自動向 `WorldManager` 採樣真實世界的 `sky_light` 與 `block_light`（自發光物品除外）；
     - 在 `src/render/greedy.rs` 新增 `update_single_voxel_mesh_light`，直接透過位元遮罩覆寫頂點 packed data 高 8 位元，零內存分配極致高效；
   - **寫實伏地平躺 (Dropz Flat Resting) 與質心旋轉軸修正**：
     - 透過父子實體層級注入 `-0.5 * scale` 幾何偏移，將體素 `[0, 1]` 頂點網格原點精確對齊實體中心，徹底根治物品以角頂點為軸心偏心旋轉的缺陷，所有空中翻滾與地面偏轉均完美繞質心旋轉；
-    - 木棒 (`ItemType::Stick`) 落地後立即呈 90 度橫躺於地面（Y 軸貼合 1.04），方塊物品穩固坐落於地面（Y 軸貼合 1.14），停止自轉與浮空；
+    - 木棒 (`ItemType::Stick`) 與工具類物品落地後立即呈 90 度橫躺於地面（Y 軸貼合 1.04），方塊物品穩固坐落於地面（Y 軸貼合 1.14），停止自轉與浮空；
     - 空中拋射與下落時呈現自然 3D 翻滾，著地後平穩停止；
   - **零閃爍穩固地面檢測 (Zero-Flicker Ground Resting Defense)**：
     - 根除落地後因體素邊界浮點數向下取整跳變導致的 60Hz 著地/浮空交替振盪（消滅雙重殘影/虛影破綻）；
@@ -216,8 +220,11 @@ src/
     - Y 軸地面碰撞偵測，高速撞地產生真實小彈跳，低速則穩固貼地；
   - **水體浮力與阻力 (Fluid Physics / Buoyancy)**：
     - 掉落物進入水體 (`world.get_fluid_global > 0`) 時套用水阻減速；
-    - 原木 (`OakLog`)、木棒 (`Stick`)、樹葉 (`OakLeaves`) 具備自然浮力（向上加速 18.0*dt），水面平穩浮動；
-    - 石頭、礦石等重物則以緩慢速度下沉到底部；
+    - 依註冊表 `buoyancy > 0` 判定，原木 (`OakLog`)、木棒 (`Stick`)、樹葉 (`OakLeaves`) 穩妥浮於水面自然微幅漂動；
+    - 石頭、礦石等重物 (`buoyancy < 0`) 則以緩慢速度下沉到底部；
+  - **倒木傾倒動畫與視錐剔除徹底修復 (Falling Tree Topple Animation & Frustum Fix)**：
+    - 為 `FallingTree` 子實體複合網格注入 `NoFrustumCulling`，根治因 Packed Format 虛擬頂點 `[0, 0, 0]` 導致 Bevy Frustum Culling 在仰視時直接將整棵樹剔除不可見的隱形 Bug；
+    - 修正地面碰撞判定：取消樹葉 (`leaf_offsets`) 於 11 度時刮蹭地形提早爆炸的錯誤邏輯，改為倒塌超過 45 度 (`angle > 0.80 rad`) 時僅針對堅硬原木軀幹 (`log_offsets`) 判定地面碰撞，完整展現 1.2 秒流暢震撼的伐木傾倒弧線。
   - **平滑磁吸拾取**：
     - 玩家靠近 1.8m 時喚醒平滑磁吸，滑順飛向玩家並納入背包；背包滿或拾取延遲冷卻中則保持伏地平躺。
 

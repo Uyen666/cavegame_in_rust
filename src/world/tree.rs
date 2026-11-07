@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy::utils::HashSet;
+use bevy::render::view::NoFrustumCulling;
 use crate::world::{WorldManager, BlockType};
 use crate::item::{Inventory, ItemStack, ItemType, ItemRegistry, spawn_item_drop};
 use crate::render::particles::{ParticleManager, get_block_debris_color};
@@ -154,12 +155,16 @@ pub fn handle_tree_break(
                 )).with_children(|parent| {
                     // 注意：FallingTree 的子網格因 compound_voxel_mesh 以 (16, 0, 16) 為中心構建，
                     // 故此處需施加 (-16, 0, -16) 局部平移使旋轉軸心精確對齊父實體的 pivot 座標。
-                    parent.spawn(MaterialMeshBundle {
-                        mesh: mesh_handle,
-                        material: material.clone(),
-                        transform: Transform::from_translation(Vec3::new(-16.0, 0.0, -16.0)),
-                        ..default()
-                    });
+                    // 同時掛載 NoFrustumCulling，保證全自訂 Packed Shader 網格在任何視角與傾角下 100% 穩定可見！
+                    parent.spawn((
+                        MaterialMeshBundle {
+                            mesh: mesh_handle,
+                            material: material.clone(),
+                            transform: Transform::from_translation(Vec3::new(-16.0, 0.0, -16.0)),
+                            ..default()
+                        },
+                        NoFrustumCulling,
+                    ));
                 });
                 tree_entity_spawned = true;
             }
@@ -232,12 +237,14 @@ pub fn update_falling_trees(
         transform.rotation = rot;
 
         // 探測倒木是否碰撞固體地面 (Ray / Voxel Contact Detection)
-        // 倒塌至接近地面 (~88 度，即 ~1.54 rad) 或超時保護 (2.5 秒) 作為保底
-        let mut hit_ground = tree.angle >= std::f32::consts::FRAC_PI_2 * 0.98 || tree.lifetime > 2.5;
+        // 倒塌至接近地面 (~84 度，即 ~1.46 rad) 或超時保護 (2.5 秒) 作為保底
+        let mut hit_ground = tree.angle >= std::f32::consts::FRAC_PI_2 * 0.93 || tree.lifetime > 2.5;
 
-        if !hit_ground && tree.angle > 0.20 {
+        // 🔥 關鍵修復：唯有倒塌超過 45 度 (~0.80 rad) 且僅針對原木軀幹 (log_offsets) 進行實心障礙物/地面判定
+        // 徹底杜絕高空樹冠在 10 度時因微小樹葉刮擦側邊山坡或相鄰樹木而提早原地爆炸
+        if !hit_ground && tree.angle > 0.80 {
             if let Some(ref wm) = world {
-                for &offset in tree.log_offsets.iter().chain(tree.leaf_offsets.iter()) {
+                for &offset in &tree.log_offsets {
                     let sample_pos = tree.pivot + rot * offset;
                     let block_pos = IVec3::new(
                         sample_pos.x.floor() as i32,
