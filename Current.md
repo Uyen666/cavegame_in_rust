@@ -190,6 +190,13 @@ src/
 ## 14. 🛠️ 開發環境與工作流 (Development Workflow)
 * **VS Code 終端環境自適應 (.vscode)**：為避免系統環境變數遺失引發的終端機報錯，專案於根目錄掛載了專屬的 `.vscode/settings.json`，強制將 Cargo 路徑注入整合終端機。同時配備 `.vscode/tasks.json`，讓開發者只需按下 `Ctrl+Shift+B` 便能一鍵無縫 `cargo run`，維持最高的開發效率。
 ## 最近更新紀錄
+- **10/2 物理與視覺沉浸深度收尾 (Physical & Visual Immersion System)**:
+  - **劈砍缺口 (Chop Notches)**：`EnvironmentUniform` 擴充 `mining_data: Vec4`，WGSL 頂點著色器實裝依據 `mining_progress: 0.0~1.0` 即時動態內縮之 V 型斧砍缺口幾何形變；
+  - **倒木實體化與體素撞地碎裂 (Dynamic Falling Tree & Ground Contact Detection)**：大樹以底座為支點受重力力矩角加速度傾倒，每影格進行體素接觸判定；碰觸固體斜坡、地形或達到 88 度傾角時即刻碎裂，沿倒木分佈在地面生成 3D 物理掉落物實體 (`ItemDrop`)；
+  - **倒木寫實重擊傷害與擊退 (Falling Tree Crush Damage & Knockback)**：倒木砸中站於傾倒方向下方的玩家施加 35 點鈍擊傷害、向上與後推強烈擊退衝量，並引發 trauma 0.9 劇烈相機震顫；安全距離 (12m 內) 周遭玩家同步感受地面轟鳴震顫；
+  - **相機震顫系統 (Screen Shake Trauma System)**：新增 `ScreenShake` 資源，於視角結算中套用非線性平方衰減之高頻微幅震顫；在地質坍塌 1.2 秒預警期間週期性注入天花板微震顫，坍塌瞬間爆發強震；
+  - **3D 物理掉落物與 Q 鍵丟棄 (3D ItemDrop & Drop Keybind)**：實裝獨立 `ItemDrop` 實體，具備真實重力、固體地面碰撞、懸浮緩慢自轉、1.8m 磁吸入包與 300s 超時銷毀；玩家按 Q 鍵可手動丟棄選中槽位物品。
+
 - **10/1 硬核真實生存四大里程碑系統 (Hardcore Realistic Survival 4-Step Milestone)**:
   - **第一步：樹木重力與採伐工具門檻 (Tree Felling & Gravity System)**:
     - `ToolTier::Wood` 斧頭採伐門檻：原木 (`OakLog`) 只有在手持斧頭時方可採收，空手敲擊不掉落原木；敲擊樹葉掉落木棒 (`ItemType::Stick`)；

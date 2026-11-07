@@ -208,6 +208,7 @@ pub fn update_precursor_collapses(
     time: Res<Time>,
     mut q_collapses: Query<(Entity, &mut PrecursorCollapse)>,
     mut q_player: Query<(&Transform, Option<&mut PlayerVitals>), With<crate::player::Player>>,
+    mut shake: Option<ResMut<crate::player::ScreenShake>>,
 ) {
     let delta = time.delta_seconds();
     let dust_color = Color::srgb_u8(130, 120, 110);
@@ -218,11 +219,18 @@ pub fn update_precursor_collapses(
         precursor.timer -= delta;
         precursor.dust_timer -= delta;
 
-        // 預警期間週期性飄落微細石屑粒子
+        // 預警期間週期性飄落微細石屑粒子並觸發天花板微震顫
         if precursor.dust_timer <= 0.0 && precursor.timer > 0.0 {
             precursor.dust_timer = 0.15;
             for &c_pos in &precursor.collapsing_blocks {
                 particle_mgr.spawn_debris(c_pos.as_vec3() + Vec3::new(0.5, 0.0, 0.5), dust_color, 2);
+            }
+            if let Ok((p_tf, _)) = q_player.get_single() {
+                if p_tf.translation.distance(precursor.danger_center.as_vec3()) <= 8.0 {
+                    if let Some(ref mut s) = shake {
+                        s.trauma = (s.trauma + 0.35).min(0.6);
+                    }
+                }
             }
         }
 
@@ -230,6 +238,13 @@ pub fn update_precursor_collapses(
         if precursor.timer <= 0.0 {
             commands.entity(entity).despawn();
             ready_to_collapse.push((precursor.collapsing_blocks.clone(), precursor.danger_center));
+            if let Ok((p_tf, _)) = q_player.get_single() {
+                if p_tf.translation.distance(precursor.danger_center.as_vec3()) <= 10.0 {
+                    if let Some(ref mut s) = shake {
+                        s.trauma = (s.trauma + 0.65).min(1.0);
+                    }
+                }
+            }
         }
     }
 

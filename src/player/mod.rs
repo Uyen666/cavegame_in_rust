@@ -15,11 +15,19 @@ pub use vitals::PlayerVitals;
 #[derive(Resource, Default)]
 pub struct CursorJustLocked(pub bool);
 
+/// 螢幕與相機震顫資源 (Screen Shake Trauma System)
+/// 用於地質坍塌前兆、倒木砸地等劇烈物理事件的視覺反饋
+#[derive(Resource, Default, Debug, Clone)]
+pub struct ScreenShake {
+    pub trauma: f32, // 0.0 ~ 1.0 (非線性平方衰減)
+}
+
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CursorJustLocked>()
+           .init_resource::<ScreenShake>()
            .add_systems(Startup, setup_player)
            .add_systems(
                Update,
@@ -277,38 +285,55 @@ fn toggle_grab_cursor(
 }
 
 pub fn player_look(
+    time: Res<Time>,
     mut q_player: Query<&mut Player>,
     mut q_camera: Query<&mut Transform, With<PlayerCamera>>,
     mut mouse_motion_events: EventReader<MouseMotion>,
     q_windows: Query<&Window, With<PrimaryWindow>>,
+    mut shake: Option<ResMut<ScreenShake>>,
 ) {
     let Ok(window) = q_windows.get_single() else {
         return;
     };
 
-    if window.cursor.grab_mode != CursorGrabMode::Locked {
-        return;
-    }
-
     let mut player = q_player.single_mut();
     let mut camera_transform = q_camera.single_mut();
 
-    let mut delta = Vec2::ZERO;
-    for event in mouse_motion_events.read() {
-        delta += event.delta;
+    if window.cursor.grab_mode == CursorGrabMode::Locked {
+        let mut delta = Vec2::ZERO;
+        for event in mouse_motion_events.read() {
+            delta += event.delta;
+        }
+
+        if delta != Vec2::ZERO {
+            let sensitivity = 0.002;
+            player.yaw -= delta.x * sensitivity;
+            player.pitch -= delta.y * sensitivity;
+            player.pitch = player.pitch.clamp(-FRAC_PI_2 + 0.01, FRAC_PI_2 - 0.01);
+        }
     }
 
-    if delta == Vec2::ZERO {
-        return;
-    }
-
-    let sensitivity = 0.002;
-    player.yaw -= delta.x * sensitivity;
-    player.pitch -= delta.y * sensitivity;
-    player.pitch = player.pitch.clamp(-FRAC_PI_2 + 0.01, FRAC_PI_2 - 0.01);
-
-    camera_transform.rotation = Quat::from_axis_angle(Vec3::Y, player.yaw)
+    let base_rot = Quat::from_axis_angle(Vec3::Y, player.yaw)
         * Quat::from_axis_angle(Vec3::X, player.pitch);
+
+    let dt = time.delta_seconds();
+    if let Some(ref mut s) = shake {
+        if s.trauma > 0.0 {
+            s.trauma = (s.trauma - dt * 1.5).max(0.0);
+            let t = time.elapsed_seconds();
+            let shake_yaw = (t * 47.0).sin() * s.trauma * 0.02;
+            let shake_pitch = (t * 53.0).cos() * s.trauma * 0.02;
+            let shake_roll = (t * 39.0).sin() * s.trauma * 0.015;
+            camera_transform.rotation = base_rot * Quat::from_euler(EulerRot::YXZ, shake_yaw, shake_pitch, shake_roll);
+
+            let shake_offset = Vec3::new((t * 57.0).sin(), (t * 43.0).cos(), 0.0) * (s.trauma * 0.04);
+            camera_transform.translation = Vec3::new(0.0, 1.6, 0.0) + shake_offset;
+            return;
+        }
+    }
+
+    camera_transform.rotation = base_rot;
+    camera_transform.translation = Vec3::new(0.0, 1.6, 0.0);
 }
 
 pub fn player_move(
@@ -593,6 +618,32 @@ fn player_interaction(
     let left_holding = mouse_keys.pressed(MouseButton::Left);
     let right = mouse_keys.just_pressed(MouseButton::Right);
     let key_f = kbd_keys.just_pressed(KeyCode::KeyF);
+    let key_q = kbd_keys.just_pressed(KeyCode::KeyQ);
+
+    // 🚀 手動丟棄物品 (Q 鍵)
+    if key_q {
+        if let Some(selected) = inventory.selected_item().cloned() {
+            if selected.count > 0 {
+                inventory.consume_selected(1);
+                let drop_stack = ItemStack::new(selected.item_type, 1, &registry);
+                if let Ok(cam_transform) = q_camera.get_single() {
+                    let forward = *cam_transform.forward();
+                    let spawn_p = cam_transform.translation() + forward * 0.8;
+                    let throw_vel = forward * 5.0 + Vec3::new(0.0, 2.0, 0.0);
+                    if gt.ready {
+                        crate::item::spawn_item_drop(
+                            &mut commands,
+                            &mut *meshes,
+                            gt.material.clone(),
+                            drop_stack,
+                            spawn_p,
+                            throw_vel,
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     if !left_holding && !right && !key_f {
         player.reset_mining();
@@ -865,6 +916,7 @@ fn update_fog_color(
     mut q_proj: Query<&mut Projection, With<PlayerCamera>>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     mut materials: ResMut<Assets<crate::render::material::VoxelMaterial>>,
+    q_player: Query<&Player>,
 ) {
     let Ok(cam_tf) = q_camera.get_single() else { return; };
     let translation = cam_tf.translation();
@@ -904,11 +956,27 @@ fn update_fog_color(
     let lin = final_color.to_linear();
     let fog_col = Vec4::new(lin.red, lin.green, lin.blue, 1.0);
     let cam_pos = Vec4::new(translation.x, translation.y, translation.z, 1.0);
+
+    let mining_data = if let Ok(player) = q_player.get_single() {
+        if let Some(target) = player.mining_target {
+            if player.mining_progress > 0.0 && world_manager.get_block_global(target) == BlockType::OakLog {
+                Vec4::new(target.x as f32, target.y as f32, target.z as f32, player.mining_progress)
+            } else {
+                Vec4::ZERO
+            }
+        } else {
+            Vec4::ZERO
+        }
+    } else {
+        Vec4::ZERO
+    };
+
     for (_, mat) in materials.iter_mut() {
         mat.env.fog_start = fog_start;
         mat.env.fog_end = fog_end;
         mat.env.fog_color = fog_col;
         mat.env.camera_pos = cam_pos;
+        mat.env.mining_data = mining_data;
     }
 }
 

@@ -1,8 +1,11 @@
 use bevy::prelude::*;
 use bevy::utils::HashSet;
 use crate::world::{WorldManager, BlockType};
-use crate::item::{Inventory, ItemStack, ItemType, ItemRegistry};
+use crate::item::{Inventory, ItemStack, ItemType, ItemRegistry, spawn_item_drop};
 use crate::render::particles::{ParticleManager, get_block_debris_color};
+use crate::player::{Player, PlayerVitals, ScreenShake};
+use crate::phys::components::Velocity;
+use crate::render::textures::GameTextures;
 
 /// 實體化傾倒樹木組件 (Dynamic Falling Tree Component)
 /// 模擬大樹受砍伐後帶著角動量傾倒、掃過半空並撞擊地面碎裂的真實物理過程 (參考 Dynamic Trees / HT's TreeChop)
@@ -92,6 +95,7 @@ pub fn handle_tree_break(
         let log_offsets: Vec<Vec3> = logs_to_process.iter().map(|&p| (p - broken_pos).as_vec3()).collect();
         let leaf_offsets: Vec<Vec3> = leaves_to_decay.iter().map(|&p| (p - broken_pos).as_vec3()).collect();
 
+        let mut tree_entity_spawned = false;
         if let Some((ref mut meshes, ref material)) = visual_assets {
             let mut mesh_blocks = Vec::with_capacity(logs_to_process.len() + leaves_to_decay.len());
             for &lpos in &logs_to_process {
@@ -157,24 +161,27 @@ pub fn handle_tree_break(
                         ..default()
                     });
                 });
+                tree_entity_spawned = true;
             }
         }
 
-        // 4. 原木處理（世界體素層立即清除，全數收穫）
+        // 4. 原木處理（世界體素層立即清除；若未生成實體化倒木，直接收穫至背包）
         for log_pos in logs_to_process {
             world.set_block_global(log_pos, BlockType::Air, commands);
             particle_mgr.spawn_debris(log_pos.as_vec3() + 0.5, log_color, 4);
-            inventory.add_item(ItemStack::new(ItemType::OakLog, 1, registry), registry);
             inventory.damage_selected_tool(1);
+            if !tree_entity_spawned {
+                inventory.add_item(ItemStack::new(ItemType::OakLog, 1, registry), registry);
+            }
         }
 
-        // 5. 樹冠崩解與掉落樹枝（世界體素層立即清除）
+        // 5. 樹冠崩解與掉落樹枝（世界體素層立即清除；若未生成實體化倒木，直接收穫至背包）
         for (idx, leaf_pos) in leaves_to_decay.into_iter().enumerate() {
             world.set_block_global(leaf_pos, BlockType::Air, commands);
             particle_mgr.spawn_debris(leaf_pos.as_vec3() + 0.5, leaf_color, 2);
 
             // 每 3 片樹葉掉落 1 根木棒 (Stick)，提供基礎木質素材
-            if idx % 3 == 0 {
+            if !tree_entity_spawned && idx % 3 == 0 {
                 inventory.add_item(ItemStack::new(ItemType::Stick, 1, registry), registry);
             }
         }
@@ -195,11 +202,22 @@ pub fn handle_tree_break(
 }
 
 /// 倒木物理更新系統 (Falling Tree Physics System)
-/// 模擬倒木受重力力矩角加速度傾倒，並在砸地瞬間噴散碎裂粒子與銷毀實體
+/// 模擬倒木受重力力矩角加速度傾倒，每影格進行體素接觸判定 (Ray/Voxel Contact Detection)。
+/// 當撞擊固體地面或障礙物時：
+/// 1. 壓砸傷害：若玩家站在倒木下方 (1.8m 內)，施加 35 點鈍擊傷害、向上與後推衝量，以及強烈相機震顫 (Trauma 0.9)；
+///    若在 12m 內則施加距離衰減之轟鳴微震顫；
+/// 2. 物理掉落物：沿倒塌軀幹在地面噴射生成 3D 原木 (OakLog) 與樹枝 (Stick) 掉落實體 (ItemDrop)；
+/// 3. 碎屑粒子：噴散劇烈木屑與落葉碎屑粒子，隨後銷毀倒木實體。
 pub fn update_falling_trees(
     mut commands: Commands,
     time: Res<Time>,
+    world: Option<Res<WorldManager>>,
+    gt: Option<Res<GameTextures>>,
+    mut meshes: Option<ResMut<Assets<Mesh>>>,
+    registry: Option<Res<ItemRegistry>>,
     mut q_trees: Query<(Entity, &mut Transform, &mut FallingTree)>,
+    mut q_player: Query<(&Transform, Option<&mut PlayerVitals>, &mut Velocity), (With<Player>, Without<FallingTree>)>,
+    mut shake: Option<ResMut<ScreenShake>>,
     mut particle_mgr: ResMut<ParticleManager>,
 ) {
     let dt = time.delta_seconds();
@@ -210,14 +228,122 @@ pub fn update_falling_trees(
         tree.angular_velocity += torque * dt;
         tree.angle += tree.angular_velocity * dt;
 
-        transform.rotation = Quat::from_axis_angle(tree.fall_axis, tree.angle);
+        let rot = Quat::from_axis_angle(tree.fall_axis, tree.angle);
+        transform.rotation = rot;
 
-        // 倒塌至接近地面 (~85 度，即 ~1.48 rad) 或超時保護 (2.5 秒)
-        if tree.angle >= std::f32::consts::FRAC_PI_2 * 0.94 || tree.lifetime > 2.5 {
+        // 探測倒木是否碰撞固體地面 (Ray / Voxel Contact Detection)
+        // 倒塌至接近地面 (~88 度，即 ~1.54 rad) 或超時保護 (2.5 秒) 作為保底
+        let mut hit_ground = tree.angle >= std::f32::consts::FRAC_PI_2 * 0.98 || tree.lifetime > 2.5;
+
+        if !hit_ground && tree.angle > 0.20 {
+            if let Some(ref wm) = world {
+                for &offset in tree.log_offsets.iter().chain(tree.leaf_offsets.iter()) {
+                    let sample_pos = tree.pivot + rot * offset;
+                    let block_pos = IVec3::new(
+                        sample_pos.x.floor() as i32,
+                        sample_pos.y.floor() as i32,
+                        sample_pos.z.floor() as i32,
+                    );
+                    if wm.get_block_global(block_pos).is_solid() {
+                        hit_ground = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if hit_ground {
+            // 1. 玩家壓砸傷害判定 (Crush Damage & Knockback)
+            for (p_trans, maybe_vitals, mut p_vel) in q_player.iter_mut() {
+                let p_pos = p_trans.translation;
+                let mut min_dist_to_log = f32::INFINITY;
+                for &offset in &tree.log_offsets {
+                    let log_pos = tree.pivot + rot * offset;
+                    let d = log_pos.distance(p_pos);
+                    if d < min_dist_to_log {
+                        min_dist_to_log = d;
+                    }
+                }
+
+                if min_dist_to_log < 1.8 {
+                    // 倒木重壓致傷：扣除 35 點生命值
+                    if let Some(mut vitals) = maybe_vitals {
+                        vitals.health = (vitals.health - 35.0).max(0.0);
+                    }
+                    // 施加強烈擊退衝量 (遠離旋轉軸與朝上)
+                    let push_dir = (p_pos - tree.pivot).normalize_or_zero();
+                    let knockback = (push_dir + Vec3::new(0.0, 0.45, 0.0)).normalize() * 9.0;
+                    p_vel.0 += knockback;
+
+                    // 劇烈相機震顫 (Trauma 0.9)
+                    if let Some(ref mut s) = shake {
+                        s.trauma = (s.trauma + 0.9).min(1.0);
+                    }
+                } else {
+                    // 若未被直接砸中，但處於近距離 (12m 內)，施加臨場轟鳴微震顫
+                    let dist_to_pivot = tree.pivot.distance(p_pos);
+                    if dist_to_pivot < 12.0 {
+                        let falloff = 1.0 - (dist_to_pivot / 12.0);
+                        if let Some(ref mut s) = shake {
+                            s.trauma = (s.trauma + 0.5 * falloff).min(1.0);
+                        }
+                    }
+                }
+            }
+
+            // 2. 生成 3D 物理掉落物 (ItemDrop)
+            let can_spawn_drops = gt.as_ref().map(|g| g.ready).unwrap_or(false)
+                && meshes.is_some()
+                && registry.is_some();
+
+            if can_spawn_drops {
+                let meshes_res = meshes.as_mut().unwrap();
+                let gt_res = gt.as_ref().unwrap();
+                let reg = registry.as_ref().unwrap();
+
+                // 原木掉落：沿倒木軀幹生成
+                for (idx, &offset) in tree.log_offsets.iter().enumerate() {
+                    let drop_pos = tree.pivot + rot * offset;
+                    let angle_f = idx as f32 * 1.618;
+                    let scatter_x = angle_f.cos() * 1.2;
+                    let scatter_z = angle_f.sin() * 1.2;
+                    let drop_vel = Vec3::new(scatter_x, 2.8, scatter_z);
+
+                    spawn_item_drop(
+                        &mut commands,
+                        meshes_res,
+                        gt_res.material.clone(),
+                        ItemStack::new(ItemType::OakLog, 1, reg),
+                        drop_pos,
+                        drop_vel,
+                    );
+                }
+
+                // 樹枝掉落：每 3 片樹葉掉落 1 根木棒 (Stick)
+                for (idx, &offset) in tree.leaf_offsets.iter().enumerate() {
+                    if idx % 3 == 0 {
+                        let drop_pos = tree.pivot + rot * offset;
+                        let angle_f = (idx + 10) as f32 * 2.399;
+                        let scatter_x = angle_f.cos() * 0.9;
+                        let scatter_z = angle_f.sin() * 0.9;
+                        let drop_vel = Vec3::new(scatter_x, 2.2, scatter_z);
+
+                        spawn_item_drop(
+                            &mut commands,
+                            meshes_res,
+                            gt_res.material.clone(),
+                            ItemStack::new(ItemType::Stick, 1, reg),
+                            drop_pos,
+                            drop_vel,
+                        );
+                    }
+                }
+            }
+
+            // 3. 爆散碎裂木屑與落葉粒子
             let log_color = get_block_debris_color(BlockType::OakLog);
             let leaf_color = get_block_debris_color(BlockType::OakLeaves);
 
-            let rot = transform.rotation;
             for &offset in &tree.log_offsets {
                 let world_pos = tree.pivot + rot * offset;
                 particle_mgr.spawn_debris(world_pos, log_color, 8);
@@ -227,6 +353,7 @@ pub fn update_falling_trees(
                 particle_mgr.spawn_debris(world_pos, leaf_color, 4);
             }
 
+            // 4. 銷毀倒木實體
             commands.entity(entity).despawn_recursive();
         }
     }
@@ -392,5 +519,126 @@ mod tests {
 
         // 撞擊地面後實體應自動被銷毀
         assert!(world.get::<FallingTree>(entity).is_none(), "倒木撞擊地面後應銷毀實體並觸發粒子");
+    }
+
+    #[test]
+    fn test_falling_tree_crush_damage_and_ground_impact() {
+        let mut world = BevyWorld::new();
+        world.init_resource::<Time>();
+        world.init_resource::<ParticleManager>();
+        world.init_resource::<ScreenShake>();
+
+        let mut wm = WorldManager::default();
+        let chunk_pos = IVec3::new(0, 0, 0);
+        wm.chunks.insert(chunk_pos, ChunkEntry {
+            buffer: std::sync::Arc::new(generator::ChunkBuffer { blocks: [BlockType::Air; 32768] }),
+            light_buffer: std::sync::Arc::new(ChunkLightBuffer::default()),
+            fluid_buffer: None,
+            entity: None,
+            is_modified: false,
+            is_lighting_ready: true,
+        });
+
+        // 在倒伏軌跡處放置固體地面 (IVec3::new(1, 0, 0))
+        let ecs_world = BevyWorld::new();
+        let mut queue = CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &ecs_world);
+        wm.set_block_global(IVec3::new(1, 0, 0), BlockType::Stone, &mut commands);
+        world.insert_resource(wm);
+
+        // 玩家站立於倒木正下方落地點 (1.0, 0.5, 0.0)
+        let player_ent = world.spawn((
+            Player::default(),
+            PlayerVitals::default(),
+            Velocity::default(),
+            Transform::from_xyz(1.0, 0.5, 0.0),
+        )).id();
+
+        // 倒木朝向 +X 軸旋轉倒塌 (fall_axis = Z 軸)
+        let tree_ent = world.spawn((
+            SpatialBundle::default(),
+            FallingTree {
+                pivot: Vec3::new(0.5, 0.5, 0.5),
+                fall_axis: Vec3::Z,
+                angle: 0.3,
+                angular_velocity: 1.5,
+                lifetime: 0.1,
+                log_offsets: vec![Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 2.0, 0.0)],
+                leaf_offsets: vec![Vec3::new(0.0, 3.0, 0.0)],
+            },
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(update_falling_trees);
+
+        // 推進時間，倒木旋轉掃過並碰觸 (1, 0, 0) 之固體石頭方塊
+        {
+            let mut time = world.resource_mut::<Time>();
+            time.advance_by(std::time::Duration::from_millis(500));
+        }
+        schedule.run(&mut world);
+
+        // 倒木應提早撞地碎裂並銷毀
+        assert!(world.get::<FallingTree>(tree_ent).is_none(), "倒木碰觸固體方塊應提早觸發砸地碎裂銷毀");
+
+        // 玩家應受到 35 點鈍擊傷害 (100 - 35 = 65)
+        let vitals = world.get::<PlayerVitals>(player_ent).expect("PlayerVitals should exist");
+        assert_eq!(vitals.health, 65.0, "遭受倒木重壓應扣除 35 點生命值");
+
+        // 玩家應被施加擊退衝量
+        let vel = world.get::<Velocity>(player_ent).expect("Velocity should exist");
+        assert!(vel.0.length() > 1.0, "遭受倒木重擊應施加擊退衝量");
+
+        // 螢幕震顫應劇烈跳升至 ~0.9
+        let shake = world.resource::<ScreenShake>();
+        assert!(shake.trauma >= 0.85, "被倒木直接砸中應誘發極度強烈的相機震顫");
+    }
+
+    #[test]
+    fn test_falling_tree_distant_rumble() {
+        let mut world = BevyWorld::new();
+        world.init_resource::<Time>();
+        world.init_resource::<ParticleManager>();
+        world.init_resource::<ScreenShake>();
+
+        // 玩家站立於 6 格之外 (遠離 1.8m 壓砸危險區，但處於 12m 轟鳴半徑內)
+        let player_ent = world.spawn((
+            Player::default(),
+            PlayerVitals::default(),
+            Velocity::default(),
+            Transform::from_xyz(6.5, 0.5, 0.5),
+        )).id();
+
+        let tree_ent = world.spawn((
+            SpatialBundle::default(),
+            FallingTree {
+                pivot: Vec3::new(0.5, 0.5, 0.5),
+                fall_axis: Vec3::Z,
+                angle: 1.45,
+                angular_velocity: 2.0,
+                lifetime: 1.0,
+                log_offsets: vec![Vec3::new(0.0, 1.0, 0.0)],
+                leaf_offsets: vec![],
+            },
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(update_falling_trees);
+
+        {
+            let mut time = world.resource_mut::<Time>();
+            time.advance_by(std::time::Duration::from_millis(200));
+        }
+        schedule.run(&mut world);
+
+        assert!(world.get::<FallingTree>(tree_ent).is_none());
+
+        // 玩家不受傷害
+        let vitals = world.get::<PlayerVitals>(player_ent).unwrap();
+        assert_eq!(vitals.health, 100.0, "處於安全距離之外玩家不應受到壓砸傷害");
+
+        // 但相機應收到轟鳴震顫 (trauma > 0)
+        let shake = world.resource::<ScreenShake>();
+        assert!(shake.trauma > 0.1, "近距離倒木撞地應對周遭玩家注入轟鳴震顫");
     }
 }

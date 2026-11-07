@@ -63,6 +63,7 @@ fn load_textures(
             _pad2: 0.0,
             fog_color: Vec4::new(0.5, 0.8, 1.0, 1.0),
             camera_pos: Vec4::ZERO,
+            mining_data: Vec4::ZERO,
         },
         alpha_mode: AlphaMode::Mask(0.5),
     });
@@ -80,6 +81,7 @@ fn load_textures(
             _pad2: 0.0,
             fog_color: Vec4::new(0.5, 0.8, 1.0, 1.0),
             camera_pos: Vec4::ZERO,
+            mining_data: Vec4::ZERO,
         },
         alpha_mode: AlphaMode::Blend,
     });

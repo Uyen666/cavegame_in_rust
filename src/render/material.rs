@@ -15,6 +15,7 @@ pub struct EnvironmentUniform {
     pub _pad2: f32,
     pub fog_color: Vec4,
     pub camera_pos: Vec4,
+    pub mining_data: Vec4, // (x, y, z, progress)
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]

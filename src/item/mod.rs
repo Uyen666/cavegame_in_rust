@@ -447,11 +447,137 @@ impl Inventory {
     }
 }
 
+/// 輕量化 3D 物理掉落物實體 (Floating Item Entity)
+/// 模擬物品在世界中受重力掉落、懸浮緩慢自轉、磁吸吸附至玩家背包與超時銷毀
+#[derive(Component, Debug, Clone)]
+pub struct ItemDrop {
+    pub item_stack: ItemStack,
+    pub velocity: Vec3,
+    pub pickup_delay: f32, // 初始 0.5s 防立即拾取
+    pub lifetime: f32,     // 300.0s 超時銷毀防內存膨脹
+    pub rotation_yaw: f32,
+    pub bobbing_phase: f32,
+}
+
+pub fn spawn_item_drop(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    material: Handle<crate::render::material::VoxelMaterial>,
+    stack: ItemStack,
+    pos: Vec3,
+    velocity: Vec3,
+) -> Entity {
+    let (block, scale) = match stack.item_type {
+        ItemType::Stick => (BlockType::OakLog, Vec3::new(0.08, 0.35, 0.08)),
+        ItemType::Flint => (BlockType::Stone, Vec3::new(0.22, 0.15, 0.22)),
+        ItemType::Coal => (BlockType::CoalOre, Vec3::new(0.2, 0.2, 0.2)),
+        other => {
+            let b = other.to_block().unwrap_or(BlockType::Stone);
+            (b, Vec3::splat(0.28))
+        }
+    };
+    let mesh = meshes.add(crate::render::greedy::build_single_voxel_mesh(block));
+    commands.spawn((
+        MaterialMeshBundle {
+            mesh,
+            material,
+            transform: Transform::from_translation(pos).with_scale(scale),
+            ..default()
+        },
+        ItemDrop {
+            item_stack: stack,
+            velocity,
+            pickup_delay: 0.5,
+            lifetime: 0.0,
+            rotation_yaw: 0.0,
+            bobbing_phase: 0.0,
+        },
+    )).id()
+}
+
+pub fn update_item_drops(
+    mut commands: Commands,
+    time: Res<Time>,
+    world: Res<crate::world::WorldManager>,
+    registry: Res<ItemRegistry>,
+    mut q_drops: Query<(Entity, &mut Transform, &mut ItemDrop)>,
+    mut q_player: Query<(&Transform, &mut Inventory, &crate::player::Player), Without<ItemDrop>>,
+    mut particle_mgr: ResMut<crate::render::particles::ParticleManager>,
+) {
+    let dt = time.delta_seconds();
+    if dt <= 0.00001 { return; }
+
+    let Ok((p_transform, mut inventory, player)) = q_player.get_single_mut() else { return; };
+    let player_head = p_transform.translation + Vec3::new(0.0, 0.9, 0.0);
+
+    for (entity, mut transform, mut drop) in q_drops.iter_mut() {
+        drop.lifetime += dt;
+        drop.pickup_delay = (drop.pickup_delay - dt).max(0.0);
+
+        // 1. 超時 300 秒自動銷毀
+        if drop.lifetime > 300.0 {
+            commands.entity(entity).despawn_recursive();
+            continue;
+        }
+
+        // 2. 重力與速度結算
+        drop.velocity.y -= 18.0 * dt;
+        drop.velocity.y = drop.velocity.y.max(-20.0);
+        let next_pos = transform.translation + drop.velocity * dt;
+
+        let foot_voxel = IVec3::new(
+            next_pos.x.floor() as i32,
+            (next_pos.y - 0.15).floor() as i32,
+            next_pos.z.floor() as i32,
+        );
+        let block_below = world.get_block_global(foot_voxel);
+        if block_below.is_solid() {
+            let floor_y = foot_voxel.y as f32 + 1.0 + 0.15;
+            transform.translation.y = floor_y;
+            drop.velocity.y = 0.0;
+            drop.velocity.x *= 0.85;
+            drop.velocity.z *= 0.85;
+        } else {
+            transform.translation = next_pos;
+        }
+
+        // 3. 視覺懸浮自轉
+        drop.rotation_yaw += 2.0 * dt;
+        drop.bobbing_phase += 3.0 * dt;
+        transform.rotation = Quat::from_rotation_y(drop.rotation_yaw);
+
+        // 4. 磁吸拾取 (半徑 1.8 格)
+        if !player.is_spectator && drop.pickup_delay <= 0.0 {
+            let dist = transform.translation.distance(player_head);
+            if dist <= 1.8 {
+                let dir = (player_head - transform.translation).normalize_or_zero();
+                let move_dist = (8.0 * dt).min(dist);
+                transform.translation += dir * move_dist;
+
+                let current_dist = transform.translation.distance(player_head);
+                if current_dist <= 0.45 {
+                    if let Some(overflow) = inventory.add_item(drop.item_stack.clone(), &registry) {
+                        drop.item_stack = overflow;
+                    } else {
+                        // 全數拾取完畢
+                        let color = crate::render::particles::get_block_debris_color(
+                            drop.item_stack.item_type.to_block().unwrap_or(BlockType::OakLog)
+                        );
+                        particle_mgr.spawn_debris(transform.translation, color, 4);
+                        commands.entity(entity).despawn_recursive();
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub struct ItemPlugin;
 
 impl Plugin for ItemPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ItemRegistry>();
+        app.add_systems(Update, update_item_drops.run_if(in_state(crate::GameState::InGame)));
     }
 }
 
@@ -574,6 +700,103 @@ mod tests {
         inv.click_slot(0, &registry);
         assert_eq!(inv.slot(0).as_ref().unwrap().item_type, ItemType::Dirt);
         assert!(inv.carried_item.is_none());
+    }
+
+    #[test]
+    fn test_item_drop_physics_and_magnetic_pickup() {
+        use bevy::ecs::world::{World as BevyWorld, CommandQueue};
+        use crate::world::{WorldManager, ChunkEntry, ChunkLightBuffer, generator};
+        use crate::render::particles::ParticleManager;
+        use crate::player::Player;
+
+        let mut world = BevyWorld::new();
+        world.init_resource::<Time>();
+        world.init_resource::<ItemRegistry>();
+        world.init_resource::<ParticleManager>();
+
+        let mut wm = WorldManager::default();
+        let chunk_pos = IVec3::new(0, 0, 0);
+        wm.chunks.insert(chunk_pos, ChunkEntry {
+            buffer: std::sync::Arc::new(generator::ChunkBuffer { blocks: [BlockType::Air; 32768] }),
+            light_buffer: std::sync::Arc::new(ChunkLightBuffer::default()),
+            fluid_buffer: None,
+            entity: None,
+            is_modified: false,
+            is_lighting_ready: true,
+        });
+
+        // 鋪設地面 (y = 0 為固體石頭) 防止物品掉入虛空
+        let ecs_world = BevyWorld::new();
+        let mut queue = CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &ecs_world);
+        for x in -2..=2 {
+            for z in -2..=2 {
+                wm.set_block_global(IVec3::new(x, 0, z), BlockType::Stone, &mut commands);
+            }
+        }
+        world.insert_resource(wm);
+
+        let registry = ItemRegistry;
+
+        // 玩家站立於 (0.0, 1.0, 0.0)，頭部座標為 (0.0, 1.9, 0.0)
+        let player_ent = world.spawn((
+            Player::default(),
+            Inventory::new(36),
+            Transform::from_xyz(0.0, 1.0, 0.0),
+        )).id();
+
+        // 掉落物生成於 (0.0, 1.5, 0.3)（處於玩家前上方，落地於 y=1.15，處於 1.8m 磁吸半徑內）
+        // 初始設置 pickup_delay = 0.5s 防立即拾取
+        let drop_ent = world.spawn((
+            Transform::from_xyz(0.0, 1.5, 0.3),
+            ItemDrop {
+                item_stack: ItemStack::new(ItemType::OakLog, 2, &registry),
+                velocity: Vec3::ZERO,
+                pickup_delay: 0.5,
+                lifetime: 0.0,
+                rotation_yaw: 0.0,
+                bobbing_phase: 0.0,
+            },
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(update_item_drops);
+
+        // 前 4 個 tick (每個 0.05s，共 0.2s)：掉落物受重力自然落體至地面 (y = 1.15)，此時 pickup_delay 仍在冷卻 (剩餘 0.3s)
+        for _ in 0..4 {
+            let mut time = world.resource_mut::<Time>();
+            time.advance_by(std::time::Duration::from_millis(50));
+            schedule.run(&mut world);
+        }
+
+        assert!(world.get::<ItemDrop>(drop_ent).is_some(), "在 pickup_delay 冷卻期間掉落物不應被拾取");
+        let p_inv = world.get::<Inventory>(player_ent).unwrap();
+        assert!(p_inv.slot(0).is_none(), "背包不應提前收納物品");
+
+        // 接續 8 個 tick (每個 0.05s，共 0.4s)：冷卻解除 (pickup_delay 歸零)，掉落物磁吸飛向玩家並納入背包
+        for _ in 0..8 {
+            let mut time = world.resource_mut::<Time>();
+            time.advance_by(std::time::Duration::from_millis(50));
+            schedule.run(&mut world);
+        }
+
+        // 掉落物已被吸入並銷毀
+        assert!(world.get::<ItemDrop>(drop_ent).is_none(), "磁吸完畢後掉落物實體應銷毀");
+
+        // 背包槽位 0 應已收到 2 個 OakLog
+        let p_inv = world.get::<Inventory>(player_ent).unwrap();
+        let slot = p_inv.slot(0).expect("Slot 0 should contain picked up item");
+        assert_eq!(slot.item_type, ItemType::OakLog);
+        assert_eq!(slot.count, 2);
+
+        // 掉落物已被吸入並銷毀
+        assert!(world.get::<ItemDrop>(drop_ent).is_none(), "磁吸完畢後掉落物實體應銷毀");
+
+        // 背包槽位 0 應已收到 2 個 OakLog
+        let p_inv = world.get::<Inventory>(player_ent).unwrap();
+        let slot = p_inv.slot(0).expect("Slot 0 should contain picked up item");
+        assert_eq!(slot.item_type, ItemType::OakLog);
+        assert_eq!(slot.count, 2);
     }
 }
 

@@ -32,6 +32,7 @@ struct EnvironmentUniform {
     _pad2: f32,
     fog_color: vec4<f32>,
     camera_pos: vec4<f32>,
+    mining_data: vec4<f32>,
 };
 @group(2) @binding(2) var<uniform> env: EnvironmentUniform;
 
@@ -165,11 +166,32 @@ fn vertex(
     }
 
     let model = get_world_from_local(input.instance_index);
-    out.world_position = model * vec4<f32>(final_pos, 1.0);
+
+    // 🌲 蓄力劈砍缺口 (Chop Notches in Shader)
+    // 當玩家蓄力砍伐原木時，根據 mining_progress 在面朝玩家的一側頂點即時凹陷形成 V 型切口
+    var adjusted_local = final_pos;
+    if env.is_fluid == 0u && env.mining_data.w > 0.0 {
+        let chunk_world_base = model[3].xyz;
+        let world_v = chunk_world_base + final_pos;
+        let target_center = env.mining_data.xyz + vec3<f32>(0.5, 0.5, 0.5);
+        let diff = world_v - target_center;
+        if abs(diff.x) <= 0.51 && abs(diff.y) <= 0.51 && abs(diff.z) <= 0.51 {
+            let to_cam = normalize(env.camera_pos.xyz - target_center);
+            let facing = dot(normal, to_cam);
+            if facing > 0.2 {
+                let vert_factor = 1.0 - abs(diff.y) * 1.5;
+                let notch_depth = env.mining_data.w * 0.38 * max(vert_factor, 0.2);
+                let indent = -to_cam * notch_depth;
+                adjusted_local += indent;
+            }
+        }
+    }
+
+    out.world_position = model * vec4<f32>(adjusted_local, 1.0);
     out.world_normal = (model * vec4<f32>(normal, 0.0)).xyz;
     out.clip_position = mesh_position_local_to_clip(
         model,
-        vec4<f32>(final_pos, 1.0)
+        vec4<f32>(adjusted_local, 1.0)
     );
     out.uv = uv;
     out.texture_index = tex_id;
