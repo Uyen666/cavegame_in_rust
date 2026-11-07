@@ -21,6 +21,7 @@ pub struct FallingTree {
     pub leaf_count: usize,
     pub log_offsets: Vec<Vec3>,
     pub leaf_offsets: Vec<Vec3>,
+    pub current_light: (u8, u8),
 }
 
 /// 工業級樹木連鎖倒塌與重力滑落系統 (Tree Felling & Gravity System)
@@ -145,7 +146,25 @@ pub fn handle_tree_break(
             }
 
             if !mesh_blocks.is_empty() {
-                let compound_mesh = crate::render::greedy::build_compound_voxel_mesh(&mesh_blocks);
+                // 採樣樹木底座與周遭環境之雙軌世界光照 (天空光與方塊光)
+                let (tree_sl, tree_bl) = {
+                    let mut sl = world.get_sky_light_global(broken_pos);
+                    let mut bl = world.get_block_light_global(broken_pos);
+                    for offset in [
+                        IVec3::Y,
+                        IVec3::X,
+                        -IVec3::X,
+                        IVec3::Z,
+                        -IVec3::Z,
+                    ] {
+                        let p = broken_pos + offset;
+                        sl = sl.max(world.get_sky_light_global(p));
+                        bl = bl.max(world.get_block_light_global(p));
+                    }
+                    (sl.max(12), bl)
+                };
+
+                let compound_mesh = crate::render::greedy::build_compound_voxel_mesh_with_light(&mesh_blocks, tree_sl, tree_bl);
                 let mesh_handle = meshes.add(compound_mesh);
 
                 // 計算樹木傾倒軸向：背離玩家劈砍方向傾倒
@@ -183,6 +202,7 @@ pub fn handle_tree_break(
                         leaf_count: leaves_to_decay.len(),
                         log_offsets: log_offsets.clone(),
                         leaf_offsets: leaf_offsets.clone(),
+                        current_light: (tree_sl, tree_bl),
                     },
                 )).with_children(|parent| {
                     // 注意：FallingTree 的子網格因 compound_voxel_mesh 以 (16, 0, 16) 為中心構建，
@@ -254,13 +274,14 @@ pub fn update_falling_trees(
     gt: Option<Res<GameTextures>>,
     mut meshes: Option<ResMut<Assets<Mesh>>>,
     registry: Option<Res<ItemRegistry>>,
-    mut q_trees: Query<(Entity, &mut Transform, &mut FallingTree)>,
+    mut q_trees: Query<(Entity, &mut Transform, &mut FallingTree, Option<&Children>)>,
+    q_mesh_handles: Query<&Handle<Mesh>>,
     mut q_player: Query<(&Transform, Option<&mut PlayerVitals>, &mut Velocity), (With<Player>, Without<FallingTree>)>,
     mut shake: Option<ResMut<ScreenShake>>,
     mut particle_mgr: ResMut<ParticleManager>,
 ) {
     let dt = time.delta_seconds();
-    for (entity, mut transform, mut tree) in q_trees.iter_mut() {
+    for (entity, mut transform, mut tree, maybe_children) in q_trees.iter_mut() {
         tree.lifetime += dt;
         // 剛體力學角加速度：alpha = (3g / 2L) * sin(theta)
         // 樹高 L 越大，轉動慣量越大，角加速度越緩；矮樹倒伏俐落，參天巨木倒塌磅礡沉著
@@ -278,6 +299,37 @@ pub fn update_falling_trees(
 
         let rot = Quat::from_axis_angle(tree.fall_axis, tree.angle);
         transform.rotation = rot;
+
+        // 🌟 即時動態採樣倒木環境光照（天空光與火把光）：隨樹木傾倒動態過渡光照階層
+        if let Some(ref wm) = world {
+            let mid_world = tree.pivot + rot * Vec3::new(0.0, (tree.height * 0.5).min(2.0), 0.0);
+            let sample_pos = IVec3::new(
+                mid_world.x.floor() as i32,
+                mid_world.y.floor() as i32,
+                mid_world.z.floor() as i32,
+            );
+            let mut new_sl = wm.get_sky_light_global(sample_pos);
+            let mut new_bl = wm.get_block_light_global(sample_pos);
+            for offset in [IVec3::Y, IVec3::X, -IVec3::X, IVec3::Z, -IVec3::Z] {
+                let p = sample_pos + offset;
+                new_sl = new_sl.max(wm.get_sky_light_global(p));
+                new_bl = new_bl.max(wm.get_block_light_global(p));
+            }
+            new_sl = new_sl.max(12);
+            let target_light = (new_sl, new_bl);
+            if tree.current_light != target_light {
+                tree.current_light = target_light;
+                if let (Some(children), Some(ref mut meshes_res)) = (maybe_children, meshes.as_mut()) {
+                    for &child in children.iter() {
+                        if let Ok(mesh_handle) = q_mesh_handles.get(child) {
+                            if let Some(mesh) = meshes_res.get_mut(mesh_handle) {
+                                crate::render::greedy::update_single_voxel_mesh_light(mesh, new_sl, new_bl);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // 探測倒木是否碰撞固體地面 (Ray / Voxel Contact Detection)
         // 倒塌至接近地面 (~84 度，即 ~1.46 rad) 或超時保護 (3.5 秒) 作為保底
@@ -547,6 +599,7 @@ mod tests {
                 leaf_count: 10,
                 log_offsets: vec![Vec3::new(0.0, 1.0, 0.0)],
                 leaf_offsets: vec![Vec3::new(0.0, 2.0, 0.0)],
+                current_light: (15, 0),
             },
         )).id();
 
@@ -621,6 +674,7 @@ mod tests {
                 leaf_count: 0,
                 log_offsets: vec![Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 2.0, 0.0)],
                 leaf_offsets: vec![Vec3::new(0.0, 3.0, 0.0)],
+                current_light: (15, 0),
             },
         )).id();
 
@@ -677,6 +731,7 @@ mod tests {
                 leaf_count: 0,
                 log_offsets: vec![Vec3::new(0.0, 1.0, 0.0)],
                 leaf_offsets: vec![],
+                current_light: (15, 0),
             },
         )).id();
 
@@ -721,6 +776,7 @@ mod tests {
                 leaf_count: 5,
                 log_offsets: vec![Vec3::new(0.0, 1.0, 0.0)],
                 leaf_offsets: vec![],
+                current_light: (15, 0),
             },
         )).id();
 
@@ -736,6 +792,7 @@ mod tests {
                 leaf_count: 5,
                 log_offsets: vec![Vec3::new(0.0, 1.0, 0.0)],
                 leaf_offsets: vec![],
+                current_light: (15, 0),
             },
         )).id();
 
@@ -761,5 +818,59 @@ mod tests {
             s_tree.angle > t_tree.angle,
             "矮樹在同時間內傾倒角度應大於巨木"
         );
+    }
+
+    #[test]
+    fn test_falling_tree_dynamic_lighting_update() {
+        let mut world = BevyWorld::new();
+        world.init_resource::<Time>();
+        world.init_resource::<ParticleManager>();
+
+        let mut wm = WorldManager::default();
+        let chunk_pos = IVec3::new(0, 0, 0);
+        wm.chunks.insert(chunk_pos, ChunkEntry {
+            buffer: std::sync::Arc::new(generator::ChunkBuffer { blocks: [BlockType::Air; 32768] }),
+            light_buffer: std::sync::Arc::new(ChunkLightBuffer::default()),
+            fluid_buffer: None,
+            entity: None,
+            is_modified: false,
+            is_lighting_ready: true,
+        });
+
+        // 在 (0, 0, 0) 放置火把以產生方塊光源
+        let ecs_world = BevyWorld::new();
+        let mut queue = CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &ecs_world);
+        wm.set_block_global(IVec3::new(0, 0, 0), BlockType::Torch, &mut commands);
+        world.insert_resource(wm);
+
+        let entity = world.spawn((
+            SpatialBundle::default(),
+            FallingTree {
+                pivot: Vec3::new(0.0, 1.0, 0.0),
+                fall_axis: Vec3::X,
+                angle: 0.1,
+                angular_velocity: 0.1,
+                lifetime: 0.0,
+                height: 4.0,
+                leaf_count: 5,
+                log_offsets: vec![Vec3::new(0.0, 1.0, 0.0)],
+                leaf_offsets: vec![],
+                current_light: (0, 0),
+            },
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(update_falling_trees);
+
+        {
+            let mut time = world.resource_mut::<Time>();
+            time.advance_by(std::time::Duration::from_millis(16));
+        }
+        schedule.run(&mut world);
+
+        let tree = world.get::<FallingTree>(entity).expect("FallingTree should exist");
+        assert!(tree.current_light.0 >= 12, "倒木天空光保底 12 級");
+        assert!(tree.current_light.1 > 0, "倒木接近火把應動態採樣火把光 (block_light > 0)");
     }
 }

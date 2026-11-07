@@ -338,6 +338,17 @@ src/
     - 實裝 `FloatingCarriedItemNode`，包含 `FloatingCarriedIconNode` 與 `FloatingCarriedCountNode`，層級為 `ZIndex::Global(100)`；
     - 在 `update_inventory_ui` 中即時取得 `window.cursor_position()`，手持物品時無延遲將 3D/2D 圖示與數量文字精確定位至游標尖端 (`pos.x - 18.0, pos.y - 18.0`)；
     - 全節點配置 `FocusPolicy::Pass`，滑鼠點擊判定無阻礙穿透至底層背包格子按鈕，達成流暢跟手拖拽與精準放置交互；手持為空或關閉背包時自動隱藏並歸還。
+
+- **10/2 倒木動態雙軌環境光照取樣與著色器 WGSL 整數平坦插值規範修復 (Falling Tree Dynamic Lighting & WGSL Flat Interpolation Fix)**:
+  - **倒木在黑夜倒下變黑剪影根本原因剖析**:
+    1. 在複合網格生成器 `build_compound_voxel_mesh` 中頂點方塊光硬編碼為 0 (`block_lights = [0, 0, 0, 0]`)，倒木在黑夜中即使身處火把旁也無法接收任何火把光源，受夜間天空光衰減因子 `sky_factor = 0.05` 壓制，表面亮度暴跌至 ~1.4% (RGB: 9, 5, 2) 呈焦炭剪影；
+    2. 生成倒木實體時未採樣世界環境光照；
+    3. 著色器 `assets/shaders/voxel.wgsl` 中頂點與片元傳遞的整數 `texture_index: u32` 漏標 `@interpolate(flat)`，違反 WebGPU/WGSL 規範造成插值未定義行為。
+  - **核心修復實裝**:
+    1. 在 `src/render/greedy.rs` 新增 `build_compound_voxel_mesh_with_light(blocks, sky_light, block_light)`，支援傳入自訂天空光與方塊光；
+    2. 在 `src/world/tree.rs` 的 `handle_tree_break` 中，即時向世界資料層 `WorldManager` 採樣砍伐點 `broken_pos` 與 6 個鄰居方塊的雙軌世界光照（天空光與火把方塊光，天空光保底 12 級），注入倒木初始網格；
+    3. 在 `update_falling_trees` 物理系統中，每影格動態追蹤倒木中心體素的世界光照，當環境光階層變更時透過 `update_single_voxel_mesh_light` 動態更新倒木網格頂點光照，倒木隨旋轉傾倒滾入或遠離火把光源時自然滑順變更亮度；
+    4. 在 `assets/shaders/voxel.wgsl` 為 `VertexOutput` 與 `FragmentInput` 中的 `texture_index: u32` 明確標註 `@interpolate(flat)`，全單元測試 61 項 100% 通過。
   - **單元測試全數驗證通過**:
     - 新增 `test_fancy_leaves_preserves_faces_between_adjacent_leaves`（驗證相鄰樹葉保留雙向內部面片與外圍貪婪合併）；
     - 新增 `test_all_11_preview_blocks_have_item_types` 與 `test_carried_item_return_and_slot_swap`；

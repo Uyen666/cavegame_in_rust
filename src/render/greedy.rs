@@ -1215,7 +1215,18 @@ pub fn update_single_voxel_mesh_light(mesh: &mut Mesh, sky_light: u8, block_ligh
 
 /// 構建多體素複合動態網格 (Compound Voxel Mesh)
 /// 用於實體化倒木物理 (Falling Trees)、動態殘骸與剛體載具，支援內部接觸面剔除以維持頂級效能。
+#[allow(dead_code)]
+#[inline(always)]
 pub fn build_compound_voxel_mesh(blocks: &[(IVec3, BlockType)]) -> Mesh {
+    build_compound_voxel_mesh_with_light(blocks, 15, 0)
+}
+
+/// 構建帶有自訂環境雙軌光照 (天空光與方塊光) 之多體素複合動態網格
+pub fn build_compound_voxel_mesh_with_light(
+    blocks: &[(IVec3, BlockType)],
+    sky_light: u8,
+    block_light: u8,
+) -> Mesh {
     let mut bucket: MeshData = (Vec::new(), Vec::new(), Vec::new());
     let block_map: std::collections::HashMap<IVec3, BlockType> = blocks.iter().copied().collect();
 
@@ -1251,8 +1262,8 @@ pub fn build_compound_voxel_mesh(blocks: &[(IVec3, BlockType)]) -> Mesh {
                 };
 
                 let tex_layer = get_texture_layer(block, d, normal_val);
-                let sky_lights = [15, 15, 15, 15];
-                let block_lights = [0, 0, 0, 0];
+                let sky_lights = [sky_light, sky_light, sky_light, sky_light];
+                let block_lights = [block_light, block_light, block_light, block_light];
 
                 let mut x = [local_pos.x, local_pos.y, local_pos.z];
                 x[d] += if normal_val > 0 { 1 } else { 0 };
@@ -1619,10 +1630,43 @@ mod tests {
             (IVec3::new(16, 1, 16), BlockType::OakLog),
         ];
         let mesh = build_compound_voxel_mesh(&blocks);
+        if let Some(VertexAttributeValues::Uint32(ref data)) = mesh.attribute(ATTRIBUTE_PACKED_DATA) {
+            for (idx, &packed) in data.iter().enumerate().take(6) {
+                let xyz = packed & 0xFFFF;
+                let x = xyz % 33;
+                let y = (xyz / 33) % 33;
+                let z = xyz / 1089;
+                let face_id = (packed >> 16) & 0x07;
+                let tex_id = (packed >> 19) & 0x1F;
+                let bl = (packed >> 24) & 0x0F;
+                let sl = (packed >> 28) & 0x0F;
+                println!("vertex {}: pos=({}, {}, {}), face_id={}, tex_id={}, bl={}, sl={}", idx, x, y, z, face_id, tex_id, bl, sl);
+            }
+        }
         // 單一原木有 24 頂點 (6 面 * 4)，兩個相鄰原木內部接觸面被剔除 2 面，應剩餘 10 面 = 40 頂點
         assert_eq!(mesh.count_vertices(), 40, "複合網格應正確剔除兩原木接觸的內部面");
         let indices = mesh.indices().expect("Indices must exist");
         assert_eq!(indices.len(), 60, "10 面 * 2 三角形 * 3 索引 = 60");
+    }
+
+    #[test]
+    fn test_build_compound_voxel_mesh_with_light_custom_lighting() {
+        let blocks = vec![
+            (IVec3::new(16, 0, 16), BlockType::OakLog),
+        ];
+        // 傳入雙軌環境光：天空光 14 級、火把方塊光 11 級
+        let mesh = build_compound_voxel_mesh_with_light(&blocks, 14, 11);
+        if let Some(VertexAttributeValues::Uint32(ref data)) = mesh.attribute(ATTRIBUTE_PACKED_DATA) {
+            assert!(!data.is_empty(), "網格頂點數據不得為空");
+            for &packed in data.iter() {
+                let bl = (packed >> 24) & 0x0F;
+                let sl = (packed >> 28) & 0x0F;
+                assert_eq!(sl, 14, "頂點天空光必須為傳入的 14");
+                assert_eq!(bl, 11, "頂點方塊光必須為傳入的 11 (非零)");
+            }
+        } else {
+            panic!("缺少 ATTRIBUTE_PACKED_DATA 頂點屬性");
+        }
     }
 
     #[test]
