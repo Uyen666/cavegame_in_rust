@@ -163,9 +163,10 @@ fn setup_player(
     inventory.set_slot(3, Some(ItemStack::new(ItemType::OakLog, 64, &registry)));
     inventory.set_slot(4, Some(ItemStack::new(ItemType::OakLeaves, 64, &registry)));
     inventory.set_slot(5, Some(ItemStack::new(ItemType::Sand, 64, &registry)));
-    inventory.set_slot(6, Some(ItemStack::new(ItemType::Glass, 64, &registry)));
-    inventory.set_slot(7, Some(ItemStack::new(ItemType::Torch, 64, &registry)));
+    inventory.set_slot(6, Some(ItemStack::new(ItemType::Torch, 64, &registry)));
+    inventory.set_slot(7, Some(ItemStack::new(ItemType::IronAxe, 1, &registry)));
     inventory.set_slot(8, Some(ItemStack::new(ItemType::IronPickaxe, 1, &registry)));
+    inventory.set_slot(9, Some(ItemStack::new(ItemType::Glass, 64, &registry)));
 
     commands.spawn((
         Player::default(),
@@ -678,7 +679,21 @@ fn player_interaction(
                     }
 
                     if let Some(drop_item) = get_block_drop(old_block) {
-                        inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
+                        if gt.ready {
+                            let drop_pos = block_pos.as_vec3() + Vec3::new(0.5, 0.5, 0.5);
+                            let angle = (block_pos.x.wrapping_mul(37) ^ block_pos.z.wrapping_mul(17) ^ block_pos.y) as f32;
+                            let drop_vel = Vec3::new(angle.cos() * 1.2, 2.8, angle.sin() * 1.2);
+                            crate::item::spawn_item_drop(
+                                &mut commands,
+                                &mut *meshes,
+                                gt.material.clone(),
+                                ItemStack::new(drop_item, 1, &registry),
+                                drop_pos,
+                                drop_vel,
+                            );
+                        } else {
+                            inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
+                        }
                     }
                     player.reset_mining();
                 } else {
@@ -734,8 +749,30 @@ fn player_interaction(
 
                         if can_harvest {
                             if let Some(drop_item) = get_block_drop(old_block) {
-                                inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
+                                if gt.ready {
+                                    let drop_pos = block_pos.as_vec3() + Vec3::new(0.5, 0.5, 0.5);
+                                    let angle = (block_pos.x.wrapping_mul(37) ^ block_pos.z.wrapping_mul(17) ^ block_pos.y) as f32;
+                                    let drop_vel = Vec3::new(angle.cos() * 1.2, 2.8, angle.sin() * 1.2);
+                                    crate::item::spawn_item_drop(
+                                        &mut commands,
+                                        &mut *meshes,
+                                        gt.material.clone(),
+                                        ItemStack::new(drop_item, 1, &registry),
+                                        drop_pos,
+                                        drop_vel,
+                                    );
+                                } else {
+                                    inventory.add_item(ItemStack::new(drop_item, 1, &registry), &registry);
+                                }
                             }
+                        } else {
+                            let tool_name = match old_block.preferred_tool() {
+                                crate::world::registry::ToolType::Axe => "斧頭 (Axe)",
+                                crate::world::registry::ToolType::Pickaxe => "十字鎬 (Pickaxe)",
+                                crate::world::registry::ToolType::Shovel => "鏟子 (Shovel)",
+                                _ => "專用工具",
+                            };
+                            println!("【採伐提示】工具等級不足或未持{}，無法採收 {}！", tool_name, old_block.name());
                         }
 
                         // 🚀 樹木重力與倒塌物理：若破壞原木，觸發 Timber 連鎖倒塌或重力滑落

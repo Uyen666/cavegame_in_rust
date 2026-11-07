@@ -196,6 +196,7 @@ src/
   - **倒木寫實重擊傷害與擊退 (Falling Tree Crush Damage & Knockback)**：倒木砸中站於傾倒方向下方的玩家施加 35 點鈍擊傷害、向上與後推強烈擊退衝量，並引發 trauma 0.9 劇烈相機震顫；安全距離 (12m 內) 周遭玩家同步感受地面轟鳴震顫；
   - **相機震顫系統 (Screen Shake Trauma System)**：新增 `ScreenShake` 資源，於視角結算中套用非線性平方衰減之高頻微幅震顫；在地質坍塌 1.2 秒預警期間週期性注入天花板微震顫，坍塌瞬間爆發強震；
   - **3D 物理掉落物與 Q 鍵丟棄 (3D ItemDrop & Drop Keybind)**：實裝獨立 `ItemDrop` 實體，具備真實重力、固體地面碰撞、懸浮緩慢自轉、1.8m 磁吸入包與 300s 超時銷毀；玩家按 Q 鍵可手動丟棄選中槽位物品。
+  - **全挖掘方塊全面實體化與開局鐵斧配發**：初始快捷列第 8 格配置鐵斧 (`IronAxe`)；全方塊挖掘破壞（草地、石頭、火把等）全面升級為 3D 物理掉落物 (`ItemDrop`)，採集彈射立體方塊並磁吸入包；未達工具等級採伐時提供直觀反饋提示。
 
 - **10/1 硬核真實生存四大里程碑系統 (Hardcore Realistic Survival 4-Step Milestone)**:
   - **第一步：樹木重力與採伐工具門檻 (Tree Felling & Gravity System)**:

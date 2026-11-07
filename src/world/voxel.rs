@@ -56,6 +56,11 @@ impl BlockType {
     }
 
     #[inline(always)]
+    pub fn name(self) -> &'static str {
+        self.definition().name
+    }
+
+    #[inline(always)]
     pub fn hardness(self) -> f32 {
         self.definition().hardness
     }
