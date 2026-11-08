@@ -1075,16 +1075,27 @@ fn update_fog_color(
         translation.y.floor() as i32,
         translation.z.floor() as i32,
     );
+    let in_water = world_manager.get_fluid_global(eye_pos) > 0;
     let sky_light = world_manager.get_sky_light_global(eye_pos) as f32;
-    let final_color = calculate_sky_and_fog_color(sky_light, cycle.sky_factor, config.min_ambient_light);
+
+    // 🚀 水中沉浸感知 vs 陸地大氣感知：
+    // 在水下時視距急劇縮短至 36 格，背景色切換為深邃海藍黑，還原真實深海能見度與幽暗壓迫感！
+    let max_distance = (config.render_distance as f32 * 32.0).max(64.0);
+    let (final_color, fog_start, fog_end) = if in_water {
+        let light_ratio = (sky_light / 15.0).clamp(0.0, 1.0) * cycle.sky_factor;
+        let deep_abyss = bevy::color::LinearRgba::new(0.001, 0.003, 0.006, 1.0);
+        let surface_sea = bevy::color::LinearRgba::new(0.015, 0.06, 0.16, 1.0);
+        let water_color = deep_abyss.mix(&surface_sea, light_ratio);
+        (Color::from(water_color), 2.0, 36.0)
+    } else {
+        let c = calculate_sky_and_fog_color(sky_light, cycle.sky_factor, config.min_ambient_light);
+        (c, max_distance * 0.75, max_distance - 8.0)
+    };
 
     clear_color.0 = final_color;
 
     // 防禦：render_distance 不得為 0
     if config.render_distance == 0 { return; }
-    let max_distance = config.render_distance as f32 * 32.0; // 8 * 32 = 256.0
-    let fog_start = max_distance * 0.75; // 192 格柔和起霧
-    let fog_end = max_distance - 8.0;   // 248 格完全消融遮擋地圖邊界
 
     // 【遠平面剛性鎖死】：獨立 query 確保不因 FogSettings 缺失而連帶失敗
     if let Ok(mut proj) = q_proj.get_single_mut() {
@@ -1599,6 +1610,19 @@ mod tests {
         assert!((day_lin.red - 0.5).abs() < 0.01);
         assert!((day_lin.green - 0.8).abs() < 0.01);
         assert!((day_lin.blue - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_underwater_fog_and_abyss_darkness() {
+        // 驗證水下迷霧：深墨藍到深淵黑，視距急劇收窄至 36 米以內
+        let deep_abyss = bevy::color::LinearRgba::new(0.001, 0.003, 0.006, 1.0);
+        let surface_sea = bevy::color::LinearRgba::new(0.015, 0.06, 0.16, 1.0);
+        let water_color_day = deep_abyss.mix(&surface_sea, 1.0);
+        assert!(water_color_day.blue > water_color_day.red);
+        assert!(water_color_day.blue < 0.20, "Underwater daylight fog must be dark ocean blue, not sky blue");
+
+        let water_color_deep = deep_abyss.mix(&surface_sea, 0.0);
+        assert!(water_color_deep.blue < 0.01, "Deep water abyss must be pitch black");
     }
 }
 

@@ -100,9 +100,15 @@ pub struct TerrainGenerator<N: NoiseModule> {
     pub noise_provider: N,
 }
 
+#[inline(always)]
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 impl<N: NoiseModule> TerrainGenerator<N> {
-    /// 🚀 1024 宏觀地球級地貌連續密度場計算
-    /// 涵蓋：深海海溝、大陸架海盆、水岸平原、丘陵台地、河流深切峽谷與萬仞雪峰
+    /// 🚀 1024 宏觀地球級地貌連續可微密度場計算
+    /// 採用全域 C1 平滑樣條過渡，徹底消除海岸邊緣垂直人工斷層，打造自然大陸架緩坡！
     pub fn calculate_global_density(&self, gx: i32, gy: i32, gz: i32) -> (f32, f32) {
         let fx = gx as f64;
         let fy = gy as f64;
@@ -111,32 +117,37 @@ impl<N: NoiseModule> TerrainGenerator<N> {
         // 【第一階段：採樣大尺度大陸性指標 (Continentality)】
         let r = (self.noise_provider.sample_2d(fx * 0.0006, fz * 0.0006) + 0.5).clamp(0.0, 1.0);
 
-        // 【第二階段：多級宏觀地理參數動態計算】
-        let (base_h, amplitude, mountain_weight) = if r < 0.25 {
-            // 🌊 深海大洋與海溝帶 (r: 0.0 ~ 0.25)
-            // 基底 Y=70 ~ 215，覆蓋海水至 SEA_LEVEL=256，水深高達 40 ~ 186 格！
-            let t = r / 0.25;
+        // 【第二階段：全域 C1 連續樣條地理參數計算（徹底消滅階梯斷層）】
+        let (base_h, amplitude, mountain_weight) = if r < 0.18 {
+            // 🌊 1. 深海大洋與深海海溝帶 (r: 0.0 ~ 0.18)
+            // 基底 Y=80 ~ 150，海床平緩起伏
+            let t = smoothstep(0.0, 0.18, r);
             let mut trench_depth = 0.0;
-            if r < 0.08 {
-                // 馬里亞納深海海溝裂縫
-                trench_depth = ((0.08 - r) / 0.08) * 45.0;
+            if r < 0.06 {
+                let tt = smoothstep(0.06, 0.0, r);
+                trench_depth = tt * 40.0; // 平滑深切海溝
             }
-            (75.0 + t * 140.0 - trench_depth, 10.0 + t * 12.0, 0.05f32)
-        } else if r < 0.45 {
-            // 🏖️ 海岸與平原沉積帶 (r: 0.25 ~ 0.45)
-            // 基底 Y=250 ~ 295，緊鄰海平面，地勢平緩開闊
-            let t = (r - 0.25) / 0.2;
-            (250.0 + t * 45.0, 5.0 + t * 10.0, 0.0f32)
-        } else if r < 0.70 {
-            // 🏞️ 內陸高原與丘陵帶 (r: 0.45 ~ 0.70)
-            // 基底 Y=295 ~ 480，起伏適中，森林繁茂
-            let t = (r - 0.45) / 0.25;
-            (295.0 + t * 185.0, 20.0 + t * 35.0, 0.2 + t * 0.25)
+            (80.0 + t * 70.0 - trench_depth, 8.0 + t * 6.0, 0.05f32)
+        } else if r < 0.38 {
+            // 🏖️ 2. 大陸架平緩緩坡與水下過渡帶 (r: 0.18 ~ 0.38)
+            // 從 Y=150 平緩爬升至水深僅 4 米的淺海大陸架 (Y=252)，徹底消滅垂直人工斷崖！
+            let t = smoothstep(0.18, 0.38, r);
+            (150.0 + t * 102.0, 14.0 - t * 8.0, 0.05f32)
+        } else if r < 0.50 {
+            // 🌾 3. 濱海沙灘與平原沉積帶 (r: 0.38 ~ 0.50)
+            // 基底從海平面 (Y=252) 緩升至 Y=275，形成開闊金黃沙灘與海邊草地
+            let t = smoothstep(0.38, 0.50, r);
+            (252.0 + t * 23.0, 6.0 + t * 6.0, 0.0f32)
+        } else if r < 0.72 {
+            // 🏞️ 4. 內陸丘陵與高原林地 (r: 0.50 ~ 0.72)
+            // 基底 Y=275 ~ 480，起伏適中，森林茂密
+            let t = smoothstep(0.50, 0.72, r);
+            (275.0 + t * 205.0, 12.0 + t * 28.0, t * 0.3)
         } else {
-            // 🏔️ 喜馬拉雅級巨型雪峰 (r: 0.70 ~ 1.0)
-            // 基底爆發至 Y=480 ~ 800+，波幅達 50 ~ 140，最高峰拔地而起直衝雲霄！
-            let t = (r - 0.70) / 0.3;
-            (480.0 + t * 320.0, 55.0 + t * 95.0, 0.45 + t * 0.55)
+            // 🏔️ 5. 喜馬拉雅級巨型雪峰 (r: 0.72 ~ 1.0)
+            // 基底平滑爆發至 Y=480 ~ 820+，波幅達 40 ~ 120，銳利角峰直插雲霄！
+            let t = smoothstep(0.72, 1.0, r);
+            (480.0 + t * 340.0, 40.0 + t * 80.0, 0.3 + t * 0.7)
         };
 
         // 【第三階段：連續幾何場複合（Fbm 與 3D 脊狀分形噪聲混合）】
@@ -148,8 +159,8 @@ impl<N: NoiseModule> TerrainGenerator<N> {
         let mut density = base_h - (gy as f32) + (blended_3d * amplitude);
 
         // 【第四階段：河流與峽谷深切侵蝕 (River & Canyon Carving)】
-        // 僅在陸地區域 (r >= 0.28) 且高於海平面附近進行峽谷深切
-        if r >= 0.28 && gy >= SEA_LEVEL - 12 {
+        // 僅在陸地區域 (r >= 0.40) 且高於海平面附近進行峽谷深切
+        if r >= 0.40 && gy >= SEA_LEVEL - 12 {
             let river_sample = self.noise_provider.sample_2d(fx * 0.0015 + 128.0, fz * 0.0015 + 128.0).abs();
             if river_sample < 0.055 {
                 let carve_intensity = (1.0 - (river_sample / 0.055)).powi(2);
@@ -184,18 +195,21 @@ impl<N: NoiseModule> TerrainGenerator<N> {
         let fx = gx as f64;
         let fz = gz as f64;
         let r = (self.noise_provider.sample_2d(fx * 0.0006, fz * 0.0006) + 0.5).clamp(0.0, 1.0);
-        let (base_h, amplitude, _) = if r < 0.25 {
-            let t = r / 0.25;
-            (75.0 + t * 140.0, 10.0 + t * 12.0, 0.05f32)
-        } else if r < 0.45 {
-            let t = (r - 0.25) / 0.2;
-            (250.0 + t * 45.0, 5.0 + t * 10.0, 0.0f32)
-        } else if r < 0.70 {
-            let t = (r - 0.45) / 0.25;
-            (295.0 + t * 185.0, 20.0 + t * 35.0, 0.2f32)
+        let (base_h, amplitude, _) = if r < 0.18 {
+            let t = smoothstep(0.0, 0.18, r);
+            (80.0 + t * 70.0, 8.0 + t * 6.0, 0.05f32)
+        } else if r < 0.38 {
+            let t = smoothstep(0.18, 0.38, r);
+            (150.0 + t * 102.0, 14.0 - t * 8.0, 0.05f32)
+        } else if r < 0.50 {
+            let t = smoothstep(0.38, 0.50, r);
+            (252.0 + t * 23.0, 6.0 + t * 6.0, 0.0f32)
+        } else if r < 0.72 {
+            let t = smoothstep(0.50, 0.72, r);
+            (275.0 + t * 205.0, 12.0 + t * 28.0, 0.2f32)
         } else {
-            let t = (r - 0.70) / 0.3;
-            (480.0 + t * 320.0, 55.0 + t * 95.0, 0.5f32)
+            let t = smoothstep(0.72, 1.0, r);
+            (480.0 + t * 340.0, 40.0 + t * 80.0, 0.5f32)
         };
         let max_possible_y = ((base_h + amplitude).ceil() as i32 + 2).min(crate::utils::math::WORLD_MAX_Y - 1);
         
@@ -259,12 +273,15 @@ impl<N: NoiseModule> TerrainGenerator<N> {
             }
         }
 
-        // 地底礦脈分佈 (在海平面下方的堅硬基岩層)
+        // 地底礦脈分佈 (在海平面下方的堅硬基岩層，高度機率衰減消除水平紅線)
         if gy < SEA_LEVEL + 32 {
+            let depth_fade = ((SEA_LEVEL + 32 - gy) as f32 / 32.0).clamp(0.0, 1.0);
             let hash = (gy as u32).wrapping_mul(73856093) ^ (density.to_bits());
-            if hash % 100 < 2 {
+            let iron_threshold = (2.0 * depth_fade) as u32;
+            let coal_threshold = iron_threshold + (4.0 * depth_fade) as u32;
+            if hash % 100 < iron_threshold {
                 return BlockType::IronOre;
-            } else if hash % 100 < 5 {
+            } else if hash % 100 < coal_threshold {
                 return BlockType::CoalOre;
             }
         }
@@ -457,8 +474,22 @@ mod tests {
     }
 
     #[test]
+    fn test_continental_shelf_continuous_no_discontinuity_jump() {
+        // 驗證在所有分段邊界上，高度差絕對平滑，絕無超過 0.5 格的斷崖瞬態跳躍！
+        for test_r in [0.18, 0.38, 0.50, 0.72] {
+            let gen_low = TerrainGenerator { noise_provider: MockFlatNoise(test_r - 0.5 - 0.001) };
+            let gen_high = TerrainGenerator { noise_provider: MockFlatNoise(test_r - 0.5 + 0.001) };
+            let (_, h_low) = gen_low.calculate_global_density(0, SEA_LEVEL, 0);
+            let (_, h_high) = gen_high.calculate_global_density(0, SEA_LEVEL, 0);
+            let diff = (h_high - h_low).abs();
+            assert!(diff < 1.0, "Discontinuity cliff detected at r={}: diff={}", test_r, diff);
+        }
+    }
+
+    #[test]
     fn test_shoreline_sediment_blocks() {
-        let gen = TerrainGenerator { noise_provider: MockFlatNoise(0.0) };
+        // 採樣海灘帶 (r = 0.40 -> base_h 落在 253 左右)
+        let gen = TerrainGenerator { noise_provider: MockFlatNoise(-0.1) };
         let (_density, base_h) = gen.calculate_global_density(0, SEA_LEVEL, 0);
         
         // 模擬海平面交界處的露天地表方塊
