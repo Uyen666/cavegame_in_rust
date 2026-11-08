@@ -1,4 +1,6 @@
+#![allow(dead_code)]
 use bevy::prelude::*;
+use bevy::render::render_resource::{AsBindGroup, ShaderRef, ShaderType};
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use bevy::utils::{HashMap, HashSet};
 use futures_lite::future;
@@ -8,9 +10,10 @@ use crate::world::generator::{TerrainGenerator, SEA_LEVEL};
 use crate::world::{TerrainNoise, WorldManager, WorldType};
 
 /// 🚀 Distant Horizons (DH) 超遠景 LOD 地平線系統
-/// 覆蓋範圍：8 區塊 ~ 48 區塊（256 米 ~ 1,536 米）
-/// 單個區域規格：8x8 區塊 (256x256 米)，採樣步長 8 米 (33x33 頂點，2,048 三角面)
-/// 僅需約 80 ~ 110 個 Draw Call 即可呈現宏大壯麗的地平線山脈與浩瀚大洋！
+/// 核心設計哲學：
+/// 1. 近處（0 ~ near_voxel_radius，即 0 ~ 248 米）：100% 嚴格純 3D 方塊，絕不允許任何平滑地表穿出！
+/// 2. 遠景（248 米 ~ 1,536 米）：無狀態低多邊形網格無縫接管，僅需約 80 ~ 110 個 Draw Call 呈現 1.5 公里宏大雪峰與大洋！
+/// 3. 銜接處（240 ~ 248 米）：體素迷霧平滑融化，GPU 著色器即時 Discard 近景像素，保證完全無縫、無穿模、無 Z-Fighting！
 
 pub const LOD_REGION_SIZE: i32 = 256; // 8 區塊 * 32 格 = 256 米
 pub const LOD_STEP: i32 = 8;          // 採樣步長 8 米
@@ -18,6 +21,62 @@ pub const LOD_GRID_VERTS: usize = (LOD_REGION_SIZE / LOD_STEP + 1) as usize; // 
 pub const LOD_MAX_RADIUS: i32 = 6;    // 半徑 6 個區域 = 1,536 米 (48 區塊)
 pub const LOD_FOG_START: f32 = 650.0; // 大氣迷霧起始距離
 pub const LOD_FOG_END: f32 = 1450.0;  // 大氣迷霧結束完全融於天空之距離
+
+#[allow(dead_code)]
+#[derive(Clone, Default, ShaderType, Debug)]
+pub struct LODEnvironmentUniform {
+    pub near_voxel_radius: f32, // 近景體素防護罩半徑 (在此半徑內的 LOD 像素強制 Discard 剔除)
+    pub fog_start: f32,
+    pub fog_end: f32,
+    pub _pad0: f32,
+    pub fog_color: Vec4,
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct LODMaterial {
+    #[uniform(0)]
+    pub env: LODEnvironmentUniform,
+}
+
+impl Material for LODMaterial {
+    fn vertex_shader() -> ShaderRef {
+        "shaders/lod.wgsl".into()
+    }
+
+    fn fragment_shader() -> ShaderRef {
+        "shaders/lod.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Mask(0.5) // 允許 GPU 執行 Fragment Discard 且保證深度寫入正確
+    }
+
+    fn prepass_vertex_shader() -> ShaderRef {
+        "shaders/lod.wgsl".into()
+    }
+
+    fn prepass_fragment_shader() -> ShaderRef {
+        "shaders/lod.wgsl".into()
+    }
+
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline<Self>,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        layout: &bevy::render::mesh::MeshVertexBufferLayoutRef,
+        _key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = Some(bevy::render::render_resource::Face::Back);
+
+        let vertex_layout = layout.0.get_layout(&[
+            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
+            Mesh::ATTRIBUTE_NORMAL.at_shader_location(1),
+            Mesh::ATTRIBUTE_COLOR.at_shader_location(2),
+        ])?;
+
+        descriptor.vertex.buffers[0] = vertex_layout;
+        Ok(())
+    }
+}
 
 #[allow(dead_code)]
 #[derive(Component)]
@@ -33,7 +92,7 @@ pub struct GeneratingLOD(pub Task<(IVec2, Mesh)>);
 pub struct LODManager {
     pub loaded_regions: HashMap<IVec2, Entity>,
     pub loading_regions: HashSet<IVec2>,
-    pub material: Handle<StandardMaterial>,
+    pub material: Handle<LODMaterial>,
     pub timer: f32,
     pub last_player_region: IVec2,
     pub initialized: bool,
@@ -43,21 +102,29 @@ pub struct LODPlugin;
 
 impl Plugin for LODPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_lod)
-            .add_systems(Update, (update_lod_regions, poll_lod_tasks));
+        app.add_plugins(MaterialPlugin::<LODMaterial> {
+            prepass_enabled: false,
+            ..default()
+        })
+        .add_systems(Startup, setup_lod)
+        .add_systems(Update, (update_lod_regions, poll_lod_tasks));
     }
 }
 
 pub fn setup_lod(
     mut commands: Commands,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<LODMaterial>>,
+    config: Res<crate::config::EngineConfig>,
 ) {
-    let material = materials.add(StandardMaterial {
-        base_color: Color::WHITE,
-        unlit: true,
-        fog_enabled: true,
-        cull_mode: Some(bevy::render::render_resource::Face::Back),
-        ..default()
+    let voxel_radius = (config.render_distance as f32 * 32.0) - 8.0;
+    let material = materials.add(LODMaterial {
+        env: LODEnvironmentUniform {
+            near_voxel_radius: voxel_radius,
+            fog_start: LOD_FOG_START,
+            fog_end: LOD_FOG_END,
+            _pad0: 0.0,
+            fog_color: Vec4::new(0.5, 0.8, 1.0, 1.0),
+        },
     });
 
     commands.insert_resource(LODManager {
@@ -207,6 +274,7 @@ pub fn update_lod_regions(
     mut lod_manager: ResMut<LODManager>,
     world_manager: Res<WorldManager>,
     q_player: Query<&Transform, With<crate::player::Player>>,
+    config: Res<crate::config::EngineConfig>,
     time: Res<Time>,
 ) {
     let Ok(player_tf) = q_player.get_single() else { return; };
@@ -228,7 +296,9 @@ pub fn update_lod_regions(
     lod_manager.last_player_region = current_region;
     lod_manager.initialized = true;
 
-    // 1. 淘汰超出最大地平線半徑 (LOD_MAX_RADIUS + 1) 或玩家當前身處的核心區域
+    let voxel_radius = (config.render_distance as f32 * 32.0) - 8.0;
+
+    // 1. 淘汰超出最大地平線半徑 (LOD_MAX_RADIUS + 1) 或完全被近景體素覆蓋之區域
     let max_radius_sq = (LOD_MAX_RADIUS + 1) * (LOD_MAX_RADIUS + 1);
     let mut to_despawn = Vec::new();
 
@@ -237,8 +307,16 @@ pub fn update_lod_regions(
         let dz = rpos.y - player_rz;
         let dist_sq = dx * dx + dz * dz;
 
-        // 玩家所處當前區域 (dx == 0 && dz == 0) 由 100% 體素填補，卸載其 LOD 防止穿模
-        if dist_sq > max_radius_sq || (dx == 0 && dz == 0) {
+        // 計算該區域中心至玩家的歐幾里得距離
+        let r_center_x = (rpos.x * LOD_REGION_SIZE + LOD_REGION_SIZE / 2) as f32;
+        let r_center_z = (rpos.y * LOD_REGION_SIZE + LOD_REGION_SIZE / 2) as f32;
+        let center_dist = ((r_center_x - player_pos.x).powi(2) + (r_center_z - player_pos.z).powi(2)).sqrt();
+        let region_half_diag = (LOD_REGION_SIZE as f32 / 2.0) * 1.4142;
+
+        // 若該區域所有頂點均深陷於近景體素半徑內部，完全由體素實體渲染，直接卸載
+        let entirely_inside_voxels = center_dist + region_half_diag < voxel_radius;
+
+        if dist_sq > max_radius_sq || entirely_inside_voxels {
             to_despawn.push(rpos);
             commands.entity(entity).despawn_recursive();
         }
@@ -261,11 +339,21 @@ pub fn update_lod_regions(
     for dz in -max_r..=max_r {
         for dx in -max_r..=max_r {
             let dist_sq = dx * dx + dz * dz;
-            if dist_sq > max_r * max_r || (dx == 0 && dz == 0) {
+            if dist_sq > max_r * max_r {
                 continue;
             }
 
             let rpos = IVec2::new(player_rx + dx, player_rz + dz);
+            let r_center_x = (rpos.x * LOD_REGION_SIZE + LOD_REGION_SIZE / 2) as f32;
+            let r_center_z = (rpos.y * LOD_REGION_SIZE + LOD_REGION_SIZE / 2) as f32;
+            let center_dist = ((r_center_x - player_pos.x).powi(2) + (r_center_z - player_pos.z).powi(2)).sqrt();
+            let region_half_diag = (LOD_REGION_SIZE as f32 / 2.0) * 1.4142;
+
+            // 🚀 CPU 預先快篩：若該區域完全深埋於近景體素防護罩內部，完全不生成任務
+            if center_dist + region_half_diag < voxel_radius {
+                continue;
+            }
+
             if !lod_manager.loaded_regions.contains_key(&rpos)
                 && !lod_manager.loading_regions.contains(&rpos)
             {

@@ -1066,6 +1066,7 @@ fn update_fog_color(
     mut q_proj: Query<&mut Projection, With<PlayerCamera>>,
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     mut materials: ResMut<Assets<crate::render::material::VoxelMaterial>>,
+    mut lod_materials: ResMut<Assets<crate::render::lod::LODMaterial>>,
     q_player: Query<&Player>,
 ) {
     let Ok(cam_tf) = q_camera.get_single() else { return; };
@@ -1144,6 +1145,15 @@ fn update_fog_color(
         mat.env.fog_color = fog_col;
         mat.env.camera_pos = cam_pos;
         mat.env.mining_data = mining_data;
+    }
+
+    // 🚀 【LOD 超遠景材質同步】：動態將近景體素剔除半徑與遠景大氣迷霧推播至 lod.wgsl
+    let voxel_radius = (config.render_distance as f32 * 32.0) - 8.0;
+    for (_, mat) in lod_materials.iter_mut() {
+        mat.env.near_voxel_radius = if in_water { 0.0 } else { voxel_radius };
+        mat.env.fog_start = cam_fog_start;
+        mat.env.fog_end = cam_fog_end;
+        mat.env.fog_color = fog_col;
     }
 }
 

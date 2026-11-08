@@ -23,6 +23,28 @@ fn main() {
         let backtrace = std::backtrace::Backtrace::capture();
         let _ = std::fs::write("panic.log", format!("Panic occurred: {}\nBacktrace:\n{}", info, backtrace));
     }));
+
+    let asset_path = {
+        if std::path::Path::new("assets").exists() {
+            "assets".to_string()
+        } else if let Ok(mut exe_dir) = std::env::current_exe() {
+            exe_dir.pop(); // 移除 exe
+            if exe_dir.join("assets").exists() {
+                exe_dir.join("assets").to_string_lossy().to_string()
+            } else {
+                exe_dir.pop(); // target
+                exe_dir.pop(); // 根目錄
+                if exe_dir.join("assets").exists() {
+                    exe_dir.join("assets").to_string_lossy().to_string()
+                } else {
+                    "assets".to_string()
+                }
+            }
+        } else {
+            "assets".to_string()
+        }
+    };
+
     App::new()
         .add_plugins(DefaultPlugins
             .set(WindowPlugin {
@@ -33,7 +55,7 @@ fn main() {
                 ..default()
             })
             .set(AssetPlugin {
-                file_path: "assets".to_string(),
+                file_path: asset_path,
                 ..default()
             })
         )
