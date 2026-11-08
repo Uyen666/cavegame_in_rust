@@ -1104,10 +1104,10 @@ fn update_fog_color(
     // 防禦：render_distance 不得為 0
     if config.render_distance == 0 { return; }
 
-    // 【遠平面剛性鎖死】：遠裁剪面提升至 2000 米，飽覽 1.5 公里 Distant Horizons 遠景與 1024 宏偉雪峰
+    // 【遠平面剛性鎖死】：遠裁剪面提升至 2500 米，飽覽 2.0 公里 Distant Horizons 遠景與 1024 宏偉雪峰
     if let Ok(mut proj) = q_proj.get_single_mut() {
         if let Projection::Perspective(ref mut persp) = *proj {
-            persp.far = 2000.0_f32.max(crate::utils::math::WORLD_MAX_Y as f32 * 1.5);
+            persp.far = 2500.0_f32.max(crate::utils::math::WORLD_MAX_Y as f32 * 1.5);
         }
     }
 
@@ -1148,7 +1148,7 @@ fn update_fog_color(
     }
 
     // 🚀 【LOD 超遠景材質同步】：動態將近景體素剔除半徑與遠景大氣迷霧推播至 lod.wgsl
-    let voxel_radius = (config.render_distance as f32 * 32.0) - 8.0;
+    let voxel_radius = (config.render_distance as f32 * 32.0) - 16.0;
     for (_, mat) in lod_materials.iter_mut() {
         mat.env.near_voxel_radius = if in_water { 0.0 } else { voxel_radius };
         mat.env.fog_start = cam_fog_start;

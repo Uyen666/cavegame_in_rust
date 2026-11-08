@@ -42,7 +42,7 @@ impl Default for EngineConfig {
             fluid_scroll_speed: 0.12,
             fluid_tick_speed: 0.1,
             min_ambient_light: 0.0, // 🚀 真黑環境：地底無光源處徹底為 0.0 絕對純黑
-            render_distance: 8,     // 🚀 核心體素渲染半徑：8 區塊 (256 米)，配合 Distant Horizons LOD 覆蓋至 1,536 米，衝擊 200+ FPS！
+            render_distance: 15,    // 🚀 核心體素視野半徑：15 區塊 (480 米)，人眼可視範圍 100% 全為方塊與樹木，極遠處 480m~2,000m 由 Distant Horizons LOD 地平線接管！
             max_mesh_uploads_per_frame: 16,
             smooth_lighting: true,
             physics: PhysicsConfig::default(),

@@ -18,9 +18,9 @@ use crate::world::{TerrainNoise, WorldManager, WorldType};
 pub const LOD_REGION_SIZE: i32 = 256; // 8 區塊 * 32 格 = 256 米
 pub const LOD_STEP: i32 = 8;          // 採樣步長 8 米
 pub const LOD_GRID_VERTS: usize = (LOD_REGION_SIZE / LOD_STEP + 1) as usize; // 33 頂點
-pub const LOD_MAX_RADIUS: i32 = 6;    // 半徑 6 個區域 = 1,536 米 (48 區塊)
-pub const LOD_FOG_START: f32 = 650.0; // 大氣迷霧起始距離
-pub const LOD_FOG_END: f32 = 1450.0;  // 大氣迷霧結束完全融於天空之距離
+pub const LOD_MAX_RADIUS: i32 = 8;    // 半徑 8 個區域 = 2,048 米 (64 區塊)
+pub const LOD_FOG_START: f32 = 450.0; // 大氣迷霧起始距離 (人眼無法分辨方塊時開始無縫過渡)
+pub const LOD_FOG_END: f32 = 1800.0;  // 大氣迷霧結束完全融於天空之距離
 
 #[allow(dead_code)]
 #[derive(Clone, Default, ShaderType, Debug)]
@@ -116,7 +116,7 @@ pub fn setup_lod(
     mut materials: ResMut<Assets<LODMaterial>>,
     config: Res<crate::config::EngineConfig>,
 ) {
-    let voxel_radius = (config.render_distance as f32 * 32.0) - 8.0;
+    let voxel_radius = (config.render_distance as f32 * 32.0) - 16.0;
     let material = materials.add(LODMaterial {
         env: LODEnvironmentUniform {
             near_voxel_radius: voxel_radius,
@@ -197,7 +197,7 @@ pub fn generate_lod_region_mesh(
                         // 🌊 1. 浩瀚大洋水面：水平如鏡，錨定於海平面 (Y = 256.0)
                         positions.push([lx, SEA_LEVEL as f32, lz]);
                         normals.push([0.0, 1.0, 0.0]);
-                        colors.push([0.16, 0.38, 0.68, 1.0]); // 深海澄藍
+                        colors.push([0.14, 0.32, 0.58, 1.0]); // 深海澄藍
                     } else {
                         // 🏔️ 2. 陸地地表：高度微下沉 0.15 米，防止在體素過渡交界區產生 Z-Fighting
                         let y = surf_y as f32 - 0.15;
@@ -218,15 +218,15 @@ pub fn generate_lod_region_mesh(
                         let n_dot_l = normal.dot(sun_dir).max(0.0);
                         let diffuse = 0.55 + 0.45 * n_dot_l;
 
-                        // 地形代表色匹配 (Biome Representative Surface Tint)
+                        // 地形代表色匹配 (自然大氣透視生物群系色彩)
                         let base_rgb = if surf_y <= SEA_LEVEL + 4 {
-                            Vec3::new(0.78, 0.74, 0.52) // 🏖️ 濱海金色沙灘
+                            Vec3::new(0.72, 0.68, 0.48) // 🏖️ 濱海金色沙灘
                         } else if surf_y > 580 {
-                            Vec3::new(0.86, 0.89, 0.93) // ❄️ 1024 宏觀雪峰白雪
+                            Vec3::new(0.85, 0.88, 0.92) // ❄️ 1024 宏觀雪峰白雪
                         } else if surf_y > 520 {
-                            Vec3::new(0.48, 0.48, 0.48) // 🪨 高海拔風化花崗岩
+                            Vec3::new(0.44, 0.44, 0.46) // 🪨 高海拔風化花崗岩
                         } else {
-                            Vec3::new(0.28, 0.52, 0.20) // 🌿 溫帶常綠生機草地
+                            Vec3::new(0.24, 0.40, 0.16) // 🌿 溫帶常綠自然草地 (柔和自然大地色)
                         };
 
                         let shaded_rgb = base_rgb * diffuse;
@@ -296,7 +296,7 @@ pub fn update_lod_regions(
     lod_manager.last_player_region = current_region;
     lod_manager.initialized = true;
 
-    let voxel_radius = (config.render_distance as f32 * 32.0) - 8.0;
+    let voxel_radius = (config.render_distance as f32 * 32.0) - 16.0;
 
     // 1. 淘汰超出最大地平線半徑 (LOD_MAX_RADIUS + 1) 或完全被近景體素覆蓋之區域
     let max_radius_sq = (LOD_MAX_RADIUS + 1) * (LOD_MAX_RADIUS + 1);
