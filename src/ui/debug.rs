@@ -97,15 +97,15 @@ fn toggle_debug_ui(
         if *vis != Visibility::Hidden {
             if keys.just_pressed(KeyCode::KeyC) {
                 config.show_chunk_borders = !config.show_chunk_borders;
-                println!("【系統通知】區塊邊界: {}", if config.show_chunk_borders { "ON" } else { "OFF" });
+                println!("[System] Chunk borders: {}", if config.show_chunk_borders { "ON" } else { "OFF" });
             }
             if keys.just_pressed(KeyCode::KeyL) {
                 config.show_light_levels = !config.show_light_levels;
-                println!("【系統通知】光照除錯面板: {}", if config.show_light_levels { "ON" } else { "OFF" });
+                println!("[System] Light level debug overlay: {}", if config.show_light_levels { "ON" } else { "OFF" });
             }
             if keys.just_pressed(KeyCode::KeyP) {
                 engine_config.smooth_lighting = !engine_config.smooth_lighting;
-                println!("【系統通知】平滑光照 (Smooth Lighting): {}", if engine_config.smooth_lighting { "ON" } else { "OFF" });
+                println!("[System] Smooth Lighting: {}", if engine_config.smooth_lighting { "ON" } else { "OFF" });
                 
                 // 🚀 剛性連鎖防線：強制全網格立刻失效，逼迫 greedy.rs 在下一幀集體重新烘焙！
                 for mut chunk in q_chunks.iter_mut() {

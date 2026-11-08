@@ -129,7 +129,7 @@ pub fn handle_mining_collapse(
         particle_mgr.spawn_debris(c_pos.as_vec3() + Vec3::new(0.5, 0.0, 0.5), dust_color, 4);
     }
 
-    println!("【地質預警】岩層承受巨大剪應力，頂板岩石開始破裂剝落！1.2 秒內可能發生大面積坍塌，請立即撤離！");
+    println!("[Geology Warning] Ceiling rock is fracturing under intense shear stress! Cave-in imminent in 1.2s - evacuate!");
 
     let entity = commands.spawn(PrecursorCollapse {
         collapsing_blocks,
@@ -193,7 +193,7 @@ pub fn execute_collapse(
             let damage = (sorted_blocks.len() as f32 * 8.0).clamp(15.0, 70.0);
             vitals.health = (vitals.health - damage).max(0.0);
             println!(
-                "【地質坍塌】礦坑頂板徹底崩塌！受到 {:.1} 點落石重擊傷害！剩餘生命: {:.1}",
+                "[Cave-in] Mine ceiling collapsed! Took {:.1} crushing rockfall damage! Remaining Health: {:.1}",
                 damage, vitals.health
             );
         }

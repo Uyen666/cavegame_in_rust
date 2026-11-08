@@ -1147,12 +1147,14 @@ pub fn build_item_drop_mesh(item_type: crate::item::ItemType, sky_light: u8, blo
     // 專屬物品材質映射 (TEXTURES index 14..=20)
     let tex_layer = match item_type {
         ItemType::Stick => 14,
-        ItemType::Flint | ItemType::FlintAxeHead => 15,
+        ItemType::Flint => 15,
+        ItemType::FlintAxeHead | ItemType::FlintPickaxeHead | ItemType::FlintShovelHead | ItemType::FlintKnifeBlade => 15,
         ItemType::Coal => 16,
         ItemType::IronIngot => 17,
-        ItemType::WoodenAxe => 18,
-        ItemType::StoneAxe | ItemType::FlintAxe => 19,
-        ItemType::IronAxe => 20,
+        ItemType::WoodenAxe | ItemType::WoodenPickaxe | ItemType::WoodenShovel => 18,
+        ItemType::StoneAxe | ItemType::StonePickaxe | ItemType::StoneShovel => 19,
+        ItemType::IronAxe | ItemType::IronPickaxe | ItemType::IronShovel => 20,
+        ItemType::FlintAxe | ItemType::FlintPickaxe | ItemType::FlintShovel | ItemType::FlintKnife => 15,
         _ => 0, // Fallback Stone
     };
 

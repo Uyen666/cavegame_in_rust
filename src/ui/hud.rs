@@ -372,6 +372,142 @@ pub fn setup_item_icons(
         if (x >= 5 && x <= 10 && y >= 6 && y <= 11) || (x == 7 && y == 5) || (x == 11 && y == 9) { [50, 55, 60, 255] } else { [0, 0, 0, 0] }
     });
 
+    // 專屬打製石刃像素圖標 (Knapped Tool Heads)
+    let flint_axe_head_fallback = create_icon(&|x, y| {
+        if (x >= 4 && x <= 11 && y >= 5 && y <= 10) || (x >= 6 && x <= 9 && y >= 3 && y <= 4) {
+            if x == 11 || y == 3 || (x == 10 && y == 4) {
+                [80, 88, 98, 255] // 鋒利打製刃口高光
+            } else if x == 4 || y == 10 {
+                [30, 32, 36, 255] // 捆紮凹槽陰影
+            } else {
+                [48, 52, 58, 255] // 燧石本體
+            }
+        } else {
+            [0, 0, 0, 0]
+        }
+    });
+    let flint_pickaxe_head_fallback = create_icon(&|x, y| {
+        let is_arch = (y == 4 && (x == 3 || x == 12)) 
+            || (y == 5 && (x == 4 || x == 11))
+            || (y == 6 && x >= 5 && x <= 10)
+            || (y == 7 && x >= 6 && x <= 9);
+        if is_arch {
+            if (y == 4 && (x == 3 || x == 12)) || (y == 5 && (x == 4 || x == 11)) {
+                [85, 92, 102, 255] // 鎬尖刃口
+            } else if y == 7 {
+                [32, 34, 38, 255]
+            } else {
+                [48, 52, 58, 255]
+            }
+        } else {
+            [0, 0, 0, 0]
+        }
+    });
+    let flint_shovel_head_fallback = create_icon(&|x, y| {
+        if (x >= 5 && x <= 10 && y >= 5 && y <= 10) || (x >= 6 && x <= 9 && y == 11) {
+            if y == 5 || (x == 10 && y <= 8) {
+                [80, 88, 98, 255]
+            } else if y == 11 || x == 5 {
+                [30, 32, 36, 255]
+            } else {
+                [48, 52, 58, 255]
+            }
+        } else {
+            [0, 0, 0, 0]
+        }
+    });
+    let flint_knife_blade_fallback = create_icon(&|x, y| {
+        if (x == y && x >= 5 && x <= 11) || (x == y + 1 && x >= 6 && x <= 11) || (x == y - 1 && x >= 5 && x <= 10) {
+            if x == y + 1 {
+                [88, 96, 108, 255]
+            } else {
+                [48, 52, 58, 255]
+            }
+        } else {
+            [0, 0, 0, 0]
+        }
+    });
+
+    // 專屬原始燧石工具像素圖標 (帶深色黑曜刃面與粗藤條/纖維捆紮 Twine Wrap)
+    let flint_axe_fallback = create_icon(&|x, y| {
+        let is_handle = x == y && x >= 3 && x <= 13;
+        let is_blade = (x >= 3 && x <= 7 && y >= 2 && y <= 5) && !(x == 3 && y == 5);
+        let is_twine = (x == 5 && y == 6) || (x == 6 && y == 5) || (x == 6 && y == 7) || (x == 7 && y == 6);
+
+        if is_twine {
+            [165, 125, 65, 255] // 植物纖維/繩結捆紮
+        } else if is_blade {
+            if x == 3 || y == 2 {
+                [80, 88, 98, 255]
+            } else {
+                [45, 48, 55, 255] // 深黑燧石刀刃
+            }
+        } else if is_handle {
+            [135, 85, 40, 255] // 粗糙木柄
+        } else {
+            [0, 0, 0, 0]
+        }
+    });
+    let flint_pickaxe_fallback = create_icon(&|x, y| {
+        let is_handle = x == y && x >= 4 && x <= 13;
+        let is_pick = (y == 2 && (x == 2 || x == 9))
+            || (y == 3 && x >= 3 && x <= 8)
+            || (y == 4 && (x == 4 || x == 7));
+        let is_twine = (x == 5 && y == 4) || (x == 6 && y == 3);
+
+        if is_twine {
+            [165, 125, 65, 255]
+        } else if is_pick {
+            if y == 2 || x == 2 || x == 9 {
+                [85, 92, 102, 255]
+            } else {
+                [45, 48, 55, 255]
+            }
+        } else if is_handle {
+            [135, 85, 40, 255]
+        } else {
+            [0, 0, 0, 0]
+        }
+    });
+    let flint_shovel_fallback = create_icon(&|x, y| {
+        let is_handle = x == y && x >= 5 && x <= 13;
+        let is_scoop = x >= 2 && x <= 5 && y >= 2 && y <= 5;
+        let is_twine = (x == 5 && y == 6) || (x == 6 && y == 5);
+
+        if is_twine {
+            [165, 125, 65, 255]
+        } else if is_scoop {
+            if x == 2 || y == 2 {
+                [80, 88, 98, 255]
+            } else {
+                [45, 48, 55, 255]
+            }
+        } else if is_handle {
+            [135, 85, 40, 255]
+        } else {
+            [0, 0, 0, 0]
+        }
+    });
+    let flint_knife_fallback = create_icon(&|x, y| {
+        let is_handle = (x == y && x >= 9 && x <= 13) || (x == y + 1 && x >= 10 && x <= 13);
+        let is_blade = (x == y && x >= 3 && x <= 8) || (x == y - 1 && x >= 3 && x <= 7);
+        let is_twine = (x == 8 && y == 8) || (x == 9 && y == 8);
+
+        if is_twine {
+            [165, 125, 65, 255]
+        } else if is_blade {
+            if x == y - 1 {
+                [88, 96, 108, 255]
+            } else {
+                [45, 48, 55, 255]
+            }
+        } else if is_handle {
+            [135, 85, 40, 255]
+        } else {
+            [0, 0, 0, 0]
+        }
+    });
+
     let get_icon = |archive_opt: &mut Option<ZipArchive<File>>, images_res: &mut Assets<Image>, name: &str, fallback: Handle<Image>| -> Handle<Image> {
         if let Some(ref mut archive) = archive_opt {
             load_from_zip(archive, images_res, name).unwrap_or(fallback)
@@ -383,13 +519,19 @@ pub fn setup_item_icons(
     // 註冊所有工具與掉落物官方 2D 圖標
     icon_map.insert(ItemType::Stick, get_icon(&mut zip_archive, &mut images, "stick", stick_fallback));
     icon_map.insert(ItemType::Flint, get_icon(&mut zip_archive, &mut images, "flint", flint_fallback.clone()));
-    icon_map.insert(ItemType::FlintAxeHead, get_icon(&mut zip_archive, &mut images, "flint", flint_fallback));
+    icon_map.insert(ItemType::FlintAxeHead, get_icon(&mut zip_archive, &mut images, "flint_axe_head", flint_axe_head_fallback));
+    icon_map.insert(ItemType::FlintPickaxeHead, get_icon(&mut zip_archive, &mut images, "flint_pickaxe_head", flint_pickaxe_head_fallback));
+    icon_map.insert(ItemType::FlintShovelHead, get_icon(&mut zip_archive, &mut images, "flint_shovel_head", flint_shovel_head_fallback));
+    icon_map.insert(ItemType::FlintKnifeBlade, get_icon(&mut zip_archive, &mut images, "flint_knife_blade", flint_knife_blade_fallback));
     icon_map.insert(ItemType::Coal, get_icon(&mut zip_archive, &mut images, "coal", coal_fallback));
     icon_map.insert(ItemType::IronIngot, get_icon(&mut zip_archive, &mut images, "iron_ingot", ingot_fallback));
 
     icon_map.insert(ItemType::WoodenAxe, get_icon(&mut zip_archive, &mut images, "wooden_axe", pickaxe_fallback.clone()));
     icon_map.insert(ItemType::StoneAxe, get_icon(&mut zip_archive, &mut images, "stone_axe", pickaxe_fallback.clone()));
-    icon_map.insert(ItemType::FlintAxe, get_icon(&mut zip_archive, &mut images, "stone_axe", pickaxe_fallback.clone()));
+    icon_map.insert(ItemType::FlintAxe, get_icon(&mut zip_archive, &mut images, "flint_axe", flint_axe_fallback));
+    icon_map.insert(ItemType::FlintPickaxe, get_icon(&mut zip_archive, &mut images, "flint_pickaxe", flint_pickaxe_fallback));
+    icon_map.insert(ItemType::FlintShovel, get_icon(&mut zip_archive, &mut images, "flint_shovel", flint_shovel_fallback));
+    icon_map.insert(ItemType::FlintKnife, get_icon(&mut zip_archive, &mut images, "flint_knife", flint_knife_fallback));
     icon_map.insert(ItemType::IronAxe, get_icon(&mut zip_archive, &mut images, "iron_axe", pickaxe_fallback.clone()));
 
     icon_map.insert(ItemType::WoodenPickaxe, get_icon(&mut zip_archive, &mut images, "wooden_pickaxe", pickaxe_fallback.clone()));

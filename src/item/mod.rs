@@ -26,6 +26,9 @@ pub enum ItemType {
     Stick = 102,
     Flint = 103,
     FlintAxeHead = 104,
+    FlintPickaxeHead = 105,
+    FlintShovelHead = 106,
+    FlintKnifeBlade = 107,
 
     // Tools
     WoodenPickaxe = 200,
@@ -38,6 +41,9 @@ pub enum ItemType {
     StoneAxe = 207,
     IronAxe = 208,
     FlintAxe = 209,
+    FlintPickaxe = 210,
+    FlintShovel = 211,
+    FlintKnife = 212,
 }
 
 impl ItemType {
@@ -165,6 +171,9 @@ impl ItemRegistry {
             ItemType::Stick => ("Stick", ItemKind::Material, 64, ItemPhysicsProperties { scale: Vec3::new(0.36, 0.08, 0.36), half_height: 0.04, flat_resting: true, buoyancy: 18.0, is_emissive: false }),
             ItemType::Flint => ("Flint", ItemKind::Material, 64, ItemPhysicsProperties { scale: Vec3::new(0.28, 0.08, 0.28), half_height: 0.04, flat_resting: true, ..default() }),
             ItemType::FlintAxeHead => ("Flint Axe Head", ItemKind::Material, 16, ItemPhysicsProperties { scale: Vec3::new(0.30, 0.08, 0.30), half_height: 0.04, flat_resting: true, buoyancy: -4.0, is_emissive: false }),
+            ItemType::FlintPickaxeHead => ("Flint Pickaxe Head", ItemKind::Material, 16, ItemPhysicsProperties { scale: Vec3::new(0.30, 0.08, 0.30), half_height: 0.04, flat_resting: true, buoyancy: -4.0, is_emissive: false }),
+            ItemType::FlintShovelHead => ("Flint Shovel Head", ItemKind::Material, 16, ItemPhysicsProperties { scale: Vec3::new(0.30, 0.08, 0.30), half_height: 0.04, flat_resting: true, buoyancy: -4.0, is_emissive: false }),
+            ItemType::FlintKnifeBlade => ("Flint Knife Blade", ItemKind::Material, 16, ItemPhysicsProperties { scale: Vec3::new(0.24, 0.08, 0.24), half_height: 0.04, flat_resting: true, buoyancy: -4.0, is_emissive: false }),
 
             ItemType::WoodenPickaxe => ("Wooden Pickaxe", ItemKind::Tool { tool_type: ToolType::Pickaxe, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 59 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.36, 0.08, 0.36), half_height: 0.04, flat_resting: true, buoyancy: 18.0, ..default() }),
             ItemType::StonePickaxe => ("Stone Pickaxe", ItemKind::Tool { tool_type: ToolType::Pickaxe, tier: ToolTier::Stone, efficiency: 4.0, max_durability: 131 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.36, 0.08, 0.36), half_height: 0.04, flat_resting: true, ..default() }),
@@ -176,6 +185,9 @@ impl ItemRegistry {
             ItemType::StoneAxe => ("Stone Axe", ItemKind::Tool { tool_type: ToolType::Axe, tier: ToolTier::Stone, efficiency: 4.0, max_durability: 131 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.36, 0.08, 0.36), half_height: 0.04, flat_resting: true, ..default() }),
             ItemType::IronAxe => ("Iron Axe", ItemKind::Tool { tool_type: ToolType::Axe, tier: ToolTier::Iron, efficiency: 6.0, max_durability: 250 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.36, 0.08, 0.36), half_height: 0.04, flat_resting: true, ..default() }),
             ItemType::FlintAxe => ("Flint Axe", ItemKind::Tool { tool_type: ToolType::Axe, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 45 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.36, 0.08, 0.36), half_height: 0.04, flat_resting: true, buoyancy: 18.0, is_emissive: false }),
+            ItemType::FlintPickaxe => ("Flint Pickaxe", ItemKind::Tool { tool_type: ToolType::Pickaxe, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 40 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.36, 0.08, 0.36), half_height: 0.04, flat_resting: true, buoyancy: 18.0, is_emissive: false }),
+            ItemType::FlintShovel => ("Flint Shovel", ItemKind::Tool { tool_type: ToolType::Shovel, tier: ToolTier::Wood, efficiency: 2.5, max_durability: 45 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.36, 0.08, 0.36), half_height: 0.04, flat_resting: true, buoyancy: 18.0, is_emissive: false }),
+            ItemType::FlintKnife => ("Flint Knife", ItemKind::Tool { tool_type: ToolType::Sword, tier: ToolTier::Wood, efficiency: 2.0, max_durability: 55 }, 1, ItemPhysicsProperties { scale: Vec3::new(0.28, 0.08, 0.28), half_height: 0.04, flat_resting: true, buoyancy: 18.0, is_emissive: false }),
         };
         Some(ItemDefinition { id: item, name, kind, max_stack, physics })
     }
@@ -415,7 +427,7 @@ impl Inventory {
         if let Some(stack) = self.slots.get_mut(selected).and_then(|opt| opt.as_mut()) {
             let broken = stack.damage(amount);
             if broken {
-                info!("【物品系統】工具 {:?} 耐久度歸零，已碎裂毀損！", stack.item_type);
+                info!("[Item System] Tool {:?} durability depleted, broken!", stack.item_type);
                 self.slots[selected] = None;
                 return true;
             }

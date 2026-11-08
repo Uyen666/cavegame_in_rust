@@ -353,3 +353,27 @@ src/
     - 新增 `test_fancy_leaves_preserves_faces_between_adjacent_leaves`（驗證相鄰樹葉保留雙向內部面片與外圍貪婪合併）；
     - 新增 `test_all_11_preview_blocks_have_item_types` 與 `test_carried_item_return_and_slot_swap`；
     - 全專案 59 項單元測試 100% 通過，`cargo check` 0 警告、0 錯誤。
+
+- **10/2 原始石器切削 5x5 多配方系統、自適應雙層材質圖標與全英文介面語意優化 (Primitive Knapping Multi-Recipe System, Adaptive Dual-Layer Icons & English-First Polish)**:
+  - **解決開局生存閉環斷層 (Survival Loop Closure)**:
+    - 原版遊戲若無預設初始工具，玩家無法開採石頭方塊（鵝卵石）。新增「燧石鎬 (`FlintPickaxe`)」與「燧石鏟 (`FlintShovel`)」、「燧石刀 (`FlintKnife`)」及其對應工具頭部（`FlintPickaxeHead`, `FlintShovelHead`, `FlintKnifeBlade`）；
+    - `FlintPickaxe` 設定為 `ToolType::Pickaxe` + `ToolTier::Wood`，效率 2.0，耐久度 40，可合法採收 `BlockType::Stone`（掉落鵝卵石）與 `BlockType::CoalOre`（掉落煤炭），形成「徒手淘燧石 -> 5x5 切削燧石鎬刃 -> 摘樹葉取木棒組裝 -> 開採石頭與煤礦 -> 邁向石器時代」的完整原始生存閉環。
+  - **自適應雙層材質架構與專屬像素美術 (Dual-Layer Adaptive Icons & Visual Separation)**:
+    - 徹底終結「天然燧石與加工燧石長一樣」、「燧石工具與石製工具長一樣」的視覺混淆；
+    - 在 `src/ui/hud.rs` 實裝 16x16 專屬像素圖標生成器：
+      - 4 種 Tool Heads 擁有獨立打製刃面與凹槽反光；
+      - 4 種 Flint Tools 擁有深黑曜色燧石刃面＋粗藤條/植物纖維捆紮（Twine Wrap）＋粗糙木柄，與淺灰石器徹底分流；
+    - 優先讀取資源包同名 2D png，若資源包未提供則無縫落入此程序化像素美術，未來更換任何原版材質包絕不破圖、不留後患；
+    - 3D 掉落物在 `src/render/greedy.rs` 中將燧石工具與頭部精確綁定至燧石材質層（Layer 15），與石製工具（Layer 19）在三維空間亦徹底分流。
+  - **5x5 擊石切削多配方體系與動態幽靈導引 (5x5 Multi-Recipe Knapping & Ghost Guides)**:
+    - 擴充 `KnappingRecipe` 枚舉（`AxeHead`, `PickaxeHead`, `ShovelHead`, `KnifeBlade`），建立各自符合石器力學的 5x5 布林形狀矩陣；
+    - 切削介面提供 `[Axe Head]`、`[Pickaxe Head]`、`[Shovel Head]`、`[Knife Blade]` 即時標籤切換按鈕；
+    - 實裝動態幽靈導引：刃身格點以鋼青色邊框高亮，廢料石屑以軟紅邊框標記 `x`；點擊噴發石屑粒子，形狀吻合時噴發金黃火花，扣除 2 塊燧石並發放對應工具頭部。
+  - **手持通用組裝機制 (In-Hand Universal Assembly)**:
+    - 在 `src/player/mod.rs` 實裝通用工具組裝：手持任一 Flint Tool Head 右鍵時，檢測背包是否有 `ItemType::Stick`；
+    - 若有木棒：消耗 1 根木棒與 1 個 Tool Head，生成滿耐久工具，噴散金黃與木質粒子並輸出操作指引；
+    - 若無木棒：提示玩家「缺少木棒！請破壞樹葉收集 1 根木棒來組裝工具！」。
+  - **全方位英文介面與提示字串純化 (English-First Polish)**:
+    - 將 `player/mod.rs`、`ui/debug.rs`、`world/collapse.rs`、`ui/knapping.rs`、`item/mod.rs` 中所有終端機與在屏提示全面英文化，徹底根除 Bevy 預設字體缺少 CJK 字形導致的 `□□□` 缺失字形問題，奠定國際化受眾基礎。
+  - **驗證成果**:
+    - 全專案 61 項單元測試 100% 通過（包含多配方矩陣測試、石器工具登錄與採伐能力驗證），`cargo check` 0 警告、0 錯誤。

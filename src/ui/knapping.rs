@@ -13,10 +13,87 @@ pub const FLINT_AXE_HEAD_PATTERN: [[bool; 5]; 5] = [
     [false, true,  false, true,  false],
 ];
 
+/// 經典 5x5 燧石鎬頭切削配方 (Flint Pickaxe Head Pattern)
+pub const FLINT_PICKAXE_HEAD_PATTERN: [[bool; 5]; 5] = [
+    [true,  false, false, false, true ],
+    [true,  true,  false, true,  true ],
+    [false, true,  true,  true,  false],
+    [false, false, true,  false, false],
+    [false, false, true,  false, false],
+];
+
+/// 經典 5x5 燧石鏟刃切削配方 (Flint Shovel Head Pattern)
+pub const FLINT_SHOVEL_HEAD_PATTERN: [[bool; 5]; 5] = [
+    [false, true,  true,  true,  false],
+    [true,  true,  true,  true,  true ],
+    [true,  true,  true,  true,  true ],
+    [false, true,  true,  true,  false],
+    [false, false, true,  false, false],
+];
+
+/// 經典 5x5 燧石刀刃切削配方 (Flint Knife Blade Pattern)
+pub const FLINT_KNIFE_BLADE_PATTERN: [[bool; 5]; 5] = [
+    [false, false, true,  false, false],
+    [false, false, true,  true,  false],
+    [false, false, true,  true,  false],
+    [false, true,  true,  false, false],
+    [false, true,  true,  false, false],
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KnappingRecipe {
+    AxeHead,
+    PickaxeHead,
+    ShovelHead,
+    KnifeBlade,
+}
+
+impl KnappingRecipe {
+    pub const ALL: [Self; 4] = [
+        Self::AxeHead,
+        Self::PickaxeHead,
+        Self::ShovelHead,
+        Self::KnifeBlade,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::AxeHead => "Axe Head",
+            Self::PickaxeHead => "Pickaxe Head",
+            Self::ShovelHead => "Shovel Head",
+            Self::KnifeBlade => "Knife Blade",
+        }
+    }
+
+    pub fn output_item(&self) -> ItemType {
+        match self {
+            Self::AxeHead => ItemType::FlintAxeHead,
+            Self::PickaxeHead => ItemType::FlintPickaxeHead,
+            Self::ShovelHead => ItemType::FlintShovelHead,
+            Self::KnifeBlade => ItemType::FlintKnifeBlade,
+        }
+    }
+
+    pub fn pattern(&self) -> [[bool; 5]; 5] {
+        match self {
+            Self::AxeHead => FLINT_AXE_HEAD_PATTERN,
+            Self::PickaxeHead => FLINT_PICKAXE_HEAD_PATTERN,
+            Self::ShovelHead => FLINT_SHOVEL_HEAD_PATTERN,
+            Self::KnifeBlade => FLINT_KNIFE_BLADE_PATTERN,
+        }
+    }
+
+    pub fn waste_count(&self) -> usize {
+        let pat = self.pattern();
+        (0..5).flat_map(|r| (0..5).map(move |c| (r, c))).filter(|&(r, c)| !pat[r][c]).count()
+    }
+}
+
 /// 擊石切削狀態資源 (Knapping State)
 #[derive(Resource, Debug, Clone)]
 pub struct KnappingState {
     pub is_open: bool,
+    pub active_recipe: KnappingRecipe,
     pub grid: [[bool; 5]; 5],
 }
 
@@ -24,6 +101,7 @@ impl Default for KnappingState {
     fn default() -> Self {
         Self {
             is_open: false,
+            active_recipe: KnappingRecipe::AxeHead,
             grid: [[true; 5]; 5],
         }
     }
@@ -34,13 +112,18 @@ impl KnappingState {
         self.grid = [[true; 5]; 5];
     }
 
-    pub fn matches_axe_head(&self) -> bool {
-        self.grid == FLINT_AXE_HEAD_PATTERN
+    pub fn matches_active_recipe(&self) -> bool {
+        self.grid == self.active_recipe.pattern()
     }
 }
 
 #[derive(Component)]
 pub struct KnappingRootNode;
+
+#[derive(Component)]
+pub struct KnappingRecipeTabButton {
+    pub recipe: KnappingRecipe,
+}
 
 #[derive(Component)]
 pub struct KnappingGridButton {
@@ -56,6 +139,9 @@ pub struct KnappingButtonText {
 
 #[derive(Component)]
 pub struct KnappingProgressTextNode;
+
+#[derive(Component)]
+pub struct KnappingInstructionTextNode;
 
 pub struct KnappingPlugin;
 
@@ -92,10 +178,10 @@ pub fn setup_knapping_ui(mut commands: Commands) {
         },
         KnappingRootNode,
     )).with_children(|root| {
-        // 主面板
+        // Main Knapping Dialog Panel
         root.spawn(NodeBundle {
             style: Style {
-                width: Val::Px(370.0),
+                width: Val::Px(390.0),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 padding: UiRect::all(Val::Px(16.0)),
@@ -106,7 +192,7 @@ pub fn setup_knapping_ui(mut commands: Commands) {
             border_color: BorderColor(Color::srgb(0.40, 0.44, 0.48)),
             ..default()
         }).with_children(|panel| {
-            // 標題
+            // Title Header
             panel.spawn(TextBundle::from_section(
                 "FLINT KNAPPING",
                 TextStyle {
@@ -116,17 +202,67 @@ pub fn setup_knapping_ui(mut commands: Commands) {
                 },
             ).with_style(Style { margin: UiRect::bottom(Val::Px(4.0)), ..default() }));
 
-            // 清楚指引
-            panel.spawn(TextBundle::from_section(
-                "Click marked flakes (x) to shape an Axe Head!",
-                TextStyle {
-                    font_size: 13.0,
-                    color: Color::srgb(0.75, 0.78, 0.82),
+            // Recipe Selection Tab Row
+            panel.spawn(NodeBundle {
+                style: Style {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(6.0),
+                    margin: UiRect::vertical(Val::Px(4.0)),
                     ..default()
                 },
-            ).with_style(Style { margin: UiRect::bottom(Val::Px(4.0)), ..default() }));
+                ..default()
+            }).with_children(|tab_row| {
+                for &recipe in &KnappingRecipe::ALL {
+                    let is_default = recipe == KnappingRecipe::AxeHead;
+                    tab_row.spawn((
+                        ButtonBundle {
+                            style: Style {
+                                padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+                                border: UiRect::all(Val::Px(1.5)),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            background_color: BackgroundColor(if is_default {
+                                Color::srgb(0.25, 0.45, 0.65)
+                            } else {
+                                Color::srgb(0.18, 0.20, 0.24)
+                            }),
+                            border_color: BorderColor(if is_default {
+                                Color::srgb(0.45, 0.75, 0.95)
+                            } else {
+                                Color::srgb(0.32, 0.35, 0.40)
+                            }),
+                            ..default()
+                        },
+                        KnappingRecipeTabButton { recipe },
+                    )).with_children(|btn| {
+                        btn.spawn(TextBundle::from_section(
+                            recipe.display_name(),
+                            TextStyle {
+                                font_size: 11.5,
+                                color: Color::srgb(0.90, 0.92, 0.96),
+                                ..default()
+                            },
+                        ));
+                    });
+                }
+            });
 
-            // 進度動態指示列
+            // Action Instruction
+            panel.spawn((
+                TextBundle::from_section(
+                    "Click marked flakes (x) to shape an Axe Head!",
+                    TextStyle {
+                        font_size: 13.0,
+                        color: Color::srgb(0.75, 0.78, 0.82),
+                        ..default()
+                    },
+                ).with_style(Style { margin: UiRect::vertical(Val::Px(4.0)), ..default() }),
+                KnappingInstructionTextNode,
+            ));
+
+            // Dynamic Progress Indicator
             panel.spawn((
                 TextBundle::from_section(
                     "Progress: 0 / 11 Flakes Chipped",
@@ -135,11 +271,11 @@ pub fn setup_knapping_ui(mut commands: Commands) {
                         color: Color::srgb(0.45, 0.85, 0.95),
                         ..default()
                     },
-                ).with_style(Style { margin: UiRect::bottom(Val::Px(12.0)), ..default() }),
+                ).with_style(Style { margin: UiRect::bottom(Val::Px(10.0)), ..default() }),
                 KnappingProgressTextNode,
             ));
 
-            // 5x5 石塊切削格點容器
+            // 5x5 Stone Grid Container
             panel.spawn(NodeBundle {
                 style: Style {
                     width: Val::Px(250.0),
@@ -169,9 +305,9 @@ pub fn setup_knapping_ui(mut commands: Commands) {
                         for c in 0..5 {
                             let is_blade = FLINT_AXE_HEAD_PATTERN[r][c];
                             let initial_border = if is_blade {
-                                Color::srgb(0.38, 0.58, 0.75) // 斧刃主體為高亮鋼青色邊框
+                                Color::srgb(0.38, 0.58, 0.75) // Blade core highlighted steel blue
                             } else {
-                                Color::srgb(0.65, 0.35, 0.32) // 待敲除石片為微暗紅標記邊框
+                                Color::srgb(0.65, 0.35, 0.32) // Waste flake soft red
                             };
                             let initial_symbol = if is_blade { "" } else { "x" };
 
@@ -208,7 +344,7 @@ pub fn setup_knapping_ui(mut commands: Commands) {
                 }
             });
 
-            // 底部操作提示
+            // Footer Control Prompt
             panel.spawn(TextBundle::from_section(
                 "[LMB] Chip Flake   |   [Esc] Cancel",
                 TextStyle {
@@ -240,7 +376,7 @@ pub fn handle_knapping_input(
         return;
     }
 
-    // 按 Esc 退出 Knapping 介面
+    // Press Esc to exit Knapping interface
     if keys.just_pressed(KeyCode::Escape) {
         state.is_open = false;
         if let Ok(mut vis) = q_root.get_single_mut() {
@@ -256,9 +392,13 @@ pub fn handle_knapping_input(
 }
 
 pub fn handle_knapping_clicks(
-    mut interaction_query: Query<
+    mut grid_interaction_query: Query<
         (&Interaction, &KnappingGridButton, &mut BackgroundColor, &mut BorderColor),
         (Changed<Interaction>, With<KnappingGridButton>),
+    >,
+    mut tab_interaction_query: Query<
+        (&Interaction, &KnappingRecipeTabButton),
+        (Changed<Interaction>, With<KnappingRecipeTabButton>),
     >,
     mut state: ResMut<KnappingState>,
     mut q_player: Query<(&Transform, &mut Inventory), With<crate::player::Player>>,
@@ -270,41 +410,52 @@ pub fn handle_knapping_clicks(
         return;
     }
 
+    // 1. Recipe Tab Selection
+    for (interaction, tab_btn) in tab_interaction_query.iter_mut() {
+        if *interaction == Interaction::Pressed {
+            if state.active_recipe != tab_btn.recipe {
+                state.active_recipe = tab_btn.recipe;
+                state.reset_grid();
+            }
+        }
+    }
+
+    // 2. 5x5 Stone Flake Chipping
     let Ok((p_transform, mut inventory)) = q_player.get_single_mut() else { return; };
     let registry = ItemRegistry;
 
-    for (interaction, btn, mut bg, mut border) in interaction_query.iter_mut() {
+    for (interaction, btn, mut bg, mut border) in grid_interaction_query.iter_mut() {
         let (r, c) = (btn.row, btn.col);
         if *interaction == Interaction::Pressed {
             if state.grid[r][c] {
-                // 點擊敲碎該格石片！
+                // Chip this stone flake!
                 state.grid[r][c] = false;
                 bg.0 = Color::srgba(0.08, 0.08, 0.09, 0.25);
                 border.0 = BorderColor(Color::srgba(0.18, 0.20, 0.22, 0.3)).0;
 
-                // 噴散清脆深灰石屑與微弱火花粒子
+                // Emit flint chipping debris particles
                 let flint_color = Color::srgb(0.35, 0.36, 0.40);
                 particle_mgr.spawn_debris(p_transform.translation + Vec3::new(0.0, 1.2, 0.0), flint_color, 4);
 
-                // 配方比對演算法：檢查是否吻合斧刃
-                if state.matches_axe_head() {
-                    // 扣除手持的 2 塊燧石
+                // Recipe Pattern Matching
+                if state.matches_active_recipe() {
                     let has_enough_flint = inventory.selected_item().map_or(false, |it| it.item_type == ItemType::Flint && it.count >= 2);
                     if has_enough_flint {
                         inventory.consume_selected(2);
-                        let axe_head = ItemStack::new(ItemType::FlintAxeHead, 1, &registry);
-                        if let Some(overflow) = inventory.add_item(axe_head, &registry) {
-                            info!("【擊石切削】背包已滿，溢出物品 {:?}", overflow);
+                        let output_item = state.active_recipe.output_item();
+                        let crafted = ItemStack::new(output_item, 1, &registry);
+                        if let Some(overflow) = inventory.add_item(crafted, &registry) {
+                            info!("[Knapping] Inventory full, dropped item {:?}", overflow);
                         }
 
-                        // 爆發金黃與石質成功火花
+                        // Burst golden sparks on successful crafting
                         let spark_color = Color::srgb(0.95, 0.85, 0.45);
                         particle_mgr.spawn_debris(p_transform.translation + Vec3::new(0.0, 1.2, 0.0), spark_color, 16);
 
-                        println!("【擊石工藝】成功切削出 燧石斧刃 (Flint Axe Head)！");
-                        println!("【提示】手持燧石斧刃且背包內有木棒時點擊右鍵即可組裝「燧石斧」！");
+                        println!("[Crafting] Successfully crafted {}!", state.active_recipe.display_name());
+                        println!("[Tip] Hold the tool head with a Stick in inventory and Right-Click to assemble!");
 
-                        // 關閉介面並重新鎖定游標
+                        // Close UI and re-lock cursor
                         state.is_open = false;
                         if let Ok(mut vis) = q_root.get_single_mut() {
                             *vis = Visibility::Hidden;
@@ -325,38 +476,61 @@ pub fn handle_knapping_clicks(
 
 pub fn update_knapping_ui(
     state: Res<KnappingState>,
-    mut q_buttons: Query<(&KnappingGridButton, &mut BackgroundColor, &mut BorderColor)>,
-    mut q_btn_texts: Query<(&KnappingButtonText, &mut Text), Without<KnappingProgressTextNode>>,
-    mut q_progress_text: Query<&mut Text, With<KnappingProgressTextNode>>,
+    mut q_tabs: Query<(&KnappingRecipeTabButton, &mut BackgroundColor, &mut BorderColor), Without<KnappingGridButton>>,
+    mut q_instruction: Query<&mut Text, (With<KnappingInstructionTextNode>, Without<KnappingProgressTextNode>, Without<KnappingButtonText>)>,
+    mut q_buttons: Query<(&KnappingGridButton, &mut BackgroundColor, &mut BorderColor), Without<KnappingRecipeTabButton>>,
+    mut q_btn_texts: Query<(&KnappingButtonText, &mut Text), (Without<KnappingProgressTextNode>, Without<KnappingInstructionTextNode>)>,
+    mut q_progress_text: Query<&mut Text, (With<KnappingProgressTextNode>, Without<KnappingInstructionTextNode>, Without<KnappingButtonText>)>,
 ) {
     if !state.is_open {
         return;
     }
 
-    // 計算敲除進度
+    let pat = state.active_recipe.pattern();
+    let waste_count = state.active_recipe.waste_count();
+
+    // 1. Update Tab Button Styles
+    for (tab_btn, mut bg, mut border) in q_tabs.iter_mut() {
+        let is_active = tab_btn.recipe == state.active_recipe;
+        if is_active {
+            bg.0 = Color::srgb(0.25, 0.45, 0.65);
+            border.0 = Color::srgb(0.45, 0.75, 0.95);
+        } else {
+            bg.0 = Color::srgb(0.18, 0.20, 0.24);
+            border.0 = Color::srgb(0.32, 0.35, 0.40);
+        }
+    }
+
+    // 2. Update Instruction Text
+    if let Ok(mut inst_text) = q_instruction.get_single_mut() {
+        inst_text.sections[0].value = format!("Click marked flakes (x) to shape a {}!", state.active_recipe.display_name());
+    }
+
+    // 3. Calculate Chipping Progress
     let chipped_correct = (0..5).flat_map(|r| (0..5).map(move |c| (r, c)))
-        .filter(|&(r, c)| !FLINT_AXE_HEAD_PATTERN[r][c] && !state.grid[r][c])
+        .filter(|&(r, c)| !pat[r][c] && !state.grid[r][c])
         .count();
 
     let chipped_ruined = (0..5).flat_map(|r| (0..5).map(move |c| (r, c)))
-        .any(|(r, c)| FLINT_AXE_HEAD_PATTERN[r][c] && !state.grid[r][c]);
+        .any(|(r, c)| pat[r][c] && !state.grid[r][c]);
 
     if let Ok(mut prog_text) = q_progress_text.get_single_mut() {
         if chipped_ruined {
-            prog_text.sections[0].value = "Ruined! Core blade chipped! Press Esc to cancel".to_string();
+            prog_text.sections[0].value = "Ruined! Core blade chipped! Press Esc or select tab to reset".to_string();
             prog_text.sections[0].style.color = Color::srgb(0.95, 0.35, 0.30);
-        } else if chipped_correct == 11 {
-            prog_text.sections[0].value = "Pattern Complete! Flint Axe Head formed!".to_string();
+        } else if chipped_correct == waste_count {
+            prog_text.sections[0].value = format!("Pattern Complete! {} formed!", state.active_recipe.display_name());
             prog_text.sections[0].style.color = Color::srgb(0.95, 0.85, 0.35);
         } else {
-            prog_text.sections[0].value = format!("Progress: {} / 11 Flakes Chipped", chipped_correct);
+            prog_text.sections[0].value = format!("Progress: {} / {} Flakes Chipped", chipped_correct, waste_count);
             prog_text.sections[0].style.color = Color::srgb(0.45, 0.85, 0.95);
         }
     }
 
+    // 4. Update Grid Buttons (Ghost Guide)
     for (btn, mut bg, mut border) in q_buttons.iter_mut() {
         let (r, c) = (btn.row, btn.col);
-        let is_blade = FLINT_AXE_HEAD_PATTERN[r][c];
+        let is_blade = pat[r][c];
         if state.grid[r][c] {
             bg.0 = Color::srgb(0.30, 0.32, 0.36);
             border.0 = if is_blade {
@@ -370,9 +544,10 @@ pub fn update_knapping_ui(
         }
     }
 
+    // 5. Update Grid Button 'x' Marks
     for (node, mut text) in q_btn_texts.iter_mut() {
         let (r, c) = (node.row, node.col);
-        let is_blade = FLINT_AXE_HEAD_PATTERN[r][c];
+        let is_blade = pat[r][c];
         if state.grid[r][c] {
             text.sections[0].value = if is_blade { "".to_string() } else { "x".to_string() };
         } else {
@@ -389,67 +564,122 @@ mod tests {
     use crate::world::BlockType;
 
     #[test]
-    fn test_knapping_pattern_matching() {
-        let mut state = KnappingState::default();
-        // 初始狀態全為 true，不應符合斧刃形狀
-        assert!(!state.matches_axe_head(), "初始全滿石塊不應匹配斧刃");
+    fn test_knapping_all_recipes_pattern_matching() {
+        for recipe in [
+            KnappingRecipe::AxeHead,
+            KnappingRecipe::PickaxeHead,
+            KnappingRecipe::ShovelHead,
+            KnappingRecipe::KnifeBlade,
+        ] {
+            let mut state = KnappingState::default();
+            state.active_recipe = recipe;
+            assert!(!state.matches_active_recipe(), "Initial full stone slab should not match {:?}", recipe);
 
-        // 模擬玩家依照 FLINT_AXE_HEAD_PATTERN 逐格敲除四周多餘石片
-        let to_remove = [
-            (0, 0), (0, 1), (0, 3), (0, 4),
-            (1, 0), (1, 4),
-            (4, 0), (4, 2), (4, 4),
+            let pat = recipe.pattern();
+            for r in 0..5 {
+                for c in 0..5 {
+                    if !pat[r][c] {
+                        state.grid[r][c] = false;
+                    }
+                }
+            }
+
+            assert!(state.matches_active_recipe(), "Chipped stone should match pattern for {:?}", recipe);
+
+            // Excessive chip in pattern body should fail
+            let mut found_core = false;
+            for r in 0..5 {
+                for c in 0..5 {
+                    if pat[r][c] {
+                        state.grid[r][c] = false;
+                        found_core = true;
+                        break;
+                    }
+                }
+                if found_core {
+                    break;
+                }
+            }
+            assert!(!state.matches_active_recipe(), "Excessive chipping should invalidate recipe {:?}", recipe);
+
+            // Reset restores all cells
+            state.reset_grid();
+            assert_eq!(state.grid, [[true; 5]; 5]);
+        }
+    }
+
+    #[test]
+    fn test_all_flint_tools_and_heads_registry() {
+        let registry = ItemRegistry;
+
+        let tool_heads = [
+            (ItemType::FlintAxeHead, "Flint Axe Head", 16),
+            (ItemType::FlintPickaxeHead, "Flint Pickaxe Head", 16),
+            (ItemType::FlintShovelHead, "Flint Shovel Head", 16),
+            (ItemType::FlintKnifeBlade, "Flint Knife Blade", 16),
         ];
-        for (r, c) in to_remove {
-            state.grid[r][c] = false;
+
+        for (item_type, name, max_stack) in tool_heads {
+            let def = registry.get(item_type).unwrap_or_else(|| panic!("{:?} must be registered", item_type));
+            assert_eq!(def.name, name);
+            assert_eq!(def.kind, ItemKind::Material);
+            assert_eq!(def.max_stack, max_stack);
         }
 
-        // 精確吻合 5x5 燧石斧刃切削形狀
-        assert!(state.matches_axe_head(), "敲除多餘石片後應精確匹配燧石斧刃配方");
+        let tools = [
+            (ItemType::FlintAxe, "Flint Axe", ToolType::Axe, ToolTier::Wood, 2.0, 45),
+            (ItemType::FlintPickaxe, "Flint Pickaxe", ToolType::Pickaxe, ToolTier::Wood, 2.0, 40),
+            (ItemType::FlintShovel, "Flint Shovel", ToolType::Shovel, ToolTier::Wood, 2.5, 45),
+            (ItemType::FlintKnife, "Flint Knife", ToolType::Sword, ToolTier::Wood, 2.0, 55),
+        ];
 
-        // 若多敲損毀一塊核心石料 (例如 Row 2, Col 2)
-        state.grid[2][2] = false;
-        assert!(!state.matches_axe_head(), "過度敲損斧刃本體應判定失敗");
-
-        // 測試重設
-        state.reset_grid();
-        assert!(!state.matches_axe_head());
-        assert_eq!(state.grid, [[true; 5]; 5], "reset_grid 應重設整塊 5x5 石板");
-    }
-
-    #[test]
-    fn test_flint_axe_and_head_registry() {
-        let registry = ItemRegistry;
-        let head_def = registry.get(ItemType::FlintAxeHead).expect("FlintAxeHead 必須註冊");
-        assert_eq!(head_def.name, "Flint Axe Head");
-        assert_eq!(head_def.kind, ItemKind::Material);
-        assert_eq!(head_def.max_stack, 16);
-
-        let axe_def = registry.get(ItemType::FlintAxe).expect("FlintAxe 必須註冊");
-        assert_eq!(axe_def.name, "Flint Axe");
-        assert_eq!(axe_def.max_stack, 1);
-        if let ItemKind::Tool { tool_type, tier, efficiency, max_durability } = axe_def.kind {
-            assert_eq!(tool_type, ToolType::Axe, "燧石斧應屬於斧頭工具類別");
-            assert_eq!(tier, ToolTier::Wood, "燧石斧採伐等級應為木級 (Wood Tier)");
-            assert!((efficiency - 2.0).abs() < 1e-4, "燧石斧砍伐效率應為 2.0");
-            assert_eq!(max_durability, 45, "燧石斧耐久度應為 45");
-        } else {
-            panic!("FlintAxe 必須被註冊為 Tool 類別！");
+        for (item_type, name, expected_tool, expected_tier, expected_eff, expected_dur) in tools {
+            let def = registry.get(item_type).unwrap_or_else(|| panic!("{:?} must be registered", item_type));
+            assert_eq!(def.name, name);
+            assert_eq!(def.max_stack, 1);
+            if let ItemKind::Tool { tool_type, tier, efficiency, max_durability } = def.kind {
+                assert_eq!(tool_type, expected_tool);
+                assert_eq!(tier, expected_tier);
+                assert!((efficiency - expected_eff).abs() < 1e-4);
+                assert_eq!(max_durability, expected_dur);
+            } else {
+                panic!("{:?} must be registered as Tool!", item_type);
+            }
         }
     }
 
     #[test]
-    fn test_flint_axe_can_harvest_oak_log() {
+    fn test_flint_tools_harvest_capabilities() {
         let registry = ItemRegistry;
-        let axe_def = registry.get(ItemType::FlintAxe).expect("FlintAxe 必須存在");
+        let axe_def = registry.get(ItemType::FlintAxe).expect("FlintAxe must exist");
+        let pick_def = registry.get(ItemType::FlintPickaxe).expect("FlintPickaxe must exist");
+        let shovel_def = registry.get(ItemType::FlintShovel).expect("FlintShovel must exist");
+
+        // OakLog harvest with FlintAxe
         let oak_log = BlockType::OakLog;
-
-        assert_eq!(oak_log.preferred_tool(), ToolType::Axe, "橡木原木偏好工具為斧頭");
-        assert_eq!(oak_log.required_tier(), ToolTier::Wood, "橡木原木採收門檻為木級工具");
-
         if let ItemKind::Tool { tool_type, tier, .. } = axe_def.kind {
             assert_eq!(tool_type, oak_log.preferred_tool());
-            assert!(tier >= oak_log.required_tier(), "燧石斧必須能夠有效收割橡木原木 (OakLog)");
+            assert!(tier >= oak_log.required_tier());
+        }
+
+        // Stone harvest with FlintPickaxe
+        let stone = BlockType::Stone;
+        if let ItemKind::Tool { tool_type, tier, .. } = pick_def.kind {
+            assert_eq!(tool_type, stone.preferred_tool());
+            assert!(tier >= stone.required_tier());
+        }
+
+        // CoalOre harvest with FlintPickaxe
+        let coal = BlockType::CoalOre;
+        if let ItemKind::Tool { tool_type, tier, .. } = pick_def.kind {
+            assert_eq!(tool_type, coal.preferred_tool());
+            assert!(tier >= coal.required_tier());
+        }
+
+        // Dirt / Grass with FlintShovel
+        let dirt = BlockType::Dirt;
+        if let ItemKind::Tool { tool_type, .. } = shovel_def.kind {
+            assert_eq!(tool_type, dirt.preferred_tool());
         }
     }
 }

@@ -393,7 +393,7 @@ pub fn player_move(
     // ── F4 切換旁觀者模式 ──────────────
     if keys.just_pressed(KeyCode::F4) {
         player.is_spectator = !player.is_spectator;
-        println!("【系統通知】玩家切換模式！旁觀者狀態: {}", player.is_spectator);
+        println!("[System] Player mode switched! Spectator: {}", player.is_spectator);
     }
 
     rb.is_kinematic = player.is_spectator;
@@ -449,7 +449,7 @@ pub fn player_move(
                 transform.translation.y = surface_y;
                 player.has_spawned = true;
                 vel.0 = Vec3::ZERO;
-                println!("【系統通知】玩家已安全降落於地表: Y={}", surface_y);
+                println!("[System] Player safely spawned on surface: Y={}", surface_y);
             }
         }
         
@@ -670,15 +670,40 @@ fn player_interaction(
         }
     }
 
-    // 🚀 手持燧石斧刃 (Flint Axe Head) 右鍵組裝燧石斧 (Flint Axe) 或手持雙燧石開啟切削 (Knapping)
+    // 🚀 手持各類燧石工具頭部 (Flint Tool Heads) 右鍵組裝工具，或手持雙燧石開啟切削 (Knapping)
     if right {
         if let Some(selected) = inventory.selected_item().cloned() {
-            if selected.item_type == ItemType::FlintAxeHead {
+            let tool_assembly = match selected.item_type {
+                ItemType::FlintAxeHead => Some((
+                    ItemType::FlintAxe,
+                    "Flint Axe",
+                    "You can now fell trees to trigger falling tree physics and harvest logs!",
+                )),
+                ItemType::FlintPickaxeHead => Some((
+                    ItemType::FlintPickaxe,
+                    "Flint Pickaxe",
+                    "You can now mine solid stone into cobblestone and excavate coal ore!",
+                )),
+                ItemType::FlintShovelHead => Some((
+                    ItemType::FlintShovel,
+                    "Flint Shovel",
+                    "You can now excavate soil and gravel rapidly!",
+                )),
+                ItemType::FlintKnifeBlade => Some((
+                    ItemType::FlintKnife,
+                    "Flint Knife",
+                    "You can now harvest foliage and plant fibers swiftly!",
+                )),
+                _ => None,
+            };
+
+            if let Some((tool_type, tool_name, usage_tip)) = tool_assembly {
                 if inventory.consume_item(ItemType::Stick, 1) {
                     inventory.consume_selected(1);
-                    let axe = ItemStack::new_with_durability(ItemType::FlintAxe, 1, 45);
-                    if let Some(overflow) = inventory.add_item(axe, &registry) {
-                        println!("【組裝提示】背包已滿，溢出物品 {:?}", overflow);
+                    let tool = ItemStack::new(tool_type, 1, &registry);
+                    let max_dur = tool.max_durability(&registry).unwrap_or(40);
+                    if let Some(overflow) = inventory.add_item(tool, &registry) {
+                        println!("[Crafting] Inventory full! Overflowed item: {:?}", overflow);
                     }
                     if let Ok(cam_transform) = q_camera.get_single() {
                         let forward = *cam_transform.forward();
@@ -686,11 +711,11 @@ fn player_interaction(
                         particle_mgr.spawn_debris(spark_pos, Color::srgb(0.95, 0.85, 0.45), 14);
                         particle_mgr.spawn_debris(spark_pos, Color::srgb(0.55, 0.40, 0.25), 8);
                     }
-                    println!("【組裝成功】成功組裝 燧石斧 (Flint Axe)！耐久度: 45/45");
-                    println!("【採伐提示】現在你可以手持燧石斧砍伐樹木，觸發倒木物理與原木收穫！");
+                    println!("[Crafting] Successfully assembled {}! Durability: {}/{}", tool_name, max_dur, max_dur);
+                    println!("[Tip] {}", usage_tip);
                     return;
                 } else {
-                    println!("【組裝提示】缺少木棒 (Stick)！請破壞樹葉收集 1 根木棒來組裝燧石斧！");
+                    println!("[Crafting] Missing Stick! Break leaves to collect 1 Stick to assemble {}!", tool_name);
                     return;
                 }
             } else if selected.item_type == ItemType::Flint && selected.count >= 2 {
@@ -702,7 +727,7 @@ fn player_interaction(
                     }
                     window.cursor.grab_mode = CursorGrabMode::None;
                     window.cursor.visible = true;
-                    println!("【擊石切削】開啟 5x5 切削介面！點擊石塊邊緣敲除石片，打磨出燧石斧刃！");
+                    println!("[Knapping] Opened 5x5 Knapping interface! Click stone flakes to shape tool heads!");
                     return;
                 }
             }
@@ -855,12 +880,12 @@ fn player_interaction(
                             }
                         } else {
                             let tool_name = match old_block.preferred_tool() {
-                                crate::world::registry::ToolType::Axe => "斧頭 (Axe)",
-                                crate::world::registry::ToolType::Pickaxe => "十字鎬 (Pickaxe)",
-                                crate::world::registry::ToolType::Shovel => "鏟子 (Shovel)",
-                                _ => "專用工具",
+                                crate::world::registry::ToolType::Axe => "Axe",
+                                crate::world::registry::ToolType::Pickaxe => "Pickaxe",
+                                crate::world::registry::ToolType::Shovel => "Shovel",
+                                _ => "appropriate tool",
                             };
-                            println!("【採伐提示】工具等級不足或未持{}，無法採收 {}！", tool_name, old_block.name());
+                            println!("[Harvest] Insufficient tool tier or not holding an {} to harvest {}!", tool_name, old_block.name());
                         }
 
                         // 🚀 樹木重力與倒塌物理：若破壞原木，觸發 Timber 連鎖倒塌或重力滑落
@@ -910,7 +935,7 @@ fn player_interaction(
                             vitals.thirst = (vitals.thirst + 30.0).min(vitals.max_thirst);
                             vitals.wetness = (vitals.wetness + 0.15).min(1.0);
                             particle_mgr.spawn_debris(place_pos.as_vec3() + 0.5, Color::srgb_u8(60, 140, 240), 10);
-                            println!("【生理系統】飲用水源！口渴度恢復至: {:.1}%", vitals.thirst);
+                            println!("[Vitals] Drank water! Thirst restored to: {:.1}%", vitals.thirst);
                         }
                     }
                 } else {
@@ -1000,7 +1025,7 @@ fn player_interaction(
                             vitals.thirst = (vitals.thirst + 30.0).min(vitals.max_thirst);
                             vitals.wetness = 1.0;
                             particle_mgr.spawn_debris(player_transform.translation, Color::srgb_u8(60, 140, 240), 10);
-                            println!("【生理系統】於水中飲水！口渴度恢復至: {:.1}%", vitals.thirst);
+                            println!("[Vitals] Drank water while submerged! Thirst restored to: {:.1}%", vitals.thirst);
                         }
                     }
                 }
