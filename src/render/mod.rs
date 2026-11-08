@@ -3,6 +3,7 @@ pub mod textures;
 pub mod texture_array;
 pub mod material;
 pub mod particles;
+pub mod lod;
 
 use bevy::prelude::*;
 use textures::TexturePlugin;
@@ -14,6 +15,7 @@ impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(TexturePlugin)
            .add_plugins(particles::ParticlesPlugin)
+           .add_plugins(lod::LODPlugin)
            .add_plugins(MaterialPlugin::<VoxelMaterial> {
                prepass_enabled: false,
                ..default()

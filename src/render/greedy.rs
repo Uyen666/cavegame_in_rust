@@ -357,6 +357,7 @@ pub fn mesh_dirty_chunks(
     }
 
     if dirty_chunks.is_empty() { return; }
+    dirty_chunks.truncate(24); // 🚀 平滑影格節流：每幀最多派發 24 個網格任務，消滅 Worker 隊列峰值卡頓
 
     let thread_pool = bevy::tasks::ComputeTaskPool::get();
 

@@ -1081,15 +1081,21 @@ fn update_fog_color(
     // 🚀 水中沉浸感知 vs 陸地大氣感知：
     // 在水下時視距急劇縮短至 36 格，背景色切換為深邃海藍黑，還原真實深海能見度與幽暗壓迫感！
     let max_distance = (config.render_distance as f32 * 32.0).max(64.0);
-    let (final_color, fog_start, fog_end) = if in_water {
+    let (final_color, voxel_fog_start, voxel_fog_end, cam_fog_start, cam_fog_end) = if in_water {
         let light_ratio = (sky_light / 15.0).clamp(0.0, 1.0) * cycle.sky_factor;
         let deep_abyss = bevy::color::LinearRgba::new(0.001, 0.003, 0.006, 1.0);
         let surface_sea = bevy::color::LinearRgba::new(0.015, 0.06, 0.16, 1.0);
         let water_color = deep_abyss.mix(&surface_sea, light_ratio);
-        (Color::from(water_color), 2.0, 36.0)
+        (Color::from(water_color), 2.0, 36.0, 2.0, 36.0)
     } else {
         let c = calculate_sky_and_fog_color(sky_light, cycle.sky_factor, config.min_ambient_light);
-        (c, max_distance * 0.75, max_distance - 8.0)
+        (
+            c,
+            max_distance * 0.75,
+            max_distance - 8.0,
+            crate::render::lod::LOD_FOG_START,
+            crate::render::lod::LOD_FOG_END,
+        )
     };
 
     clear_color.0 = final_color;
@@ -1097,19 +1103,19 @@ fn update_fog_color(
     // 防禦：render_distance 不得為 0
     if config.render_distance == 0 { return; }
 
-    // 【遠平面剛性鎖死】：獨立 query 確保不因 FogSettings 缺失而連帶失敗
+    // 【遠平面剛性鎖死】：遠裁剪面提升至 2000 米，飽覽 1.5 公里 Distant Horizons 遠景與 1024 宏偉雪峰
     if let Ok(mut proj) = q_proj.get_single_mut() {
         if let Projection::Perspective(ref mut persp) = *proj {
-            persp.far = (max_distance + 64.0).max(crate::utils::math::WORLD_MAX_Y as f32 * 1.25); // 仰望 1024 宏觀雪峰不被遠裁剪面截斷
+            persp.far = 2000.0_f32.max(crate::utils::math::WORLD_MAX_Y as f32 * 1.5);
         }
     }
 
-    // 【原生迷霧阻斷】：黃金比例覆蓋地圖加載邊界
+    // 【原生相機迷霧阻斷】：覆蓋 Distant Horizons 遠景地平線
     if let Ok(mut fog) = q_fog.get_single_mut() {
         fog.color = final_color;
         fog.falloff = FogFalloff::Linear {
-            start: fog_start,
-            end:   fog_end,
+            start: cam_fog_start,
+            end:   cam_fog_end,
         };
     }
 
@@ -1133,8 +1139,8 @@ fn update_fog_color(
     };
 
     for (_, mat) in materials.iter_mut() {
-        mat.env.fog_start = fog_start;
-        mat.env.fog_end = fog_end;
+        mat.env.fog_start = voxel_fog_start;
+        mat.env.fog_end = voxel_fog_end;
         mat.env.fog_color = fog_col;
         mat.env.camera_pos = cam_pos;
         mat.env.mining_data = mining_data;

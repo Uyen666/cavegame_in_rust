@@ -127,6 +127,7 @@ fn update_debug_text(
     mut timer: ResMut<DebugUpdateTimer>,
     time: Res<Time>,
     mut fps_cache: Local<String>,
+    lod_manager: Option<Res<crate::render::lod::LODManager>>,
 ) {
     let Ok(visibility) = q_root.get_single() else { return };
     if *visibility == Visibility::Hidden {
@@ -238,6 +239,12 @@ fn update_debug_text(
         }
     }
 
+    let lod_str = if let Some(lod) = lod_manager {
+        format!(" | LOD: {} regions", lod.loaded_regions.len())
+    } else {
+        String::new()
+    };
+
     let text_content = format!(
         "Cavegame Dev 2026\n\
          {}\n\
@@ -248,7 +255,7 @@ fn update_debug_text(
                        Foot: {:.1} (sky: {}, block: {})\n\
          {}\n\
          Holding: {}\n\
-         Loaded Chunks: [E: {} / D: {}]",
+         Loaded Chunks: [E: {} / D: {}]{}",
         *fps_cache,
         vitals_str,
         x, y, z,
@@ -257,7 +264,8 @@ fn update_debug_text(
         foot_eff, foot_sky, foot_block,
         targeted_text,
         held_block,
-        loaded_entity_chunks, loaded_data_chunks
+        loaded_entity_chunks, loaded_data_chunks,
+        lod_str
     );
 
     for mut text in q_text.iter_mut() {
