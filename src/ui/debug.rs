@@ -167,7 +167,7 @@ fn update_debug_text(
             let temp_warn = if vitals.body_temperature < 35.0 { " [HYPOTHERMIA!]" } else { "" };
             let thirst_warn = if vitals.thirst <= 0.0 { " [DEHYDRATED!]" } else { "" };
             format!(
-                "Vitals: HP: {:.0}/{:.0} | Stamina: {:.0}% | Thirst: {:.0}%{} | Temp: {:.1}°C{} | Wet: {:.0}%\n",
+                "Vitals: HP: {:.0}/{:.0} | Stamina: {:.0}% | Thirst: {:.0}%{} | Temp: {:.1} C{} | Wet: {:.0}%\n",
                 vitals.health, vitals.max_health,
                 vitals.stamina,
                 vitals.thirst, thirst_warn,

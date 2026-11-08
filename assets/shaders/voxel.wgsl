@@ -267,7 +267,10 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     }
     
     // 🚀 遠景迷霧平滑插值 (Distance Fog Falloff)
-    let dist = length(in.world_position.xyz - env.camera_pos.xyz);
+    // 使用當前 View 相機的真實世界坐標 (view_bindings::view.world_position) 計算幾何距離，
+    // 徹底消除 UI 離屏 3D 預覽攝影棚因距離主玩家世界坐標過遠而被誤染為 100% 天空迷霧的致命破綻！
+    let cam_pos = view_bindings::view.world_position;
+    let dist = length(in.world_position.xyz - cam_pos);
     let fog_range = max(env.fog_end - env.fog_start, 1.0);
     let fog_factor = clamp((dist - env.fog_start) / fog_range, 0.0, 1.0);
     final_rgb = mix(final_rgb, env.fog_color.rgb, fog_factor);
