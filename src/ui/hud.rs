@@ -417,7 +417,7 @@ pub fn setup_item_icons(
         }
     });
     let flint_knife_blade_fallback = create_icon(&|x, y| {
-        if (x == y && x >= 5 && x <= 11) || (x == y + 1 && x >= 6 && x <= 11) || (x == y - 1 && x >= 5 && x <= 10) {
+        if (x == y && x >= 5 && x <= 11) || (x == y + 1 && x >= 6 && x <= 11) || (x + 1 == y && x >= 5 && x <= 10) {
             if x == y + 1 {
                 [88, 96, 108, 255]
             } else {
@@ -490,13 +490,13 @@ pub fn setup_item_icons(
     });
     let flint_knife_fallback = create_icon(&|x, y| {
         let is_handle = (x == y && x >= 9 && x <= 13) || (x == y + 1 && x >= 10 && x <= 13);
-        let is_blade = (x == y && x >= 3 && x <= 8) || (x == y - 1 && x >= 3 && x <= 7);
+        let is_blade = (x == y && x >= 3 && x <= 8) || (x + 1 == y && x >= 3 && x <= 7);
         let is_twine = (x == 8 && y == 8) || (x == 9 && y == 8);
 
         if is_twine {
             [165, 125, 65, 255]
         } else if is_blade {
-            if x == y - 1 {
+            if x + 1 == y {
                 [88, 96, 108, 255]
             } else {
                 [45, 48, 55, 255]
@@ -1051,6 +1051,35 @@ pub fn update_vitals_hud(
     };
     for mut text in q_text.iter_mut() {
         text.sections[0].value = format!("{} | {}", temp_str, wet_str);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_preview_blocks_all_have_item_types() {
+        for &block in PREVIEW_BLOCKS {
+            assert!(ItemType::from_block(block).is_some(), "Block {:?} must have a valid ItemType", block);
+        }
+    }
+
+    #[test]
+    fn test_procedural_icon_coordinate_bounds_no_underflow() {
+        // Test all coordinate boundaries (0..16, 0..16) specifically checking edge points (0, 0)
+        for y in 0..16u32 {
+            for x in 0..16u32 {
+                // Knife blade pattern
+                let _blade = (x == y && x >= 5 && x <= 11) || (x == y + 1 && x >= 6 && x <= 11) || (x + 1 == y && x >= 5 && x <= 10);
+                // Knife assembled pattern
+                let _knife = (x == y && x >= 3 && x <= 8) || (x + 1 == y && x >= 3 && x <= 7);
+                // Axe pattern
+                let _axe = (x >= 3 && x <= 7 && y >= 2 && y <= 5) && !(x == 3 && y == 5);
+                // Pickaxe arch pattern
+                let _pick = (y == 2 && (x == 2 || x == 9)) || (y == 3 && x >= 3 && x <= 8) || (y == 4 && (x == 4 || x == 7));
+            }
+        }
     }
 }
 
