@@ -26,7 +26,7 @@ pub const LOD_REGION_SIZE: i32 = 256; // 8 區塊 * 32 格 = 256 米
 pub const LOD_STEP: i32 = 8;          // 採樣步長 8 米 (每個微體素階梯 8x8 米)
 pub const LOD_CELLS: usize = (LOD_REGION_SIZE / LOD_STEP) as usize; // 32 個微體素列
 pub const LOD_MAX_RADIUS: i32 = 8;    // 半徑 8 個區域 = 2,048 米 (64 區塊)
-pub const LOD_FOG_START: f32 = 380.0; // 大氣迷霧起始距離 (在方塊邊界 480m 前溫和起步，消除視覺突變)
+pub const LOD_FOG_START: f32 = 250.0; // 大氣迷霧起始距離 (在方塊半徑約 80% 處提前溫和起步，消除視覺突變)
 pub const LOD_FOG_END: f32 = 1800.0;  // 大氣迷霧結束完全融於天空之距離
 
 #[allow(dead_code)]
@@ -228,6 +228,7 @@ pub fn generate_lod_region_mesh(
 
     match world_type {
         WorldType::Flat => {
+            const SEAM_OVERLAP: f32 = 0.03;
             for cz in 0..LOD_CELLS {
                 let z0 = (cz as i32 * LOD_STEP) as f32;
                 let z1 = ((cz as i32 + 1) * LOD_STEP) as f32;
@@ -236,10 +237,10 @@ pub fn generate_lod_region_mesh(
                     let x1 = ((cx as i32 + 1) * LOD_STEP) as f32;
 
                     let base_idx = positions.len() as u32;
-                    positions.push([x0, 4.0, z0]);
-                    positions.push([x0, 4.0, z1]);
-                    positions.push([x1, 4.0, z1]);
-                    positions.push([x1, 4.0, z0]);
+                    positions.push([x0 - SEAM_OVERLAP, 4.0, z0 - SEAM_OVERLAP]);
+                    positions.push([x0 - SEAM_OVERLAP, 4.0, z1 + SEAM_OVERLAP]);
+                    positions.push([x1 + SEAM_OVERLAP, 4.0, z1 + SEAM_OVERLAP]);
+                    positions.push([x1 + SEAM_OVERLAP, 4.0, z0 - SEAM_OVERLAP]);
 
                     for _ in 0..4 {
                         normals.push([0.0, 1.0, 0.0]);
@@ -285,6 +286,8 @@ pub fn generate_lod_region_mesh(
                 }
             }
 
+            const SEAM_OVERLAP: f32 = 0.03;
+
             for cz in 0..LOD_CELLS {
                 let z0 = (cz as i32 * LOD_STEP) as f32;
                 let z1 = ((cz as i32 + 1) * LOD_STEP) as f32;
@@ -297,17 +300,31 @@ pub fn generate_lod_region_mesh(
                     let curr_y = height_table[table_idx];
                     let is_tree = foliage_table[table_idx];
 
+                    let y_west = height_table[table_idx - 1];
+                    let y_east = height_table[table_idx + 1];
+                    let y_north = height_table[table_idx - TABLE_DIM];
+                    let y_south = height_table[table_idx + TABLE_DIM];
+
+                    let max_drop = (curr_y - y_west).max(curr_y - y_east).max(curr_y - y_north).max(curr_y - y_south);
+                    let slope_factor = ((max_drop - 5) as f32 / 10.0).clamp(0.0, 1.0);
+
                     let y_f32 = curr_y as f32;
 
                     // ── 1. 水平微體素頂面 (Top Quad, normal = +Y) ──
+                    // 導入 0.03m 邊界微膨脹 (Seam Overlap)，彻底消除斜視時 GPU 光柵化浮點捨入造成的細白漏光微縫
+                    let ox0 = x0 - SEAM_OVERLAP;
+                    let ox1 = x1 + SEAM_OVERLAP;
+                    let oz0 = z0 - SEAM_OVERLAP;
+                    let oz1 = z1 + SEAM_OVERLAP;
+
                     let base_idx = positions.len() as u32;
-                    positions.push([x0, y_f32, z0]);
-                    positions.push([x0, y_f32, z1]);
-                    positions.push([x1, y_f32, z1]);
-                    positions.push([x1, y_f32, z0]);
+                    positions.push([ox0, y_f32, oz0]);
+                    positions.push([ox0, y_f32, oz1]);
+                    positions.push([ox1, y_f32, oz1]);
+                    positions.push([ox1, y_f32, oz0]);
 
                     let n_dot_l = Vec3::Y.dot(sun_dir).max(0.0);
-                    let top_diffuse = 0.65 + 0.35 * n_dot_l;
+                    let top_diffuse = 0.68 + 0.32 * n_dot_l;
 
                     let top_base_rgb = if curr_y < SEA_LEVEL {
                         Vec3::new(0.34, 0.33, 0.30) // 🌊 深海海底沙礫
@@ -320,7 +337,10 @@ pub fn generate_lod_region_mesh(
                     } else if is_tree {
                         Vec3::new(0.18, 0.36, 0.14) // 🌲 森林樹冠頂部
                     } else {
-                        Vec3::new(0.26, 0.48, 0.18) // 🌿 溫帶常綠草坪
+                        // 溫帶常綠草坪：陡坡自適應過渡至風化岩石，消滅亮綠頂面與深黑側壁的 3:1 斑馬橫紋摩爾紋
+                        let lush_grass = Vec3::new(0.26, 0.48, 0.18);
+                        let slope_rock = Vec3::new(0.44, 0.42, 0.38);
+                        lush_grass.lerp(slope_rock, slope_factor * 0.7)
                     };
 
                     let top_shaded = top_base_rgb * top_diffuse;
@@ -334,6 +354,8 @@ pub fn generate_lod_region_mesh(
                     ]);
 
                     // ── 2. 四向垂直側壁階梯 (Side Quads) ──
+                    // 側壁環境天光底限提升至 0.70，避免背光面死黑造成高對比黑白摩爾紋；
+                    // 緩坡側壁融合草皮垂掛過渡色，陡壁呈現自然岩石斷面。
                     let side_base_rgb = if curr_y > 520 {
                         Vec3::new(0.42, 0.42, 0.44) // 岩壁
                     } else if curr_y < SEA_LEVEL {
@@ -341,21 +363,22 @@ pub fn generate_lod_region_mesh(
                     } else if is_tree {
                         Vec3::new(0.22, 0.32, 0.16) // 樹冠側壁
                     } else {
-                        Vec3::new(0.42, 0.30, 0.18) // 泥土棕色峭壁
+                        let gentle_side = Vec3::new(0.30, 0.40, 0.20); // 緩坡草皮垂掛
+                        let steep_cliff = Vec3::new(0.42, 0.36, 0.28); // 陡壁泥岩
+                        gentle_side.lerp(steep_cliff, slope_factor)
                     };
 
                     // 西側 (-X)
-                    let y_west = height_table[table_idx - 1];
                     if curr_y > y_west {
                         let y_low = y_west as f32;
                         let s_idx = positions.len() as u32;
-                        positions.push([x0, y_low, z1]);
-                        positions.push([x0, y_f32, z1]);
-                        positions.push([x0, y_f32, z0]);
-                        positions.push([x0, y_low, z0]);
+                        positions.push([x0, y_low - SEAM_OVERLAP, oz1]);
+                        positions.push([x0, y_f32 + SEAM_OVERLAP, oz1]);
+                        positions.push([x0, y_f32 + SEAM_OVERLAP, oz0]);
+                        positions.push([x0, y_low - SEAM_OVERLAP, oz0]);
 
                         let norm = Vec3::new(-1.0, 0.0, 0.0);
-                        let diff = 0.48 + 0.52 * norm.dot(sun_dir).max(0.0);
+                        let diff = 0.70 + 0.30 * norm.dot(sun_dir).max(0.0);
                         let shaded = side_base_rgb * diff;
                         for _ in 0..4 {
                             normals.push([-1.0, 0.0, 0.0]);
@@ -368,17 +391,16 @@ pub fn generate_lod_region_mesh(
                     }
 
                     // 東側 (+X)
-                    let y_east = height_table[table_idx + 1];
                     if curr_y > y_east {
                         let y_low = y_east as f32;
                         let s_idx = positions.len() as u32;
-                        positions.push([x1, y_low, z0]);
-                        positions.push([x1, y_f32, z0]);
-                        positions.push([x1, y_f32, z1]);
-                        positions.push([x1, y_low, z1]);
+                        positions.push([x1, y_low - SEAM_OVERLAP, oz0]);
+                        positions.push([x1, y_f32 + SEAM_OVERLAP, oz0]);
+                        positions.push([x1, y_f32 + SEAM_OVERLAP, oz1]);
+                        positions.push([x1, y_low - SEAM_OVERLAP, oz1]);
 
                         let norm = Vec3::new(1.0, 0.0, 0.0);
-                        let diff = 0.48 + 0.52 * norm.dot(sun_dir).max(0.0);
+                        let diff = 0.70 + 0.30 * norm.dot(sun_dir).max(0.0);
                         let shaded = side_base_rgb * diff;
                         for _ in 0..4 {
                             normals.push([1.0, 0.0, 0.0]);
@@ -391,17 +413,16 @@ pub fn generate_lod_region_mesh(
                     }
 
                     // 北側 (-Z)
-                    let y_north = height_table[table_idx - TABLE_DIM];
                     if curr_y > y_north {
                         let y_low = y_north as f32;
                         let s_idx = positions.len() as u32;
-                        positions.push([x0, y_low, z0]);
-                        positions.push([x0, y_f32, z0]);
-                        positions.push([x1, y_f32, z0]);
-                        positions.push([x1, y_low, z0]);
+                        positions.push([ox0, y_low - SEAM_OVERLAP, z0]);
+                        positions.push([ox0, y_f32 + SEAM_OVERLAP, z0]);
+                        positions.push([ox1, y_f32 + SEAM_OVERLAP, z0]);
+                        positions.push([ox1, y_low - SEAM_OVERLAP, z0]);
 
                         let norm = Vec3::new(0.0, 0.0, -1.0);
-                        let diff = 0.48 + 0.52 * norm.dot(sun_dir).max(0.0);
+                        let diff = 0.70 + 0.30 * norm.dot(sun_dir).max(0.0);
                         let shaded = side_base_rgb * diff;
                         for _ in 0..4 {
                             normals.push([0.0, 0.0, -1.0]);
@@ -414,17 +435,16 @@ pub fn generate_lod_region_mesh(
                     }
 
                     // 南側 (+Z)
-                    let y_south = height_table[table_idx + TABLE_DIM];
                     if curr_y > y_south {
                         let y_low = y_south as f32;
                         let s_idx = positions.len() as u32;
-                        positions.push([x1, y_low, z1]);
-                        positions.push([x1, y_f32, z1]);
-                        positions.push([x0, y_f32, z1]);
-                        positions.push([x0, y_low, z1]);
+                        positions.push([ox1, y_low - SEAM_OVERLAP, z1]);
+                        positions.push([ox1, y_f32 + SEAM_OVERLAP, z1]);
+                        positions.push([ox0, y_f32 + SEAM_OVERLAP, z1]);
+                        positions.push([ox0, y_low - SEAM_OVERLAP, z1]);
 
                         let norm = Vec3::new(0.0, 0.0, 1.0);
-                        let diff = 0.48 + 0.52 * norm.dot(sun_dir).max(0.0);
+                        let diff = 0.70 + 0.30 * norm.dot(sun_dir).max(0.0);
                         let shaded = side_base_rgb * diff;
                         for _ in 0..4 {
                             normals.push([0.0, 0.0, 1.0]);
@@ -440,10 +460,10 @@ pub fn generate_lod_region_mesh(
                     if curr_y < SEA_LEVEL {
                         let w_idx = water_positions.len() as u32;
                         let sea_y = SEA_LEVEL as f32;
-                        water_positions.push([x0, sea_y, z0]);
-                        water_positions.push([x0, sea_y, z1]);
-                        water_positions.push([x1, sea_y, z1]);
-                        water_positions.push([x1, sea_y, z0]);
+                        water_positions.push([ox0, sea_y, oz0]);
+                        water_positions.push([ox0, sea_y, oz1]);
+                        water_positions.push([ox1, sea_y, oz1]);
+                        water_positions.push([ox1, sea_y, oz0]);
 
                         let water_color = [0.15, 0.35, 0.75, 0.60];
                         for _ in 0..4 {

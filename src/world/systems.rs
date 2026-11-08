@@ -404,12 +404,37 @@ pub fn update_chunks(
     let unload_distance = config.render_distance as i32 + 1;
     let mut to_remove: Vec<IVec3> = Vec::new();
 
+    // 🚀 智慧立體視距裁切 (3D Frustum Unload)：
+    // 1. 水平超出 unload_distance 者立即卸載
+    // 2. 玩家 160 米核心活動圓柱體之外 (dist_sq > 5*5)，卸載深埋於數百米岩層不可見的盲區區塊！
     for (&chunk_pos, _) in world_manager.chunks.iter() {
         let dx = (chunk_pos.x - player_chunk_pos.x).abs();
         let dz = (chunk_pos.z - player_chunk_pos.z).abs();
 
-        if dx > unload_distance || dz > unload_distance { // 🚀 柱狀視距裁切：徹底無視垂直 Y 軸，保護地底深淵
+        if dx > unload_distance || dz > unload_distance {
             to_remove.push(chunk_pos);
+            continue;
+        }
+
+        let dist_sq = dx * dx + dz * dz;
+        if dist_sq > 5 * 5 {
+            let gx = chunk_pos.x * 32 + 16;
+            let gz = chunk_pos.z * 32 + 16;
+            let max_ceil = match world_manager.world_type {
+                WorldType::Flat => 8,
+                WorldType::PerlinHills => generator.get_max_possible_surface_y_fast(gx, gz) + 32,
+                WorldType::FloatingIslands => crate::utils::math::WORLD_MAX_Y,
+            };
+
+            let surf_cy = (max_ceil / 32).min(cy_max);
+            let sea_cy = (crate::world::generator::SEA_LEVEL / 32) as i32;
+            let min_visible = (surf_cy - 2).min(sea_cy - 1).max(0);
+            let max_visible = (surf_cy + 1).max(sea_cy).min(cy_max);
+
+            // 滯後緩衝區 (Hysteresis Buffer)：給予上下各 2 個區塊的冗餘，防止移動時頻繁加載/卸載
+            if chunk_pos.y < min_visible - 2 || chunk_pos.y > max_visible + 2 {
+                to_remove.push(chunk_pos);
+            }
         }
     }
 

@@ -1090,14 +1090,17 @@ fn update_fog_color(
         (Color::from(water_color), 2.0, 36.0, 2.0, 36.0)
     } else {
         let c = calculate_sky_and_fog_color(sky_light, cycle.sky_factor, config.min_ambient_light);
-        // 🚀 大氣迷霧與遠景 LOD 全域剛性對齊：
-        // 徹底消除近景方塊在 472m 驟然泛白融於天空而遠景 LOD 卻鮮豔突兀的視覺割裂斷層！
+        // 🚀 大氣迷霧與遠景 LOD 全域動態對齊：
+        // 迷霧在方塊半徑約 80% 處提前溫和起步，讓體素邊界與 LOD 無縫融於天光大氣中！
+        let voxel_radius = (config.render_distance as f32 * 32.0) - 16.0;
+        let fog_start = (voxel_radius * 0.80).max(160.0);
+        let fog_end = crate::render::lod::LOD_FOG_END;
         (
             c,
-            crate::render::lod::LOD_FOG_START,
-            crate::render::lod::LOD_FOG_END,
-            crate::render::lod::LOD_FOG_START,
-            crate::render::lod::LOD_FOG_END,
+            fog_start,
+            fog_end,
+            fog_start,
+            fog_end,
         )
     };
 

@@ -40,6 +40,11 @@ fn vertex(input: VertexInput) -> VertexOutput {
 #ifdef PREPASS_PIPELINE
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    let cam_pos = view_bindings::view.world_position;
+    let dist = length(in.world_position.xz - cam_pos.xz);
+    if dist < env.near_voxel_radius {
+        discard;
+    }
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
 }
 #else
