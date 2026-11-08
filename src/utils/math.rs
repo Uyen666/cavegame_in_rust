@@ -3,7 +3,7 @@ use crate::world::voxel::BlockType;
 use crate::world::WorldManager;
 
 pub const CHUNK_SIZE: i32 = 32;
-pub const WORLD_CHUNKS_Y: i32 = 8;
+pub const WORLD_CHUNKS_Y: i32 = 32; // 🚀 升級 1024 格地球級地貌 (32 * 32 = 1024)
 pub const WORLD_MAX_Y: i32 = CHUNK_SIZE * WORLD_CHUNKS_Y;
 
 #[inline(always)]

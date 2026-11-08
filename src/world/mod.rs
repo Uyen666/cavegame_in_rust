@@ -160,11 +160,11 @@ impl WorldManager {
         }
         
         // 🚀 核心物理防線：當目標區塊在記憶體中不存在（Sparse 空氣或純石頭）時
-        if chunk_pos.y >= 2 {
-            // 🚀 高空（Y >= 64）：隱含背景是絕對空曠的空氣！物理完全通行！
+        if chunk_pos.y >= (crate::world::generator::SEA_LEVEL / 32) {
+            // 🚀 高空（Y >= SEA_LEVEL）：隱含背景是絕對空曠的空氣！物理完全通行！
             BlockType::Air
         } else {
-            // 🚀 地底（Y < 64）：隱含背景是實心石頭！
+            // 🚀 地底（Y < SEA_LEVEL）：隱含背景是實心石頭！
             BlockType::Stone
         }
     }

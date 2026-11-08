@@ -294,8 +294,8 @@ pub fn update_chunks(
                         let fbm = Fbm::<Perlin>::new(seed);
                         let noise = TerrainNoise(fbm);
                         let generator = TerrainGenerator { noise_provider: noise };
-                        let (b, c) = generator.generate_chunk_data(pos);
-                        (b, c, None)
+                        let (b, c, f) = generator.generate_chunk_data(pos);
+                        (b, c, f)
                     },
                     WorldType::FloatingIslands => (ChunkBuffer::default(), 0, None),
                 }

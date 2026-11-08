@@ -389,8 +389,8 @@ pub fn mesh_dirty_chunks(
                             is_completely_empty = false;
                         }
                     } else {
-                        // 如果鄰居尚未加載，且該鄰居在地下，我們會把它視為石頭，這會產生實體邊界，不能視為全空！
-                        if n_pos.y * crate::utils::math::CHUNK_SIZE < 64 {
+                        // 如果鄰居尚未加載，且該鄰居在海平面地下，我們會把它視為石頭，這會產生實體邊界，不能視為全空！
+                        if n_pos.y * crate::utils::math::CHUNK_SIZE < crate::world::generator::SEA_LEVEL {
                             is_completely_empty = false;
                         }
                     }

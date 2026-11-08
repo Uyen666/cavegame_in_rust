@@ -193,7 +193,7 @@ fn setup_player(
         crate::phys::components::Velocity::default(),
         crate::phys::components::GroundSensor::default(),
         crate::phys::components::FluidSensor::default(),
-        Transform::from_xyz(16.0, 250.0, 16.0), // 為了適應山脈地形，將初始高度拉到極限高空 (Y=250)，確保必定生於世界外表面，再利用重力自然降落
+        Transform::from_xyz(16.0, (crate::utils::math::WORLD_MAX_Y - 4) as f32, 16.0), // 為了適應 1024 宏觀山脈地形，初始高度對齊大氣層頂部，確保必定生於世界外表面，再安全降落地表
         GlobalTransform::default(),
         VisibilityBundle::default(),
     )).with_children(|parent| {
@@ -425,7 +425,7 @@ pub fn player_move(
         let cx = (transform.translation.x.floor() as i32) >> 5;
         let cz = (transform.translation.z.floor() as i32) >> 5;
         let mut top_loaded_cy = None;
-        for cy in (0..=7).rev() {
+        for cy in (0..crate::utils::math::WORLD_CHUNKS_Y).rev() {
             if world.get_chunk_ref(IVec3::new(cx, cy, cz)).is_some() {
                 top_loaded_cy = Some(cy);
                 break;
@@ -434,10 +434,10 @@ pub fn player_move(
         
         if top_loaded_cy.is_some() {
             let mut surface_found = false;
-            let mut surface_y = 250.0;
+            let mut surface_y = (crate::utils::math::WORLD_MAX_Y - 4) as f32;
             let px = transform.translation.x.floor() as i32;
             let pz = transform.translation.z.floor() as i32;
-            for y in (0..=255).rev() {
+            for y in (0..crate::utils::math::WORLD_MAX_Y).rev() {
                 let block = world.get_block_global(IVec3::new(px, y, pz));
                 if block.is_solid() {
                     surface_y = (y + 1) as f32; // 站在固體頂部
@@ -1089,7 +1089,7 @@ fn update_fog_color(
     // 【遠平面剛性鎖死】：獨立 query 確保不因 FogSettings 缺失而連帶失敗
     if let Ok(mut proj) = q_proj.get_single_mut() {
         if let Projection::Perspective(ref mut persp) = *proj {
-            persp.far = max_distance + 64.0; // 256 + 64 = 320，給予充分幾何空間
+            persp.far = (max_distance + 64.0).max(crate::utils::math::WORLD_MAX_Y as f32 * 1.25); // 仰望 1024 宏觀雪峰不被遠裁剪面截斷
         }
     }
 
