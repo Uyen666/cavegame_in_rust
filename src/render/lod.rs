@@ -9,17 +9,24 @@ use noise::{Fbm, Perlin};
 use crate::world::generator::{TerrainGenerator, SEA_LEVEL};
 use crate::world::{TerrainNoise, WorldManager, WorldType};
 
-/// 🚀 Distant Horizons (DH) 超遠景 LOD 地平線系統
+/// 🚀 Voxy 風格微體素階梯 (Voxelized Stepped LOD) 地平線系統
 /// 核心設計哲學：
-/// 1. 近處（0 ~ near_voxel_radius，即 0 ~ 248 米）：100% 嚴格純 3D 方塊，絕不允許任何平滑地表穿出！
-/// 2. 遠景（248 米 ~ 1,536 米）：無狀態低多邊形網格無縫接管，僅需約 80 ~ 110 個 Draw Call 呈現 1.5 公里宏大雪峰與大洋！
-/// 3. 銜接處（240 ~ 248 米）：體素迷霧平滑融化，GPU 著色器即時 Discard 近景像素，保證完全無縫、無穿模、無 Z-Fighting！
+/// 1. 幾何本質純體素化 (Voxels All The Way Down)：
+///    - 徹底廢除 2.5D 平滑斜坡三角形！每個 8x8 米柱體由一個水平頂面（Top Quad）與垂直側壁（Side Quads）構成。
+///    - 遠山徹底保留經典 Minecraft 體素階梯輪廓，輪廓與近處方塊 100% 統一，徹底消除黏土感與饅頭山！
+/// 2. 水下海底連續延伸 + 半透明遠景海水：
+///    - LOD 地形網格完整生成海平面以下的海底沙灘與海床岩石，不強行抹平。
+///    - 水面單獨生成一層半透明網格（AlphaMode::Blend），透出水下海床，消除刀切色塊斷崖！
+/// 3. 遠景樹冠微結構 (Canopy Voxels)：
+///    - 採樣樹木分佈，在丘陵森林疊加 5 米高的深綠色樹冠方塊，遠山覆蓋茂密植被，杜絕光頭山。
+/// 4. 體素與遠景大氣迷霧全域同步：
+///    - 在 380m~1800m 平滑過渡，消滅近景交接邊界的色調突變。
 
 pub const LOD_REGION_SIZE: i32 = 256; // 8 區塊 * 32 格 = 256 米
-pub const LOD_STEP: i32 = 8;          // 採樣步長 8 米
-pub const LOD_GRID_VERTS: usize = (LOD_REGION_SIZE / LOD_STEP + 1) as usize; // 33 頂點
+pub const LOD_STEP: i32 = 8;          // 採樣步長 8 米 (每個微體素階梯 8x8 米)
+pub const LOD_CELLS: usize = (LOD_REGION_SIZE / LOD_STEP) as usize; // 32 個微體素列
 pub const LOD_MAX_RADIUS: i32 = 8;    // 半徑 8 個區域 = 2,048 米 (64 區塊)
-pub const LOD_FOG_START: f32 = 450.0; // 大氣迷霧起始距離 (人眼無法分辨方塊時開始無縫過渡)
+pub const LOD_FOG_START: f32 = 380.0; // 大氣迷霧起始距離 (在方塊邊界 480m 前溫和起步，消除視覺突變)
 pub const LOD_FOG_END: f32 = 1800.0;  // 大氣迷霧結束完全融於天空之距離
 
 #[allow(dead_code)]
@@ -32,6 +39,7 @@ pub struct LODEnvironmentUniform {
     pub fog_color: Vec4,
 }
 
+/// 🏔️ 體素階梯地表材質 (不透明 / AlphaMask，寫入深度緩衝)
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct LODMaterial {
     #[uniform(0)]
@@ -78,6 +86,53 @@ impl Material for LODMaterial {
     }
 }
 
+/// 🌊 遠景大洋水面材質 (半透明混合 / AlphaMode::Blend，透出水下海床沙石)
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct LODWaterMaterial {
+    #[uniform(0)]
+    pub env: LODEnvironmentUniform,
+}
+
+impl Material for LODWaterMaterial {
+    fn vertex_shader() -> ShaderRef {
+        "shaders/lod.wgsl".into()
+    }
+
+    fn fragment_shader() -> ShaderRef {
+        "shaders/lod.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn prepass_vertex_shader() -> ShaderRef {
+        "shaders/lod.wgsl".into()
+    }
+
+    fn prepass_fragment_shader() -> ShaderRef {
+        "shaders/lod.wgsl".into()
+    }
+
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline<Self>,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        layout: &bevy::render::mesh::MeshVertexBufferLayoutRef,
+        _key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = Some(bevy::render::render_resource::Face::Back);
+
+        let vertex_layout = layout.0.get_layout(&[
+            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
+            Mesh::ATTRIBUTE_NORMAL.at_shader_location(1),
+            Mesh::ATTRIBUTE_COLOR.at_shader_location(2),
+        ])?;
+
+        descriptor.vertex.buffers[0] = vertex_layout;
+        Ok(())
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Component)]
 pub struct LODRegionChunk {
@@ -86,13 +141,14 @@ pub struct LODRegionChunk {
 }
 
 #[derive(Component)]
-pub struct GeneratingLOD(pub Task<(IVec2, Mesh)>);
+pub struct GeneratingLOD(pub Task<(IVec2, Mesh, Option<Mesh>)>);
 
 #[derive(Resource)]
 pub struct LODManager {
     pub loaded_regions: HashMap<IVec2, Entity>,
     pub loading_regions: HashSet<IVec2>,
-    pub material: Handle<LODMaterial>,
+    pub terrain_material: Handle<LODMaterial>,
+    pub water_material: Handle<LODWaterMaterial>,
     pub timer: f32,
     pub last_player_region: IVec2,
     pub initialized: bool,
@@ -102,10 +158,16 @@ pub struct LODPlugin;
 
 impl Plugin for LODPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(MaterialPlugin::<LODMaterial> {
-            prepass_enabled: false,
-            ..default()
-        })
+        app.add_plugins((
+            MaterialPlugin::<LODMaterial> {
+                prepass_enabled: false,
+                ..default()
+            },
+            MaterialPlugin::<LODWaterMaterial> {
+                prepass_enabled: false,
+                ..default()
+            },
+        ))
         .add_systems(Startup, setup_lod)
         .add_systems(Update, (update_lod_regions, poll_lod_tasks));
     }
@@ -113,56 +175,81 @@ impl Plugin for LODPlugin {
 
 pub fn setup_lod(
     mut commands: Commands,
-    mut materials: ResMut<Assets<LODMaterial>>,
+    mut terrain_materials: ResMut<Assets<LODMaterial>>,
+    mut water_materials: ResMut<Assets<LODWaterMaterial>>,
     config: Res<crate::config::EngineConfig>,
 ) {
     let voxel_radius = (config.render_distance as f32 * 32.0) - 16.0;
-    let material = materials.add(LODMaterial {
-        env: LODEnvironmentUniform {
-            near_voxel_radius: voxel_radius,
-            fog_start: LOD_FOG_START,
-            fog_end: LOD_FOG_END,
-            _pad0: 0.0,
-            fog_color: Vec4::new(0.5, 0.8, 1.0, 1.0),
-        },
-    });
+    let env = LODEnvironmentUniform {
+        near_voxel_radius: voxel_radius,
+        fog_start: LOD_FOG_START,
+        fog_end: LOD_FOG_END,
+        _pad0: 0.0,
+        fog_color: Vec4::new(0.5, 0.8, 1.0, 1.0),
+    };
+
+    let terrain_material = terrain_materials.add(LODMaterial { env: env.clone() });
+    let water_material = water_materials.add(LODWaterMaterial { env });
 
     commands.insert_resource(LODManager {
         loaded_regions: HashMap::new(),
         loading_regions: HashSet::new(),
-        material,
+        terrain_material,
+        water_material,
         timer: 0.0,
         last_player_region: IVec2::splat(i32::MAX),
         initialized: false,
     });
 }
 
-/// 🚀 核心網格生成算法：純數學解析性無狀態生成 256x256 米地表高度與代表色網格
+/// 🚀 Voxy 風格微體素階梯網格生成算法：
+/// 1. 返回 (地形微體素階梯網格, 遠海水面網格選項)
+/// 2. 每個 8x8 米柱體由 1 個水平頂面 (Top Quad) 與相鄰高差的垂直側壁 (Side Quads) 構成。
+/// 3. 若有低於海平面之區域，地形網格忠實生成水下海床，並在水面生成半透明水體網格。
 pub fn generate_lod_region_mesh(
     rx: i32,
     rz: i32,
     seed: u32,
     world_type: WorldType,
-) -> Mesh {
-    let mut positions = Vec::with_capacity(LOD_GRID_VERTS * LOD_GRID_VERTS);
-    let mut normals = Vec::with_capacity(LOD_GRID_VERTS * LOD_GRID_VERTS);
-    let mut colors = Vec::with_capacity(LOD_GRID_VERTS * LOD_GRID_VERTS);
-
+) -> (Mesh, Option<Mesh>) {
     let base_gx = rx * LOD_REGION_SIZE;
     let base_gz = rz * LOD_REGION_SIZE;
-
-    // 太陽漫反射方向 (歸一化定向光照向量)
     let sun_dir = Vec3::new(0.4, 0.8, 0.3).normalize();
+
+    let mut positions = Vec::with_capacity(LOD_CELLS * LOD_CELLS * 8);
+    let mut normals = Vec::with_capacity(LOD_CELLS * LOD_CELLS * 8);
+    let mut colors = Vec::with_capacity(LOD_CELLS * LOD_CELLS * 8);
+    let mut indices = Vec::with_capacity(LOD_CELLS * LOD_CELLS * 12);
+
+    let mut water_positions = Vec::new();
+    let mut water_normals = Vec::new();
+    let mut water_colors = Vec::new();
+    let mut water_indices = Vec::new();
 
     match world_type {
         WorldType::Flat => {
-            for vz in 0..LOD_GRID_VERTS {
-                for vx in 0..LOD_GRID_VERTS {
-                    let lx = (vx as i32 * LOD_STEP) as f32;
-                    let lz = (vz as i32 * LOD_STEP) as f32;
-                    positions.push([lx, 4.0, lz]);
-                    normals.push([0.0, 1.0, 0.0]);
-                    colors.push([0.30, 0.55, 0.22, 1.0]);
+            for cz in 0..LOD_CELLS {
+                let z0 = (cz as i32 * LOD_STEP) as f32;
+                let z1 = ((cz as i32 + 1) * LOD_STEP) as f32;
+                for cx in 0..LOD_CELLS {
+                    let x0 = (cx as i32 * LOD_STEP) as f32;
+                    let x1 = ((cx as i32 + 1) * LOD_STEP) as f32;
+
+                    let base_idx = positions.len() as u32;
+                    positions.push([x0, 4.0, z0]);
+                    positions.push([x0, 4.0, z1]);
+                    positions.push([x1, 4.0, z1]);
+                    positions.push([x1, 4.0, z0]);
+
+                    for _ in 0..4 {
+                        normals.push([0.0, 1.0, 0.0]);
+                        colors.push([0.30, 0.55, 0.22, 1.0]);
+                    }
+
+                    indices.extend_from_slice(&[
+                        base_idx, base_idx + 1, base_idx + 2,
+                        base_idx, base_idx + 2, base_idx + 3,
+                    ]);
                 }
             }
         }
@@ -171,101 +258,233 @@ pub fn generate_lod_region_mesh(
             let noise = TerrainNoise(fbm);
             let generator = TerrainGenerator { noise_provider: noise };
 
-            // 🚀 建立 35x35 的棧快取查找表，單次填充、零重複噪聲呼叫
-            // 涵蓋周遭 vx: -1..=33, vz: -1..=33，供鄰域有限差分法精準計算地表法線
-            const TABLE_DIM: usize = LOD_GRID_VERTS + 2; // 35
+            // 建立 34x34 快取查找表，涵蓋 cx: -1..=32, cz: -1..=32
+            // 包含鄰接區域邊界高度，以便無縫縫合跨區域垂直側壁
+            const TABLE_DIM: usize = LOD_CELLS + 2; // 34
             let mut height_table = [0i32; TABLE_DIM * TABLE_DIM];
+            let mut foliage_table = [false; TABLE_DIM * TABLE_DIM];
 
             for svz in 0..TABLE_DIM {
-                let sample_z = base_gz + (svz as i32 - 1) * LOD_STEP;
+                let cell_z = svz as i32 - 1;
+                let sample_z = base_gz + cell_z * LOD_STEP + LOD_STEP / 2;
                 for svx in 0..TABLE_DIM {
-                    let sample_x = base_gx + (svx as i32 - 1) * LOD_STEP;
-                    let h = generator.get_max_surface_y(sample_x, sample_z);
-                    height_table[svz * TABLE_DIM + svx] = h;
+                    let cell_x = svx as i32 - 1;
+                    let sample_x = base_gx + cell_x * LOD_STEP + LOD_STEP / 2;
+
+                    let y = generator.get_max_surface_y(sample_x, sample_z);
+
+                    // 🌲 檢測樹木分佈微結構
+                    let mut h = (sample_x as u32).wrapping_mul(374761393).wrapping_add((sample_z as u32).wrapping_mul(668265263));
+                    h = (h ^ (h >> 13)).wrapping_mul(1274126177);
+                    h ^= h >> 16;
+                    let has_tree = (h % 1000 < 30) && (y > SEA_LEVEL + 4) && (y <= 500);
+
+                    let idx = svz * TABLE_DIM + svx;
+                    height_table[idx] = if has_tree { y + 5 } else { y };
+                    foliage_table[idx] = has_tree;
                 }
             }
 
-            for vz in 0..LOD_GRID_VERTS {
-                for vx in 0..LOD_GRID_VERTS {
-                    let lx = (vx as i32 * LOD_STEP) as f32;
-                    let lz = (vz as i32 * LOD_STEP) as f32;
+            for cz in 0..LOD_CELLS {
+                let z0 = (cz as i32 * LOD_STEP) as f32;
+                let z1 = ((cz as i32 + 1) * LOD_STEP) as f32;
 
-                    let table_idx = (vz + 1) * TABLE_DIM + (vx + 1);
-                    let surf_y = height_table[table_idx];
+                for cx in 0..LOD_CELLS {
+                    let x0 = (cx as i32 * LOD_STEP) as f32;
+                    let x1 = ((cx as i32 + 1) * LOD_STEP) as f32;
 
-                    if surf_y < SEA_LEVEL {
-                        // 🌊 1. 浩瀚大洋水面：水平如鏡，錨定於海平面 (Y = 256.0)
-                        positions.push([lx, SEA_LEVEL as f32, lz]);
-                        normals.push([0.0, 1.0, 0.0]);
-                        colors.push([0.14, 0.32, 0.58, 1.0]); // 深海澄藍
+                    let table_idx = (cz + 1) * TABLE_DIM + (cx + 1);
+                    let curr_y = height_table[table_idx];
+                    let is_tree = foliage_table[table_idx];
+
+                    let y_f32 = curr_y as f32;
+
+                    // ── 1. 水平微體素頂面 (Top Quad, normal = +Y) ──
+                    let base_idx = positions.len() as u32;
+                    positions.push([x0, y_f32, z0]);
+                    positions.push([x0, y_f32, z1]);
+                    positions.push([x1, y_f32, z1]);
+                    positions.push([x1, y_f32, z0]);
+
+                    let n_dot_l = Vec3::Y.dot(sun_dir).max(0.0);
+                    let top_diffuse = 0.65 + 0.35 * n_dot_l;
+
+                    let top_base_rgb = if curr_y < SEA_LEVEL {
+                        Vec3::new(0.34, 0.33, 0.30) // 🌊 深海海底沙礫
+                    } else if curr_y <= SEA_LEVEL + 3 {
+                        Vec3::new(0.76, 0.72, 0.50) // 🏖️ 金色濱海沙灘
+                    } else if curr_y > 580 {
+                        Vec3::new(0.90, 0.92, 0.96) // ❄️ 高山積雪
+                    } else if curr_y > 520 {
+                        Vec3::new(0.48, 0.48, 0.50) // 🪨 風化花崗岩
+                    } else if is_tree {
+                        Vec3::new(0.18, 0.36, 0.14) // 🌲 森林樹冠頂部
                     } else {
-                        // 🏔️ 2. 陸地地表：高度微下沉 0.15 米，防止在體素過渡交界區產生 Z-Fighting
-                        let y = surf_y as f32 - 0.15;
-                        positions.push([lx, y, lz]);
+                        Vec3::new(0.26, 0.48, 0.18) // 🌿 溫帶常綠草坪
+                    };
 
-                        // 鄰域有限差分計算平滑法線
-                        let h_left = height_table[table_idx - 1] as f32;
-                        let h_right = height_table[table_idx + 1] as f32;
-                        let h_down = height_table[table_idx - TABLE_DIM] as f32;
-                        let h_up = height_table[table_idx + TABLE_DIM] as f32;
+                    let top_shaded = top_base_rgb * top_diffuse;
+                    for _ in 0..4 {
+                        normals.push([0.0, 1.0, 0.0]);
+                        colors.push([top_shaded.x, top_shaded.y, top_shaded.z, 1.0]);
+                    }
+                    indices.extend_from_slice(&[
+                        base_idx, base_idx + 1, base_idx + 2,
+                        base_idx, base_idx + 2, base_idx + 3,
+                    ]);
 
-                        let dx = (h_right - h_left) / (LOD_STEP as f32 * 2.0);
-                        let dz = (h_up - h_down) / (LOD_STEP as f32 * 2.0);
-                        let normal = Vec3::new(-dx, 1.0, -dz).normalize();
-                        normals.push([normal.x, normal.y, normal.z]);
+                    // ── 2. 四向垂直側壁階梯 (Side Quads) ──
+                    let side_base_rgb = if curr_y > 520 {
+                        Vec3::new(0.42, 0.42, 0.44) // 岩壁
+                    } else if curr_y < SEA_LEVEL {
+                        Vec3::new(0.26, 0.26, 0.28) // 海底岩壁
+                    } else if is_tree {
+                        Vec3::new(0.22, 0.32, 0.16) // 樹冠側壁
+                    } else {
+                        Vec3::new(0.42, 0.30, 0.18) // 泥土棕色峭壁
+                    };
 
-                        // 頂點定向光照烘焙 (Baked Directional Sun Lighting)
-                        let n_dot_l = normal.dot(sun_dir).max(0.0);
-                        let diffuse = 0.55 + 0.45 * n_dot_l;
+                    // 西側 (-X)
+                    let y_west = height_table[table_idx - 1];
+                    if curr_y > y_west {
+                        let y_low = y_west as f32;
+                        let s_idx = positions.len() as u32;
+                        positions.push([x0, y_low, z1]);
+                        positions.push([x0, y_f32, z1]);
+                        positions.push([x0, y_f32, z0]);
+                        positions.push([x0, y_low, z0]);
 
-                        // 地形代表色匹配 (自然大氣透視生物群系色彩)
-                        let base_rgb = if surf_y <= SEA_LEVEL + 4 {
-                            Vec3::new(0.72, 0.68, 0.48) // 🏖️ 濱海金色沙灘
-                        } else if surf_y > 580 {
-                            Vec3::new(0.85, 0.88, 0.92) // ❄️ 1024 宏觀雪峰白雪
-                        } else if surf_y > 520 {
-                            Vec3::new(0.44, 0.44, 0.46) // 🪨 高海拔風化花崗岩
-                        } else {
-                            Vec3::new(0.24, 0.40, 0.16) // 🌿 溫帶常綠自然草地 (柔和自然大地色)
-                        };
+                        let norm = Vec3::new(-1.0, 0.0, 0.0);
+                        let diff = 0.48 + 0.52 * norm.dot(sun_dir).max(0.0);
+                        let shaded = side_base_rgb * diff;
+                        for _ in 0..4 {
+                            normals.push([-1.0, 0.0, 0.0]);
+                            colors.push([shaded.x, shaded.y, shaded.z, 1.0]);
+                        }
+                        indices.extend_from_slice(&[
+                            s_idx, s_idx + 1, s_idx + 2,
+                            s_idx, s_idx + 2, s_idx + 3,
+                        ]);
+                    }
 
-                        let shaded_rgb = base_rgb * diffuse;
-                        colors.push([shaded_rgb.x, shaded_rgb.y, shaded_rgb.z, 1.0]);
+                    // 東側 (+X)
+                    let y_east = height_table[table_idx + 1];
+                    if curr_y > y_east {
+                        let y_low = y_east as f32;
+                        let s_idx = positions.len() as u32;
+                        positions.push([x1, y_low, z0]);
+                        positions.push([x1, y_f32, z0]);
+                        positions.push([x1, y_f32, z1]);
+                        positions.push([x1, y_low, z1]);
+
+                        let norm = Vec3::new(1.0, 0.0, 0.0);
+                        let diff = 0.48 + 0.52 * norm.dot(sun_dir).max(0.0);
+                        let shaded = side_base_rgb * diff;
+                        for _ in 0..4 {
+                            normals.push([1.0, 0.0, 0.0]);
+                            colors.push([shaded.x, shaded.y, shaded.z, 1.0]);
+                        }
+                        indices.extend_from_slice(&[
+                            s_idx, s_idx + 1, s_idx + 2,
+                            s_idx, s_idx + 2, s_idx + 3,
+                        ]);
+                    }
+
+                    // 北側 (-Z)
+                    let y_north = height_table[table_idx - TABLE_DIM];
+                    if curr_y > y_north {
+                        let y_low = y_north as f32;
+                        let s_idx = positions.len() as u32;
+                        positions.push([x0, y_low, z0]);
+                        positions.push([x0, y_f32, z0]);
+                        positions.push([x1, y_f32, z0]);
+                        positions.push([x1, y_low, z0]);
+
+                        let norm = Vec3::new(0.0, 0.0, -1.0);
+                        let diff = 0.48 + 0.52 * norm.dot(sun_dir).max(0.0);
+                        let shaded = side_base_rgb * diff;
+                        for _ in 0..4 {
+                            normals.push([0.0, 0.0, -1.0]);
+                            colors.push([shaded.x, shaded.y, shaded.z, 1.0]);
+                        }
+                        indices.extend_from_slice(&[
+                            s_idx, s_idx + 1, s_idx + 2,
+                            s_idx, s_idx + 2, s_idx + 3,
+                        ]);
+                    }
+
+                    // 南側 (+Z)
+                    let y_south = height_table[table_idx + TABLE_DIM];
+                    if curr_y > y_south {
+                        let y_low = y_south as f32;
+                        let s_idx = positions.len() as u32;
+                        positions.push([x1, y_low, z1]);
+                        positions.push([x1, y_f32, z1]);
+                        positions.push([x0, y_f32, z1]);
+                        positions.push([x0, y_low, z1]);
+
+                        let norm = Vec3::new(0.0, 0.0, 1.0);
+                        let diff = 0.48 + 0.52 * norm.dot(sun_dir).max(0.0);
+                        let shaded = side_base_rgb * diff;
+                        for _ in 0..4 {
+                            normals.push([0.0, 0.0, 1.0]);
+                            colors.push([shaded.x, shaded.y, shaded.z, 1.0]);
+                        }
+                        indices.extend_from_slice(&[
+                            s_idx, s_idx + 1, s_idx + 2,
+                            s_idx, s_idx + 2, s_idx + 3,
+                        ]);
+                    }
+
+                    // ── 3. 半透明大洋水面頂面 (Water Quad, Y = SEA_LEVEL) ──
+                    if curr_y < SEA_LEVEL {
+                        let w_idx = water_positions.len() as u32;
+                        let sea_y = SEA_LEVEL as f32;
+                        water_positions.push([x0, sea_y, z0]);
+                        water_positions.push([x0, sea_y, z1]);
+                        water_positions.push([x1, sea_y, z1]);
+                        water_positions.push([x1, sea_y, z0]);
+
+                        let water_color = [0.15, 0.35, 0.75, 0.60];
+                        for _ in 0..4 {
+                            water_normals.push([0.0, 1.0, 0.0]);
+                            water_colors.push(water_color);
+                        }
+                        water_indices.extend_from_slice(&[
+                            w_idx, w_idx + 1, w_idx + 2,
+                            w_idx, w_idx + 2, w_idx + 3,
+                        ]);
                     }
                 }
             }
         }
-        WorldType::FloatingIslands => {
-            // 空島模式：地表無宏觀連續基底，保持虛空
-        }
+        WorldType::FloatingIslands => {}
     }
 
-    // 構建頂點索引 (32 x 32 網格，每個格子由 2 個逆時針三角形構成)
-    const CELLS: usize = LOD_GRID_VERTS - 1; // 32
-    let mut indices = Vec::with_capacity(CELLS * CELLS * 6);
-
-    for cz in 0..CELLS {
-        for cx in 0..CELLS {
-            let i0 = (cz * LOD_GRID_VERTS + cx) as u32;
-            let i1 = i0 + 1;
-            let i2 = ((cz + 1) * LOD_GRID_VERTS + cx) as u32;
-            let i3 = i2 + 1;
-
-            // 朝上的三角形 (Counter-Clockwise Winding: i0 -> i2 -> i1 與 i1 -> i2 -> i3)
-            indices.extend_from_slice(&[i0, i2, i1, i1, i2, i3]);
-        }
-    }
-
-    let mut mesh = Mesh::new(
+    let mut terrain_mesh = Mesh::new(
         bevy::render::mesh::PrimitiveTopology::TriangleList,
         bevy::render::render_asset::RenderAssetUsages::default(),
     );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-    mesh.insert_indices(bevy::render::mesh::Indices::U32(indices));
+    terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    terrain_mesh.insert_indices(bevy::render::mesh::Indices::U32(indices));
 
-    mesh
+    let water_mesh = if !water_positions.is_empty() {
+        let mut wm = Mesh::new(
+            bevy::render::mesh::PrimitiveTopology::TriangleList,
+            bevy::render::render_asset::RenderAssetUsages::default(),
+        );
+        wm.insert_attribute(Mesh::ATTRIBUTE_POSITION, water_positions);
+        wm.insert_attribute(Mesh::ATTRIBUTE_NORMAL, water_normals);
+        wm.insert_attribute(Mesh::ATTRIBUTE_COLOR, water_colors);
+        wm.insert_indices(bevy::render::mesh::Indices::U32(water_indices));
+        Some(wm)
+    } else {
+        None
+    };
+
+    (terrain_mesh, water_mesh)
 }
 
 /// 🚀 後台動態加載管理：監聽玩家位置，異步派發遠景網格生成任務，淘汰超出地平線之區域
@@ -307,13 +526,11 @@ pub fn update_lod_regions(
         let dz = rpos.y - player_rz;
         let dist_sq = dx * dx + dz * dz;
 
-        // 計算該區域中心至玩家的歐幾里得距離
         let r_center_x = (rpos.x * LOD_REGION_SIZE + LOD_REGION_SIZE / 2) as f32;
         let r_center_z = (rpos.y * LOD_REGION_SIZE + LOD_REGION_SIZE / 2) as f32;
         let center_dist = ((r_center_x - player_pos.x).powi(2) + (r_center_z - player_pos.z).powi(2)).sqrt();
         let region_half_diag = (LOD_REGION_SIZE as f32 / 2.0) * 1.4142;
 
-        // 若該區域所有頂點均深陷於近景體素半徑內部，完全由體素實體渲染，直接卸載
         let entirely_inside_voxels = center_dist + region_half_diag < voxel_radius;
 
         if dist_sq > max_radius_sq || entirely_inside_voxels {
@@ -349,7 +566,6 @@ pub fn update_lod_regions(
             let center_dist = ((r_center_x - player_pos.x).powi(2) + (r_center_z - player_pos.z).powi(2)).sqrt();
             let region_half_diag = (LOD_REGION_SIZE as f32 / 2.0) * 1.4142;
 
-            // 🚀 CPU 預先快篩：若該區域完全深埋於近景體素防護罩內部，完全不生成任務
             if center_dist + region_half_diag < voxel_radius {
                 continue;
             }
@@ -362,27 +578,25 @@ pub fn update_lod_regions(
         }
     }
 
-    // 由近及遠排序加載
     candidates.sort_by_key(|(_, d)| *d);
 
     let seed = world_manager.seed;
     let world_type = world_manager.world_type;
     let task_pool = AsyncComputeTaskPool::get();
 
-    // 🚀 每影格平滑限流派發最多 4 個 LOD 任務，保障 200+ FPS 絲滑無卡頓
     for (rpos, _) in candidates.into_iter().take(4) {
         lod_manager.loading_regions.insert(rpos);
 
         let task = task_pool.spawn(async move {
-            let mesh = generate_lod_region_mesh(rpos.x, rpos.y, seed, world_type);
-            (rpos, mesh)
+            let (terrain_mesh, water_mesh) = generate_lod_region_mesh(rpos.x, rpos.y, seed, world_type);
+            (rpos, terrain_mesh, water_mesh)
         });
 
         commands.spawn(GeneratingLOD(task));
     }
 }
 
-/// 🚀 輪詢異步遠景網格任務並實例化 Entity
+/// 🚀 輪詢異步遠景網格任務並實例化 Entity (包含海床與半透明遠洋水體)
 pub fn poll_lod_tasks(
     mut commands: Commands,
     mut lod_manager: ResMut<LODManager>,
@@ -390,19 +604,19 @@ pub fn poll_lod_tasks(
     mut q_tasks: Query<(Entity, &mut GeneratingLOD)>,
 ) {
     for (entity, mut task) in &mut q_tasks {
-        if let Some((rpos, mesh)) = future::block_on(future::poll_once(&mut task.0)) {
+        if let Some((rpos, terrain_mesh, water_mesh)) = future::block_on(future::poll_once(&mut task.0)) {
             lod_manager.loading_regions.remove(&rpos);
 
-            let mesh_handle = meshes.add(mesh);
-            let material_handle = lod_manager.material.clone();
+            let terrain_mesh_handle = meshes.add(terrain_mesh);
+            let terrain_material_handle = lod_manager.terrain_material.clone();
 
             let region_entity = commands.spawn((
                 LODRegionChunk {
                     rx: rpos.x,
                     rz: rpos.y,
                 },
-                mesh_handle,
-                material_handle,
+                terrain_mesh_handle,
+                terrain_material_handle,
                 SpatialBundle {
                     transform: Transform::from_xyz(
                         (rpos.x * LOD_REGION_SIZE) as f32,
@@ -412,6 +626,18 @@ pub fn poll_lod_tasks(
                     ..default()
                 },
             )).id();
+
+            if let Some(wmesh) = water_mesh {
+                let water_mesh_handle = meshes.add(wmesh);
+                let water_material_handle = lod_manager.water_material.clone();
+                commands.entity(region_entity).with_children(|parent| {
+                    parent.spawn((
+                        water_mesh_handle,
+                        water_material_handle,
+                        SpatialBundle::default(),
+                    ));
+                });
+            }
 
             lod_manager.loaded_regions.insert(rpos, region_entity);
             commands.entity(entity).despawn();
@@ -425,26 +651,28 @@ mod tests {
 
     #[test]
     fn test_lod_region_mesh_vertex_and_triangle_counts() {
-        let mesh = generate_lod_region_mesh(0, 0, 1337, WorldType::Flat);
+        let (mesh, water) = generate_lod_region_mesh(0, 0, 1337, WorldType::Flat);
+        assert!(water.is_none(), "Flat world has no water below sea level");
+
         let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
-        assert_eq!(positions.len(), LOD_GRID_VERTS * LOD_GRID_VERTS);
-        assert_eq!(positions.len(), 33 * 33);
+        // 32 * 32 cells * 4 vertices = 4096
+        assert_eq!(positions.len(), LOD_CELLS * LOD_CELLS * 4);
+        assert_eq!(positions.len(), 4096);
 
         let indices = mesh.indices().unwrap();
-        let expected_tris = 32 * 32 * 2;
+        let expected_tris = LOD_CELLS * LOD_CELLS * 2;
         assert_eq!(indices.len(), expected_tris * 3);
     }
 
     #[test]
     fn test_lod_region_coordinates_and_sea_level_anchor() {
-        let mesh = generate_lod_region_mesh(2, -3, 42, WorldType::PerlinHills);
-        let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
-        let colors = mesh.attribute(Mesh::ATTRIBUTE_COLOR).unwrap();
+        let (terrain_mesh, water_mesh) = generate_lod_region_mesh(2, -3, 42, WorldType::PerlinHills);
+        let positions = terrain_mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
+        let colors = terrain_mesh.attribute(Mesh::ATTRIBUTE_COLOR).unwrap();
 
-        assert_eq!(positions.len(), 33 * 33);
-        assert_eq!(colors.len(), 33 * 33);
+        assert!(positions.len() >= LOD_CELLS * LOD_CELLS * 4);
+        assert_eq!(positions.len(), colors.len());
 
-        // 驗證所有頂點高度均大於等於 0 且在合理範圍內
         match positions {
             bevy::render::mesh::VertexAttributeValues::Float32x3(pts) => {
                 for p in pts {
@@ -453,6 +681,18 @@ mod tests {
                 }
             }
             _ => panic!("Expected Float32x3 position attributes"),
+        }
+
+        if let Some(wmesh) = water_mesh {
+            let w_positions = wmesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
+            match w_positions {
+                bevy::render::mesh::VertexAttributeValues::Float32x3(pts) => {
+                    for p in pts {
+                        assert_eq!(p[1], SEA_LEVEL as f32, "Water height must be exactly SEA_LEVEL");
+                    }
+                }
+                _ => panic!("Expected Float32x3 water position attributes"),
+            }
         }
     }
 }

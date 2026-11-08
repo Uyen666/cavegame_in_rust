@@ -11,7 +11,8 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_position: vec4<f32>,
-    @location(1) color: vec4<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec4<f32>,
 };
 
 struct LODEnvironmentUniform {
@@ -31,6 +32,7 @@ fn vertex(input: VertexInput) -> VertexOutput {
     let world_pos = model * vec4<f32>(input.position, 1.0);
     out.world_position = world_pos;
     out.clip_position = mesh_position_local_to_clip(model, vec4<f32>(input.position, 1.0));
+    out.normal = input.normal;
     out.color = input.color;
     return out;
 }
@@ -47,16 +49,17 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let dist = length(in.world_position.xz - cam_pos.xz);
 
     // 🚀 核心防線：嚴格剔除近景體素半徑 (near_voxel_radius) 內的所有 LOD 像素！
-    // 確保玩家近處 100% 只有純粹 3D 方塊，絕不允許任何平滑地表穿出樹木與草地！
+    // 確保玩家近處 100% 只有純粹 3D 方塊，絕不允許任何遠景網格穿模！
     if dist < env.near_voxel_radius {
         discard;
     }
 
-    // 遠景大氣迷霧平滑過渡至地平線天空色 (650m ~ 1,450m)
+    // 遠景大氣迷霧平滑過渡至地平線天空色 (380m ~ 1,800m)
     let fog_range = max(env.fog_end - env.fog_start, 1.0);
     let fog_factor = clamp((dist - env.fog_start) / fog_range, 0.0, 1.0);
     let final_rgb = mix(in.color.rgb, env.fog_color.rgb, fog_factor);
+    let final_alpha = mix(in.color.a, 1.0, fog_factor);
 
-    return vec4<f32>(final_rgb, 1.0);
+    return vec4<f32>(final_rgb, final_alpha);
 }
 #endif

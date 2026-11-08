@@ -1067,6 +1067,7 @@ fn update_fog_color(
     q_camera: Query<&GlobalTransform, With<PlayerCamera>>,
     mut materials: ResMut<Assets<crate::render::material::VoxelMaterial>>,
     mut lod_materials: ResMut<Assets<crate::render::lod::LODMaterial>>,
+    mut lod_water_materials: ResMut<Assets<crate::render::lod::LODWaterMaterial>>,
     q_player: Query<&Player>,
 ) {
     let Ok(cam_tf) = q_camera.get_single() else { return; };
@@ -1081,7 +1082,6 @@ fn update_fog_color(
 
     // 🚀 水中沉浸感知 vs 陸地大氣感知：
     // 在水下時視距急劇縮短至 36 格，背景色切換為深邃海藍黑，還原真實深海能見度與幽暗壓迫感！
-    let max_distance = (config.render_distance as f32 * 32.0).max(64.0);
     let (final_color, voxel_fog_start, voxel_fog_end, cam_fog_start, cam_fog_end) = if in_water {
         let light_ratio = (sky_light / 15.0).clamp(0.0, 1.0) * cycle.sky_factor;
         let deep_abyss = bevy::color::LinearRgba::new(0.001, 0.003, 0.006, 1.0);
@@ -1090,10 +1090,12 @@ fn update_fog_color(
         (Color::from(water_color), 2.0, 36.0, 2.0, 36.0)
     } else {
         let c = calculate_sky_and_fog_color(sky_light, cycle.sky_factor, config.min_ambient_light);
+        // 🚀 大氣迷霧與遠景 LOD 全域剛性對齊：
+        // 徹底消除近景方塊在 472m 驟然泛白融於天空而遠景 LOD 卻鮮豔突兀的視覺割裂斷層！
         (
             c,
-            max_distance * 0.75,
-            max_distance - 8.0,
+            crate::render::lod::LOD_FOG_START,
+            crate::render::lod::LOD_FOG_END,
             crate::render::lod::LOD_FOG_START,
             crate::render::lod::LOD_FOG_END,
         )
@@ -1147,9 +1149,15 @@ fn update_fog_color(
         mat.env.mining_data = mining_data;
     }
 
-    // 🚀 【LOD 超遠景材質同步】：動態將近景體素剔除半徑與遠景大氣迷霧推播至 lod.wgsl
+    // 🚀 【LOD 超遠景材質同步】：動態將近景體素剔除半徑與遠景大氣迷霧推播至 lod.wgsl (地表與水體雙管齊下)
     let voxel_radius = (config.render_distance as f32 * 32.0) - 16.0;
     for (_, mat) in lod_materials.iter_mut() {
+        mat.env.near_voxel_radius = if in_water { 0.0 } else { voxel_radius };
+        mat.env.fog_start = cam_fog_start;
+        mat.env.fog_end = cam_fog_end;
+        mat.env.fog_color = fog_col;
+    }
+    for (_, mat) in lod_water_materials.iter_mut() {
         mat.env.near_voxel_radius = if in_water { 0.0 } else { voxel_radius };
         mat.env.fog_start = cam_fog_start;
         mat.env.fog_end = cam_fog_end;
