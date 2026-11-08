@@ -235,14 +235,15 @@ impl<N: NoiseModule> TerrainGenerator<N> {
             (480.0 + t * 340.0, 40.0 + t * 80.0, 0.5f32)
         };
         let max_possible_y = ((base_h + amplitude).ceil() as i32 + 2).min(crate::utils::math::WORLD_MAX_Y - 1);
+        let min_possible_y = ((base_h - amplitude - 4.0).floor() as i32).min(SEA_LEVEL - 6).max(0);
         
-        for y in (0..=max_possible_y).rev() {
+        for y in (min_possible_y..=max_possible_y).rev() {
             let (density, _) = self.calculate_global_density(gx, y, gz);
             if density > 0.0 {
                 return y;
             }
         }
-        0
+        min_possible_y
     }
 
     pub fn resolve_block_type(&self, gy: i32, density: f32, base_h: f32, local_by: usize, y_densities: &[f32]) -> BlockType {

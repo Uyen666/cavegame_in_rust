@@ -274,12 +274,13 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     let fog_range = max(env.fog_end - env.fog_start, 1.0);
     let fog_factor = clamp((dist - env.fog_start) / fog_range, 0.0, 1.0);
 
-    // 🌌 洞穴深淵與深水大洞感知 (Cave & Trench Abyss Absorption)：
-    // 若目標方塊處於無天光洞穴 (sky_light == 0)，或向下俯瞰地底深淵/天坑時，
-    // 遠景迷霧必須向深邃黑色 (Dark Abyss Black) 平滑過渡，徹底消除「往深淵大洞底下看卻泛著藍天」的違和感！
-    let sky_ratio = clamp((in.sky_light * env.sky_factor) / 12.0, 0.0, 1.0);
+    // 🌌 洞穴深淵感知 (Cave Abyss Absorption)：
+    // 僅在地底深處且無陽光的封閉空間 (Y < 256.0 且 sky_light 缺失)，遠景迷霧才向深邃黑色過渡；
+    // 高空與開闊陸地 (Y >= 256.0) 的大氣迷霧永遠保持純淨壯闊的天空散射色，根絕遠山明暗不一雜斑！
+    let is_underground = clamp((256.0 - in.world_position.y) / 64.0, 0.0, 1.0);
+    let cave_darkness = (1.0 - clamp((in.sky_light * env.sky_factor) / 12.0, 0.0, 1.0)) * is_underground;
     let dark_abyss_color = vec3<f32>(0.001, 0.002, 0.005);
-    let target_fog_color = mix(dark_abyss_color, env.fog_color.rgb, sky_ratio);
+    let target_fog_color = mix(env.fog_color.rgb, dark_abyss_color, cave_darkness);
 
     final_rgb = mix(final_rgb, target_fog_color, fog_factor);
     if env.is_fluid == 1u {

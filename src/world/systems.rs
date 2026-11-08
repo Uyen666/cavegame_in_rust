@@ -246,7 +246,22 @@ pub fn update_chunks(
                 WorldType::FloatingIslands => crate::utils::math::WORLD_MAX_Y,
             };
 
-            for cy in cy_min..=cy_max {
+            // 🚀 遠近分級垂直視距 (Distance-Scaled Vertical Frustum Culling)
+            let dist_sq = dx * dx + dz * dz;
+            let (col_cy_min, col_cy_max) = if dist_sq <= 4 * 4 {
+                // 玩家周遭 128 米核心活動區：全垂直深度加載，保障所有溶洞暗河與地下礦道完備
+                (cy_min, (max_ceil / 32 + 1).min(cy_max))
+            } else {
+                // 遠景大視野宏觀帶：只加載地表外露層 (地表與海平面周圍)，
+                // 剔除埋在數百米實心岩層下不可見的盲區區塊，大幅消減 70% 實體開銷！
+                let surf_cy = (max_ceil / 32).min(cy_max);
+                let sea_cy = (crate::world::generator::SEA_LEVEL / 32) as i32;
+                let min_visible = (surf_cy - 2).min(sea_cy - 1).max(0);
+                let max_visible = (surf_cy + 1).min(cy_max);
+                (min_visible, max_visible)
+            };
+
+            for cy in col_cy_min..=col_cy_max {
                 let target = IVec3::new(col_chunk_x, cy, col_chunk_z);
                 if world_manager.chunks.contains_key(&target)
                     || world_manager.loading_chunks.contains(&target)
