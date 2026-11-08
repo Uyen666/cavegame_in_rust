@@ -213,42 +213,92 @@ pub fn update_chunks(
     mut world_manager: ResMut<WorldManager>,
     q_player: Query<&Transform, With<crate::player::Player>>,
     q_chunks: Query<(Entity, &Chunk)>,
+    q_generating: Query<&GeneratingChunk>,
     config: Res<crate::config::EngineConfig>,
 ) {
     let Ok(player_tf) = q_player.get_single() else { return; };
 
     let player_pos_global = player_tf.translation.as_ivec3();
     let (player_chunk_pos, _) = WorldManager::global_to_chunk_pos(player_pos_global);
+    let forward = player_tf.forward();
+    let forward_2d = Vec2::new(forward.x, forward.z).normalize_or_zero();
+
+    let fbm = Fbm::<Perlin>::new(world_manager.seed);
+    let noise = TerrainNoise(fbm);
+    let generator = TerrainGenerator { noise_provider: noise };
 
     let mut potential_chunks = Vec::new();
     let render_dist = config.render_distance as i32;
     let cy_min = 0;
     let cy_max = crate::utils::math::WORLD_CHUNKS_Y - 1;
+
     for dx in -render_dist..=render_dist {
-        for cy in cy_min..=cy_max {
-            for dz in -render_dist..=render_dist {
-                let target = IVec3::new(player_chunk_pos.x + dx, cy, player_chunk_pos.z + dz);
-                if !world_manager.chunks.contains_key(&target)
-                    && !world_manager.loading_chunks.contains(&target)
-                    && !world_manager.vacuum_chunks.contains(&target)
+        for dz in -render_dist..=render_dist {
+            let col_chunk_x = player_chunk_pos.x + dx;
+            let col_chunk_z = player_chunk_pos.z + dz;
+            let gx = col_chunk_x * 32 + 16;
+            let gz = col_chunk_z * 32 + 16;
+
+            // 🚀 極速獲取該區塊柱在海平面之上的理論最高地表（含雪峰極值與樹木餘裕）
+            let max_ceil = match world_manager.world_type {
+                WorldType::Flat => 8,
+                WorldType::PerlinHills => generator.get_max_possible_surface_y_fast(gx, gz) + 32,
+                WorldType::FloatingIslands => crate::utils::math::WORLD_MAX_Y,
+            };
+
+            for cy in cy_min..=cy_max {
+                let target = IVec3::new(col_chunk_x, cy, col_chunk_z);
+                if world_manager.chunks.contains_key(&target)
+                    || world_manager.loading_chunks.contains(&target)
+                    || world_manager.vacuum_chunks.contains(&target)
                 {
-                    potential_chunks.push(target);
+                    continue;
                 }
+
+                // 🚀 高空純空氣極速短路：若區塊底部高於地表上限且高於海平面，0 微秒直接標記為真空，不發派任務！
+                if target.y * 32 > max_ceil && target.y * 32 > crate::world::generator::SEA_LEVEL {
+                    world_manager.vacuum_chunks.insert(target);
+                    continue;
+                }
+
+                potential_chunks.push(target);
             }
         }
     }
     
-    potential_chunks.sort_by_key(|pos| {
-        let diff = *pos - player_chunk_pos;
-        let dist2d = diff.x * diff.x + diff.z * diff.z;
-        (dist2d, diff.y.abs()) // 🚀 二維柱狀優先排序：優先加載同 XZ 水平距離的整根垂直柱子
+    // 🚀 視角錐體前向加權排序 (Frustum Forward Directional Prioritization)
+    // 玩家向前飛行時，正前方視錐錐體 (FOV) 內的區塊享有最高加載優先級！
+    potential_chunks.sort_by(|a, b| {
+        let diff_a = *a - player_chunk_pos;
+        let diff_b = *b - player_chunk_pos;
+
+        let dist_sq_a = (diff_a.x * diff_a.x + diff_a.z * diff_a.z) as f32;
+        let dist_sq_b = (diff_b.x * diff_b.x + diff_b.z * diff_b.z) as f32;
+
+        let dir_a = Vec2::new(diff_a.x as f32, diff_a.z as f32).normalize_or_zero();
+        let dir_b = Vec2::new(diff_b.x as f32, diff_b.z as f32).normalize_or_zero();
+
+        let dot_a = dir_a.dot(forward_2d);
+        let dot_b = dir_b.dot(forward_2d);
+
+        let score_a = dist_sq_a * (1.2 - 0.7 * dot_a);
+        let score_b = dist_sq_b * (1.2 - 0.7 * dot_b);
+
+        score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| diff_a.y.abs().cmp(&diff_b.y.abs()))
     });
 
     let task_pool = AsyncComputeTaskPool::get();
     let world_type = world_manager.world_type;
     let seed = world_manager.seed;
 
-    for pos in potential_chunks.into_iter().take(4) {
+    // 🚀 動態並發任務調度 (Dynamic Concurrent Task Dispatching)
+    // 突破固定 take(4) 瓶頸，依當前任務池負載動態批次派發，飽和利用 CPU 多核運算
+    let running_tasks = q_generating.iter().count();
+    let max_concurrent: usize = 48;
+    let batch_to_spawn = max_concurrent.saturating_sub(running_tasks).clamp(8, 32);
+
+    for pos in potential_chunks.into_iter().take(batch_to_spawn) {
         world_manager.loading_chunks.insert(pos);
         
         let task = task_pool.spawn(async move {
@@ -294,7 +344,7 @@ pub fn update_chunks(
                         let fbm = Fbm::<Perlin>::new(seed);
                         let noise = TerrainNoise(fbm);
                         let generator = TerrainGenerator { noise_provider: noise };
-                        let (b, c, f) = generator.generate_chunk_data(pos);
+                        let (b, c, f) = generator.generate_chunk_data(pos, Some(&max_surface_y_map));
                         (b, c, f)
                     },
                     WorldType::FloatingIslands => (ChunkBuffer::default(), 0, None),
@@ -347,6 +397,12 @@ pub fn update_chunks(
         }
         world_manager.vacuum_chunks.remove(&pos);
     }
+
+    world_manager.vacuum_chunks.retain(|pos| {
+        let dx = (pos.x - player_chunk_pos.x).abs();
+        let dz = (pos.z - player_chunk_pos.z).abs();
+        dx <= unload_distance && dz <= unload_distance
+    });
 }
 
 pub fn poll_loading_chunks(

@@ -191,6 +191,29 @@ impl<N: NoiseModule> TerrainGenerator<N> {
         (density, base_h)
     }
 
+    pub fn get_max_possible_surface_y_fast(&self, gx: i32, gz: i32) -> i32 {
+        let fx = gx as f64;
+        let fz = gz as f64;
+        let r = (self.noise_provider.sample_2d(fx * 0.0006, fz * 0.0006) + 0.5).clamp(0.0, 1.0);
+        let (base_h, amplitude) = if r < 0.18 {
+            let t = smoothstep(0.0, 0.18, r);
+            (80.0 + t * 70.0, 8.0 + t * 6.0)
+        } else if r < 0.38 {
+            let t = smoothstep(0.18, 0.38, r);
+            (150.0 + t * 102.0, 14.0 - t * 8.0)
+        } else if r < 0.50 {
+            let t = smoothstep(0.38, 0.50, r);
+            (252.0 + t * 23.0, 6.0 + t * 6.0)
+        } else if r < 0.72 {
+            let t = smoothstep(0.50, 0.72, r);
+            (275.0 + t * 205.0, 12.0 + t * 28.0)
+        } else {
+            let t = smoothstep(0.72, 1.0, r);
+            (480.0 + t * 340.0, 40.0 + t * 80.0)
+        };
+        (base_h + amplitude).ceil() as i32
+    }
+
     pub fn get_max_surface_y(&self, gx: i32, gz: i32) -> i32 {
         let fx = gx as f64;
         let fz = gz as f64;
@@ -290,7 +313,7 @@ impl<N: NoiseModule> TerrainGenerator<N> {
     }
 
     /// 🚀 生成區塊資料，包含方塊緩衝區、非空氣計數，以及【全域自然水體流體緩衝區】
-    pub fn generate_chunk_data(&self, chunk_pos: IVec3) -> (ChunkBuffer, u16, Option<Box<[u8; 32768]>>) {
+    pub fn generate_chunk_data(&self, chunk_pos: IVec3, surface_y_map: Option<&[i32; 1024]>) -> (ChunkBuffer, u16, Option<Box<[u8; 32768]>>) {
         let mut density_cache = vec![0.0f32; CHUNK_SIZE * CHUNK_SIZE * CACHE_Y_SIZE];
         let mut base_h_cache = vec![0.0f32; CHUNK_SIZE * CHUNK_SIZE];
 
@@ -327,21 +350,75 @@ impl<N: NoiseModule> TerrainGenerator<N> {
             }
         }
 
-        // 🌊 【全域自然水體注入系統 (Natural Water Generation)】
-        // 凡低於海平面 (SEA_LEVEL = 256) 且為空氣的空間，自動注入真實物理水源 (Level 8)
+        let local_map = if let Some(map) = surface_y_map {
+            *map
+        } else {
+            let mut m = [0i32; 1024];
+            for bz in 0..32 {
+                for bx in 0..32 {
+                    m[bx + bz * 32] = self.get_max_surface_y(chunk_pos.x * 32 + bx as i32, chunk_pos.z * 32 + bz as i32);
+                }
+            }
+            m
+        };
+
+        // 🌊 【立體水文與地底空洞解救系統 (Realistic Hydrology & Cave Rescue)】
+        // 1. 海洋水體：僅在地表高度 <= SEA_LEVEL 的開放水域 (海溝、海盆、沙灘、河道) 注入海水。
+        //    陸地山脈 (surface_y > SEA_LEVEL) 下方的深層溶洞 (Y=32~240) 徹底解救，保持乾燥可探索空氣！
         let mut fluid_buf: Option<Box<[u8; 32768]>> = None;
         let chunk_base_y = chunk_pos.y * 32;
 
         if chunk_base_y <= SEA_LEVEL {
-            for by in 0..32 {
-                let gy = chunk_base_y + by as i32;
-                if gy <= SEA_LEVEL {
-                    for bz in 0..32 {
-                        for bx in 0..32 {
-                            let idx = bx + by * 32 + bz * 1024;
-                            if chunk_buffer.blocks[idx] == BlockType::Air {
-                                let fb = fluid_buf.get_or_insert_with(|| Box::new([0u8; 32768]));
-                                fb[idx] = 8 | 0x80; // 水源 Source block (Level 8)
+            for bz in 0..32 {
+                for bx in 0..32 {
+                    let surface_y = local_map[bx + bz * 32];
+                    if surface_y <= SEA_LEVEL {
+                        let start_y = (surface_y + 1).max(chunk_base_y);
+                        let end_y = (SEA_LEVEL).min(chunk_base_y + 31);
+                        if start_y <= end_y {
+                            let fb = fluid_buf.get_or_insert_with(|| Box::new([0u8; 32768]));
+                            for gy in start_y..=end_y {
+                                let by = (gy - chunk_base_y) as usize;
+                                let idx = bx + by * 32 + bz * 1024;
+                                if chunk_buffer.blocks[idx] == BlockType::Air {
+                                    fb[idx] = 8 | 0x80; // 水源 (Source block)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. 高山懸崖瀑布泉眼 (Cliff Waterfall Springs)
+        // 在高於海平面 (Y > 280) 的峭壁邊緣生成泉眼，水流將自然沿懸崖飛瀉而下！
+        if chunk_base_y >= SEA_LEVEL && chunk_base_y <= 650 {
+            for bz in 1..31 {
+                for bx in 1..31 {
+                    let gx = chunk_pos.x * 32 + bx as i32;
+                    let gz = chunk_pos.z * 32 + bz as i32;
+                    let surface_y = local_map[bx + bz * 32];
+
+                    if surface_y >= chunk_base_y && surface_y < chunk_base_y + 32 && surface_y > SEA_LEVEL + 24 {
+                        let neighbor_surf = local_map[(bx + 1) + bz * 32];
+                        if surface_y - neighbor_surf >= 8 {
+                            let mut hash = (gx as u32).wrapping_mul(8253729).wrapping_add((gz as u32).wrapping_mul(2396403));
+                            hash ^= hash >> 13;
+                            if hash % 500 < 5 {
+                                let by = (surface_y - chunk_base_y) as usize;
+                                let spring_idx = (bx + 1) + by * 32 + bz * 1024;
+                                if chunk_buffer.blocks[spring_idx] == BlockType::Air {
+                                    let fb = fluid_buf.get_or_insert_with(|| Box::new([0u8; 32768]));
+                                    fb[spring_idx] = 8 | 0x80;
+                                    for dy in 1..=by {
+                                        let fall_idx = (bx + 1) + (by - dy) * 32 + bz * 1024;
+                                        if chunk_buffer.blocks[fall_idx] == BlockType::Air {
+                                            fb[fall_idx] = 8;
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -443,7 +520,7 @@ mod tests {
         // 測試深海大洋區域 (r = 0.0 -> 深海海床在 Y=75 左右)
         let gen = TerrainGenerator { noise_provider: MockFlatNoise(-0.5) };
         // 採樣海平面正下方的區塊 CY=7 (Y: 224..255)
-        let (chunk_buffer, _, fluid_buf) = gen.generate_chunk_data(IVec3::new(0, 7, 0));
+        let (chunk_buffer, _, fluid_buf) = gen.generate_chunk_data(IVec3::new(0, 7, 0), None);
         
         let fb = fluid_buf.expect("Fluid buffer must be generated for ocean below sea level");
         // 空氣部分必須被填入水源 (Level 8 | 0x80)
@@ -454,6 +531,25 @@ mod tests {
             }
         }
         assert!(water_count > 0, "Ocean chunk below sea level must be filled with water source blocks");
+    }
+
+    #[test]
+    fn test_subterranean_caves_under_land_remain_dry_air() {
+        // 測試內陸丘陵山脈區域 (r = 0.6 -> 地表在 Y=350 遠高於海平面)
+        let gen = TerrainGenerator { noise_provider: MockFlatNoise(0.1) };
+        // 採樣地底溶洞高度區塊 CY=4 (Y: 128..159)
+        let (chunk_buffer, _, fluid_buf) = gen.generate_chunk_data(IVec3::new(0, 4, 0), None);
+
+        // 陸地下方的溶洞中，空氣方塊絕不准被海嘯般灌滿海水
+        if let Some(fb) = fluid_buf {
+            let mut flooded_water_in_caves = 0;
+            for i in 0..TOTAL_V_SIZE {
+                if chunk_buffer.blocks[i] == BlockType::Air && fb[i] == (8 | 0x80) {
+                    flooded_water_in_caves += 1;
+                }
+            }
+            assert_eq!(flooded_water_in_caves, 0, "Subterranean caves under high land must remain dry air, not flooded!");
+        }
     }
 
     #[test]

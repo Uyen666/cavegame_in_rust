@@ -356,6 +356,7 @@ impl WorldManager {
                 std::sync::Arc::make_mut(&mut new_entry.light_buffer).light_data.fill(0xF0);
             }
             self.chunks.insert(chunk_pos, new_entry);
+            self.vacuum_chunks.remove(&chunk_pos);
             is_revived = true;
         }
         

@@ -414,7 +414,7 @@ pub fn mesh_dirty_chunks(
                 noise_provider: crate::world::TerrainNoise(fbm),
             };
             
-            // 🚀 構建棧快取：一次性填充 34x34 的 2D 扁平陣列
+            // 🚀 構建棧快取：以極速解析高度界限一次性填充 34x34 的 2D 扁平陣列 (0 次 3D 密度回溯)
             let mut surface_heights = Box::new([0i32; 1156]);
             let base_x = chunk_pos.x * 32;
             let base_z = chunk_pos.z * 32;
@@ -423,7 +423,7 @@ pub fn mesh_dirty_chunks(
                     let gx = base_x + lx;
                     let gz = base_z + lz;
                     let idx = ((lz + 1) * 34 + (lx + 1)) as usize;
-                    surface_heights[idx] = generator.get_max_surface_y(gx, gz);
+                    surface_heights[idx] = generator.get_max_possible_surface_y_fast(gx, gz);
                 }
             }
             
