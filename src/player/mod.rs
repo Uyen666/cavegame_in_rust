@@ -1149,18 +1149,20 @@ fn update_fog_color(
         mat.env.mining_data = mining_data;
     }
 
-    // 🚀 【LOD 超遠景材質同步】：動態將近景體素剔除半徑與遠景大氣迷霧推播至 lod.wgsl (地表與水體雙管齊下)
+    // 🚀 【LOD 超遠景材質同步】：動態將近景體素剔除半徑、晝夜天空光強度與遠景大氣迷霧推播至 lod.wgsl (地表與水體雙管齊下)
     let voxel_radius = (config.render_distance as f32 * 32.0) - 16.0;
     for (_, mat) in lod_materials.iter_mut() {
         mat.env.near_voxel_radius = if in_water { 0.0 } else { voxel_radius };
         mat.env.fog_start = cam_fog_start;
         mat.env.fog_end = cam_fog_end;
+        mat.env.sky_factor = cycle.sky_factor;
         mat.env.fog_color = fog_col;
     }
     for (_, mat) in lod_water_materials.iter_mut() {
         mat.env.near_voxel_radius = if in_water { 0.0 } else { voxel_radius };
         mat.env.fog_start = cam_fog_start;
         mat.env.fog_end = cam_fog_end;
+        mat.env.sky_factor = cycle.sky_factor;
         mat.env.fog_color = fog_col;
     }
 }

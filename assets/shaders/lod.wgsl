@@ -19,7 +19,7 @@ struct LODEnvironmentUniform {
     near_voxel_radius: f32,
     fog_start: f32,
     fog_end: f32,
-    _pad0: f32,
+    sky_factor: f32,
     fog_color: vec4<f32>,
 };
 
@@ -54,10 +54,17 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
+    // 🌞 晝夜光照強度同步 (Day/Night Light Scaling)
+    // 嚴格對齊 voxel.wgsl 之感官光照衰減曲線，晝夜變換時遠山與近景方塊同步變暗與亮起：
+    let light_ratio = clamp(env.sky_factor, 0.05, 1.0);
+    let shadow_intensity = light_ratio * (0.25 + 0.75 * light_ratio);
+
+    let lit_rgb = in.color.rgb * shadow_intensity;
+
     // 遠景大氣迷霧平滑過渡至地平線天空色 (380m ~ 1,800m)
     let fog_range = max(env.fog_end - env.fog_start, 1.0);
     let fog_factor = clamp((dist - env.fog_start) / fog_range, 0.0, 1.0);
-    let final_rgb = mix(in.color.rgb, env.fog_color.rgb, fog_factor);
+    let final_rgb = mix(lit_rgb, env.fog_color.rgb, fog_factor);
     let final_alpha = mix(in.color.a, 1.0, fog_factor);
 
     return vec4<f32>(final_rgb, final_alpha);

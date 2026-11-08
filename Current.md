@@ -419,6 +419,12 @@ src/
   - **體素方塊與遠景 LOD 大氣迷霧全域同步 (Unified Atmospheric Fog)**:
     - 迷霧起始距離由 450m 提前至 380m，在近景體素方塊結束 (480m) 前已溫和柔化 7%，近景方塊不再於 472m 驟然泛白；
     - 近景方塊與遠景 LOD 共享完全相同的迷霧曲線 (380m~1800m) 與背景色，銜接交界無縫融合。
+  - **晝夜天空光強度與 LOD 亮度同步 (Day/Night Light Sync in LOD)**:
+    - **問題根因**：LOD 頂點色在網格化時烘焙為日間全亮色彩，而 `LODEnvironmentUniform` 與 `lod.wgsl` 缺失 `sky_factor` 晝夜光照因子，導致夜幕降臨天空全黑時，遠處 LOD 山脈依然如白晝般刺眼發亮；
+    - **重構方案**：
+      1. 在 `LODEnvironmentUniform` 注入 `sky_factor: f32`，每影格於 `update_fog_color` 將 `cycle.sky_factor` 自動推播至 `lod.wgsl`；
+      2. 在 `lod.wgsl` 實裝與 `voxel.wgsl` 100% 嚴格對齊的感官衰減光照曲線：`shadow_intensity = light_ratio * (0.25 + 0.75 * light_ratio)`；
+      3. 夜間 LOD 地形與水體同步深邃暗化，日出日落平滑明暗律動，彻底消除黑夜遠山發光的嚴重穿幫！
   - **驗證成果**:
     - 全專案 72/72 項單元測試 100% 通過（耗時 0.04 秒），`cargo check` 0 警告、0 錯誤；
     - Release 二進位檔案編譯完成，維持 160+~200+ FPS 高效能。

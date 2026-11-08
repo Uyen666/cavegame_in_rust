@@ -35,7 +35,7 @@ pub struct LODEnvironmentUniform {
     pub near_voxel_radius: f32, // 近景體素防護罩半徑 (在此半徑內的 LOD 像素強制 Discard 剔除)
     pub fog_start: f32,
     pub fog_end: f32,
-    pub _pad0: f32,
+    pub sky_factor: f32,        // 晝夜天空光強度係數 [0.05 ~ 1.0] (與近景方塊感官光照曲線 100% 同步)
     pub fog_color: Vec4,
 }
 
@@ -184,7 +184,7 @@ pub fn setup_lod(
         near_voxel_radius: voxel_radius,
         fog_start: LOD_FOG_START,
         fog_end: LOD_FOG_END,
-        _pad0: 0.0,
+        sky_factor: 1.0,
         fog_color: Vec4::new(0.5, 0.8, 1.0, 1.0),
     };
 
